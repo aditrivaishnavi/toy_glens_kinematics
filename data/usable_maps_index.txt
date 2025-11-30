@@ -1,0 +1,8 @@
+manga-8652-12703-MAPS.fits.gz
+manga-12071-12702-MAPS.fits.gz
+manga-8593-12705-MAPS.fits.gz
+manga-9487-9102-MAPS.fits.gz
+manga-11013-6101-MAPS.fits.gz
+manga-8993-12705-MAPS.fits.gz
+manga-11982-9102-MAPS.fits.gz
+manga-10500-12703-MAPS.fits.gz

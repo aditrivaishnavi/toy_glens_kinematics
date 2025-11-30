@@ -1,0 +1,54 @@
+# Virtual environment
+myenv/
+venv/
+.venv/
+env/
+
+# Generated data (too large for git)
+data/source_tensors/
+data/maps/
+data/sim_dataset/
+
+# Large FITS files (download separately)
+*.fits
+*.fits.gz
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
