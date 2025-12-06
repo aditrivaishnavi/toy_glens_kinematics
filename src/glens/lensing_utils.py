@@ -45,7 +45,10 @@ class LensSimConfig:
     
     # Subhalo parameters
     theta_E_sub_factor: float = 0.1  # theta_E_sub = factor * theta_E_main
-    subhalo_r_offset_frac: Tuple[float, float] = (0.1, 0.3)  # radial offset range
+    # Radial offset *beyond* the main Einstein radius, as a fraction of θ_E.
+    # The subhalo radius is r = theta_E_main * (1 + offset_frac).
+    # With default (0.1, 0.3), subhalo is placed at 110%-130% of Einstein radius.
+    subhalo_r_offset_frac: Tuple[float, float] = (0.1, 0.3)
     
     # PSF parameters
     psf_sigma: float = 1.0  # Gaussian PSF sigma in pixels

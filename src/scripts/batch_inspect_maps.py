@@ -220,6 +220,8 @@ def inspect_maps_file(filepath):
     
     try:
         # Extract flux & velocity
+        # Use Hα gas velocity (EMLINE_GVEL index 24) for kinematic maps
+        # We use gas velocity, not stellar velocity, as it shows cleaner rotation in disk galaxies
         flux_map = hdul["EMLINE_GFLUX"].data[HA_IDX]
         vel_map = hdul["EMLINE_GVEL"].data[HA_IDX]
         mask_map = hdul["EMLINE_GVEL_MASK"].data[HA_IDX]

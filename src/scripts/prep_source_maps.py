@@ -407,6 +407,8 @@ def main():
             gflux_mask = hdul["EMLINE_GFLUX_MASK"].data
             gvel_mask = hdul["EMLINE_GVEL_MASK"].data
 
+            # Use Hα gas velocity (EMLINE_GVEL index 24) for kinematic maps
+            # We use gas velocity, not stellar velocity, as it shows cleaner rotation in disk galaxies
             ha_flux = gflux[HA_INDEX, :, :]
             ha_vel = gvel[HA_INDEX, :, :]
 
