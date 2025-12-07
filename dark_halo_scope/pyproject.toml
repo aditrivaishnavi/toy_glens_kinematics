@@ -38,6 +38,10 @@ dev = [
     "black>=23.0.0",
     "ruff>=0.1.0",
 ]
+tap = [
+    "pyvo>=1.5.0",
+    "pandas>=2.0.0",
+]
 ml = [
     "torch>=2.0.0",
     "torchvision>=0.15.0",
@@ -50,7 +54,7 @@ ml = [
     "pyyaml>=6.0.0",
 ]
 all = [
-    "dark_halo_scope[dev,ml]",
+    "dark_halo_scope[dev,tap,ml]",
 ]
 
 [project.scripts]
