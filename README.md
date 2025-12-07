@@ -1,52 +1,58 @@
-# Toy Glens Kinematics
+# GLens: Gravitational Lensing Research Projects
 
-## MaNGA MAPS File Structure and Path Explanation
-
-This information is sourced from the [Sloan Digital Sky Survey DR17](https://dr17.sdss.org/).
-
-This project uses **MaNGA DR17 DAP MAPS FITS files**, which contain 2D maps of galaxy properties, including:
-
-- Stellar velocity fields
-- Emission line fluxes and velocity (Hα, [OIII], etc.)
-- Masks (bad pixel flags)
-- Line-strength indices and kinematic information
-
-These maps are essential for building flux + velocity source planes for strong-lensing simulations.
+This repository contains research projects exploring gravitational lensing detection and analysis using machine learning.
 
 ---
 
-### 📁 Official File Path Structure (Annotated)
+## Projects
 
-```
-https://data.sdss.org/sas/dr17/manga/spectro/analysis/v3_1_1/3.1.0/HYB10-MILESHC-MASTARHC2/8138/12704/manga-8138-12704-MAPS-HYB10-MILESHC-MASTARHC2.fits.gz
-```
+### 1. [Kinematics](./kinematics/)
 
-Below is the breakdown of each part:
+**Multi-Modal Subhalo Detection via Lensed Kinematics**
 
-| Path Part | Meaning | Notes |
-|-----------|---------|-------|
-| `sas` | Science Archive Server | SDSS file hosting |
-| `dr17` | Data Release 17 (latest) | Most updated MaNGA data |
-| `manga` | MaNGA survey | Mapping Nearby Galaxies at APO |
-| `spectro` | Spectroscopic data | Includes IFU datasets |
-| `analysis` | DAP outputs (processed data) | NOT raw observational data |
-| `v3_1_1` | DAP Software Version | Defines processing version |
-| `3.1.0` | Data product version | Internal version tag |
-| `HYB10-MILESHC-MASTARHC2` | 🔥 Data modeling type | Specifies model used (hybrid stellar+gas kinematics) |
-| `8138` | 📌 Plate ID | Identifies observation session |
-| `12704` | 📌 IFU Design ID | Specific MaNGA galaxy bundle |
-| `manga-8138-12704-MAPS-HYB10-MILESHC-MASTARHC2.fits.gz` | 🔑 MAPS file | Contains 2D maps (flux, velocity, masks, etc.) |
+Explores whether combining galaxy brightness (flux) with velocity maps (kinematics) can improve detection of dark matter subhalos in gravitationally lensed systems.
+
+**Key components:**
+- MaNGA IFU data processing pipeline
+- SIS gravitational lensing simulation
+- CNN-based subhalo detection experiments
+- Ablation studies: flux-only vs velocity-only vs combined
+
+See [`kinematics/README.md`](./kinematics/README.md) for detailed documentation.
 
 ---
 
-### 📄 What the MAPS File Contains
+## Repository Structure
 
-| MAPS Extension | Meaning |
-|----------------|---------|
-| `EMLINE_GFLUX` | Emission line flux map (e.g., Hα, [NII], [OIII]) |
-| `EMLINE_GVEL` | Emission line velocity map (gas kinematics) |
-| `STELLAR_VEL` | Stellar velocity map |
-| `STELLAR_SIGMA` | Velocity dispersion |
-| `*_MASK` | Bad pixel mask for data quality control |
-| `HEADER` | FITS metadata (observation details, units, resolution) |
+```
+glens/
+├── kinematics/           # Subhalo detection via lensed kinematics
+│   ├── src/              # Source code
+│   ├── data/             # Data files (mostly gitignored)
+│   ├── models/           # Trained model weights
+│   ├── docs/             # Documentation
+│   ├── work_log/         # Development logs
+│   ├── README.md         # Project-specific README
+│   └── requirements.txt  # Python dependencies
+│
+└── (future projects...)
+```
 
+---
+
+## Getting Started
+
+Each project has its own virtual environment and dependencies. Navigate to the specific project directory and follow its README instructions.
+
+```bash
+cd kinematics/
+python -m venv myenv
+source myenv/bin/activate
+pip install -r requirements.txt
+```
+
+---
+
+## License
+
+This project is for research and educational purposes.

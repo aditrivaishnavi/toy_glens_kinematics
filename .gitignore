@@ -3,11 +3,13 @@ myenv/
 venv/
 .venv/
 env/
+*/myenv/
+*/venv/
 
 # Generated data (too large for git)
-data/source_tensors/
-data/maps/
-data/sim_dataset/
+**/data/source_tensors/
+**/data/maps/
+**/data/sim_dataset/
 
 # Large FITS files (download separately)
 *.fits
