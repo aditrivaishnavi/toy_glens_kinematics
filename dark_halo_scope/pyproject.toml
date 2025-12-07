@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dark_halo_scope"
+version = "0.1.0"
+description = "Strong Lensing Selection Function of DESI Legacy DR10"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "Dark Halo Scope Team"}
+]
+keywords = ["astrophysics", "gravitational lensing", "dark matter", "DESI"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "astropy>=5.3.0",
+    "matplotlib>=3.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+ml = [
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "h5py>=3.8.0",
+    "pandas>=2.0.0",
+    "lenstronomy>=1.11.0",
+    "tqdm>=4.65.0",
+    "requests>=2.28.0",
+    "scikit-learn>=1.3.0",
+    "pyyaml>=6.0.0",
+]
+all = [
+    "dark_halo_scope[dev,ml]",
+]
+
+[project.scripts]
+run-phase1 = "scripts.run_phase1_observability:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*", "scripts*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py39", "py310", "py311", "py312"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
+
