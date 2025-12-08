@@ -24,9 +24,12 @@ from .analytic_observability import (
     build_mass_analytic_window,
 )
 from .region_scout import (
+    get_tap_service,
     fetch_bricks,
+    load_bricks_from_local_fits,
     apply_brick_quality_cuts,
     estimate_lrg_density_for_bricks,
+    estimate_lrg_density_from_sweeps,
     select_regions,
     BrickRecord,
 )

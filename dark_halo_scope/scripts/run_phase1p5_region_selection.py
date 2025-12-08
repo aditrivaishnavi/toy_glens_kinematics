@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 import pandas as pd
@@ -64,15 +63,19 @@ def write_region_summary_md(
         f.write("Criteria applied to `ls_dr10.bricks_s`:\n\n")
         f.write(f"- psfsize_r ≤ {config.max_psfsize_r:.2f} arcsec\n")
         f.write(f"- psfdepth_r ≥ {config.min_psfdepth_r:.2f} (5σ depth proxy)\n")
-        f.write(f"- ebv ≤ {config.max_ebv:.2f}\n")
-        f.write(f"- nexp_r ≥ {config.min_nexp_r} (if present; else assumed 1)\n\n")
+        f.write(f"- ebv ≤ {config.max_ebv:.2f}\n\n")
 
         f.write("Brick counts:\n\n")
         f.write(f"- Total bricks in footprint: {total_bricks}\n")
         f.write(f"- Bricks passing quality cuts: {quality_bricks}\n\n")
 
         f.write("## DESI-like LRG Proxy\n\n")
-        f.write("Extinction-corrected AB magnitudes (nanomaggies):\n\n")
+        f.write(
+            "AB magnitudes derived from Tractor fluxes (nanomaggies). "
+            "We do not apply an explicit extinction correction here; instead "
+            "we restrict to low-extinction bricks with EBV ≤ "
+            f"{config.max_ebv:.2f} so that relative LRG densities are comparable.\n\n"
+        )
         f.write(f"- z < {config.lrg_z_mag_max:.2f}\n")
         f.write(f"- r − z > {config.lrg_min_r_minus_z:.2f}\n")
         f.write(f"- z − W1 > {config.lrg_min_z_minus_w1:.2f}\n")
@@ -147,49 +150,85 @@ def write_region_summary_md(
 def main() -> None:
     config = Phase1p5Config()
     output_dir = _ensure_output_dir(config.output_dir)
+    checkpoint_dir = _ensure_output_dir(config.checkpoint_dir)
 
-    print("Phase 1.5: DR10 region scouting and brick selection")
-    print(f"  TAP URL: {config.tap_url}")
-    print(f"  Bricks table: {config.bricks_table}")
-    print(f"  Tractor table: {config.tractor_table}")
-    print(
-        f"  Footprint: RA [{config.ra_min}, {config.ra_max}] deg, "
-        f"Dec [{config.dec_min}, {config.dec_max}] deg"
-    )
+    # Define checkpoint file paths
+    ckpt_bricks_all = checkpoint_dir / "bricks_all.csv"
+    ckpt_bricks_quality = checkpoint_dir / "bricks_quality.csv"
+    ckpt_lrg_density = checkpoint_dir / "lrg_density_progress.csv"
 
-    # 1. Fetch bricks in footprint
-    print("  [1/5] Fetching bricks from survey-bricks table...")
-    bricks_all = fetch_bricks(config)
-    bricks_all.to_csv(output_dir / "bricks_all.csv", index=False)
+    print("=" * 60, flush=True)
+    print("Phase 1.5: DR10 region scouting and brick selection", flush=True)
+    print("=" * 60, flush=True)
+    print(f"  Footprint: RA [{config.ra_min}, {config.ra_max}] deg, "
+          f"Dec [{config.dec_min}, {config.dec_max}] deg", flush=True)
+    print(f"  Output dir: {output_dir.resolve()}", flush=True)
+    print(f"  Checkpoint dir: {checkpoint_dir.resolve()}", flush=True)
+    print(f"  TAP URL: {config.tap_url}", flush=True)
+    print(f"  Bricks table: {config.bricks_table}", flush=True)
+    print(f"  Tractor table: {config.tractor_table}", flush=True)
+    print("", flush=True)
 
-    # 2. Apply hard quality cuts
-    print("  [2/5] Applying brick-level quality cuts...")
-    bricks_quality = apply_brick_quality_cuts(bricks_all, config)
-    bricks_quality.to_csv(output_dir / "bricks_quality.csv", index=False)
-    print(f"      Bricks passing cuts: {len(bricks_quality)}")
+    # 1. Fetch bricks in footprint (with resume support)
+    print("  [1/5] Fetching bricks from survey-bricks table...", flush=True)
+    if ckpt_bricks_all.exists():
+        print(f"    [RESUME] Loading from checkpoint: {ckpt_bricks_all.name}", flush=True)
+        bricks_all = pd.read_csv(ckpt_bricks_all)
+        print(f"    Loaded {len(bricks_all)} bricks from checkpoint", flush=True)
+    else:
+        bricks_all = fetch_bricks(config)
+        bricks_all.to_csv(ckpt_bricks_all, index=False)
+        print(f"    Saved checkpoint: {ckpt_bricks_all.name} ({len(bricks_all)} bricks)", flush=True)
+
+    # 2. Apply hard quality cuts (with resume support)
+    print("  [2/5] Applying brick-level quality cuts...", flush=True)
+    if ckpt_bricks_quality.exists():
+        print(f"    [RESUME] Loading from checkpoint: {ckpt_bricks_quality.name}", flush=True)
+        bricks_quality = pd.read_csv(ckpt_bricks_quality)
+        print(f"    Loaded {len(bricks_quality)} quality bricks from checkpoint", flush=True)
+    else:
+        bricks_quality = apply_brick_quality_cuts(bricks_all, config)
+        bricks_quality.to_csv(ckpt_bricks_quality, index=False)
+        print(f"    Saved checkpoint: {ckpt_bricks_quality.name} ({len(bricks_quality)} bricks)", flush=True)
 
     if bricks_quality.empty:
-        print("      No bricks passed the quality cuts. Check your thresholds.")
+        print("    ERROR: No bricks passed the quality cuts. Check your thresholds.", flush=True)
         return
 
-    # 3. Estimate LRG densities for up to max_bricks_for_lrg_density bricks
-    print("  [3/5] Estimating DESI-like LRG density per brick...")
-    bricks_with_density = estimate_lrg_density_for_bricks(bricks_quality, config)
-    bricks_with_density.to_csv(
-        output_dir / "bricks_with_density.csv", index=False
+    # 3. Estimate LRG densities (with incremental checkpointing)
+    print("  [3/5] Estimating DESI-like LRG density per brick...", flush=True)
+    if config.pilot_brick_limit > 0:
+        print(f"    PILOT MODE: limiting to {config.pilot_brick_limit} bricks", flush=True)
+    else:
+        print(f"    (Will query up to {config.max_bricks_for_lrg_density} bricks)", flush=True)
+
+    bricks_with_density = estimate_lrg_density_for_bricks(
+        bricks_quality,
+        config,
+        pilot_limit=config.pilot_brick_limit,
+        checkpoint_path=ckpt_lrg_density,
     )
+    # Save final results to output_dir
+    bricks_with_density.to_csv(output_dir / "bricks_with_density.csv", index=False)
+    print("    Saved bricks_with_density.csv", flush=True)
+
+    # Also copy bricks_all and bricks_quality to output_dir for convenience
+    bricks_all.to_csv(output_dir / "bricks_all.csv", index=False)
+    bricks_quality.to_csv(output_dir / "bricks_quality.csv", index=False)
 
     # 4. Select primary and backup regions
-    print("  [4/5] Selecting primary and backup contiguous regions...")
+    print("  [4/5] Selecting primary and backup contiguous regions...", flush=True)
     primary_region, backup_region = select_regions(bricks_with_density, config)
     primary_region.to_csv(output_dir / "primary_region_bricks.csv", index=False)
+    print(f"    Primary region: {len(primary_region)} bricks", flush=True)
     if not backup_region.empty:
         backup_region.to_csv(
             output_dir / "backup_region_bricks.csv", index=False
         )
+        print(f"    Backup region: {len(backup_region)} bricks", flush=True)
 
     # 5. Write markdown summary
-    print("  [5/5] Writing markdown summary...")
+    print("  [5/5] Writing markdown summary...", flush=True)
     write_region_summary_md(
         output_dir,
         config,
@@ -200,10 +239,13 @@ def main() -> None:
         backup_region,
     )
 
-    print(f"\n✓ Phase 1.5 outputs written to {output_dir.resolve()}")
-    print("Generated files:")
+    print("", flush=True)
+    print("=" * 60, flush=True)
+    print(f"✓ Phase 1.5 outputs written to {output_dir.resolve()}", flush=True)
+    print("=" * 60, flush=True)
+    print("Generated files:", flush=True)
     for f in sorted(output_dir.glob("*")):
-        print(f"  - {f.name}")
+        print(f"  - {f.name}", flush=True)
 
 
 if __name__ == "__main__":
