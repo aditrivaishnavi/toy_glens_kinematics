@@ -67,17 +67,21 @@ class Phase1p5Config:
     Configuration for Phase 1.5: Region scouting and brick-level selection.
 
     This phase uses DR10 survey-bricks (ls_dr10.bricks_s) to:
-      - Apply hard image-quality cuts (seeing, depth, extinction, exposures).
+      - Apply hard image-quality cuts (seeing, depth, extinction).
       - Estimate DESI-like LRG density per brick.
       - Select a contiguous set of bricks as the primary region.
+
+    It now also includes configuration for an EMR + PySpark backend which
+    computes LRG counts per brick from DR10 SWEEP files in parallel and
+    writes a compact summary to S3.
     """
 
     # TAP service for NOIRLab Astro Data Lab (DR10 tables)
     tap_url: str = "https://datalab.noirlab.edu/tap"
 
     # Table names
-    bricks_table: str = "ls_dr10.bricks_s"  # survey-bricks for southern footprint
-    tractor_table: str = "ls_dr10.tractor_s"  # Tractor catalog for galaxy densities
+    bricks_table: str = "ls_dr10.bricks_s"   # survey-bricks for southern footprint
+    tractor_table: str = "ls_dr10.tractor_s"  # Tractor catalog (TAP-based path)
 
     # Scouting footprint (RA, Dec in degrees)
     ra_min: float = 150.0
@@ -86,30 +90,86 @@ class Phase1p5Config:
     dec_max: float = 30.0
 
     # Hard brick-level quality cuts
-    max_psfsize_r: float = 1.5        # arcsec; discard bricks with worse seeing
-    min_psfdepth_r: float = 23.3      # approximate 5σ depth threshold in r
-    max_ebv: float = 0.1              # max E(B−V) to avoid heavy extinction
-    min_nexp_r: int = 2               # require at least 2 r-band exposures, if available
+    max_psfsize_r: float = 1.5       # arcsec; discard bricks with worse seeing
+    min_psfdepth_r: float = 23.3     # approximate 5σ depth threshold in r
+    max_ebv: float = 0.1             # max E(B−V) to avoid heavy extinction
 
-    # LRG proxy cuts (DESI-like, all mags extinction-corrected AB)
-    # z-band brightness: approximate DESI LRG limit
+    # LRG proxy cuts (DESI-like, all mags AB based on nanomaggies)
     lrg_z_mag_max: float = 20.4
-    # optical color: selects red galaxies
     lrg_min_r_minus_z: float = 0.4
-    # optical–IR color: selects massive, dusty galaxies
     lrg_min_z_minus_w1: float = 1.6
 
-    # Optional photo-z refining (can be turned off by setting to None)
+    # Optional photo-z refining (not used for DR10 TAP or SWEEPs by default)
     use_photo_z: bool = False
     lrg_z_phot_min: float = 0.3
     lrg_z_phot_max: float = 0.8
 
     # Region size targets
-    min_region_area_deg2: float = 100.0   # desired minimum total area
-    max_region_area_deg2: float = 400.0   # soft upper limit for primary region
+    min_region_area_deg2: float = 100.0
+    max_region_area_deg2: float = 400.0
 
-    # How many best bricks to compute LRG density for (to control TAP volume)
+    # How many best bricks to compute LRG density for (for TAP-based path)
     max_bricks_for_lrg_density: int = 500
+
+    # Pilot mode: small number for fast test; 0 = full
+    pilot_brick_limit: int = 0
+
+    # Local DR10 data root (for non-EMR local workflows)
+    data_root: str = "external_data/dr10"
+    bricks_fits: str = "external_data/dr10/survey-bricks-dr10-south.fits.gz"
+    sweeps_dir: str = "external_data/dr10/sweep_10.1"
+
+    # Local usage toggles (non-EMR)
+    use_local_bricks: bool = True
+    use_local_sweeps: bool = True
+    delete_sweeps_after_use: bool = True
+
+    # Whether to prefer SWEEP-based LRG estimation (vs TAP) in local workflows
+    use_sweeps_for_lrg: bool = False
+
+    # SWEEP index list (one path or URL per line)
+    sweep_index_path: str = "external_data/dr10/sweeps_ra150_250_dec0_30_10.1.txt"
+
+    # Temporary directory for SWEEP downloads (when entries are URLs)
+    sweep_download_dir: str = "external_data/dr10/tmp_sweeps"
+
+    # Max number of SWEEP files to process in parallel (local workflow)
+    max_parallel_sweeps: int = 3
+
+    # Optional limit on number of SWEEP files to process (local workflow)
+    max_sweeps_for_lrg_density: int = 5
 
     # Output directory (relative to project root)
     output_dir: str = "outputs/phase1p5"
+
+    # Checkpoint directory for resumable runs (separate from output_dir)
+    checkpoint_dir: str = "checkpoints/phase1p5"
+
+    # ------------- EMR / S3 specific options -------------
+
+    # S3 bucket + base prefix where EMR outputs will be written.
+    # Example: "s3://my-bucket/dark_halo_scope/phase1p5"
+    emr_s3_output_prefix: str = "s3://CHANGE_ME_BUCKET/phase1p5"
+
+    # Name of the EMR log S3 prefix (optional, for cluster logs)
+    emr_s3_log_prefix: str = "s3://CHANGE_ME_BUCKET/emr-logs"
+
+    # EMR cluster parameters (defaults are small but you can override
+    # in the EMR submission script by passing CLI arguments).
+    emr_release_label: str = "emr-6.15.0"
+    emr_master_instance_type: str = "m5.xlarge"
+    emr_core_instance_type: str = "m5.xlarge"
+    emr_core_instance_count: int = 3
+
+    # EMR job name base
+    emr_job_name: str = "dark-halo-scope-phase1p5"
+
+    # AWS EMR + EC2 roles (to be filled in by you)
+    emr_service_role: str = "EMR_DefaultRole"
+    emr_job_flow_role: str = "EMR_EC2_DefaultRole"
+
+    # S3 location of the zipped project or py-files for Spark (you will upload it)
+    emr_s3_code_archive: str = "s3://CHANGE_ME_BUCKET/code/dark_halo_scope_code.tgz"
+
+    # Path (inside the code archive) to the PySpark driver script
+    emr_pyspark_driver_path: str = "emr/spark_phase1p5_lrg_density.py"
