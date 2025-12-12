@@ -18,6 +18,7 @@ logic identical to the local workflow.
      and returns `(brickname, lrg_count)` pairs.
    - Reduces counts across all SWEEPs and writes a compact CSV with
      columns `brickname,lrg_count` to a user-specified S3 prefix.
+  - Default LRG cuts in the Spark job: z < 20.4, r − z > 0.4, z − W1 > 0.8
 
 2. **`emr/submit_phase1p5_emr_cluster.py`**
 

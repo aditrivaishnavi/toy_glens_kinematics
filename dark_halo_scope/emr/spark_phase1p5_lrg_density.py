@@ -567,7 +567,7 @@ def main() -> None:
 
     parser.add_argument("--lrg-z-mag-max", type=float, default=20.4)
     parser.add_argument("--lrg-min-r-minus-z", type=float, default=0.4)
-    parser.add_argument("--lrg-min-z-minus-w1", type=float, default=1.6)
+    parser.add_argument("--lrg-min-z-minus-w1", type=float, default=0.8)
 
     parser.add_argument(
         "--num-partitions",
