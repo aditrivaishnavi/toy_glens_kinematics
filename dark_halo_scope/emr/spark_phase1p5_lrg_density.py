@@ -173,28 +173,52 @@ def process_single_sweep_chunked(
             temp_file_created = True
             
             # Check S3 cache first if prefix provided
+            # Cache files are stored gzip-compressed to save space and transfer time
             s3_cached_path = None
+            cache_hit = False  # Will be set to True if we get a cache hit
+            
             if s3_cache_prefix:
-                s3_cached_path = f"{s3_cache_prefix.rstrip('/')}/{file_basename}"
+                import gzip
+                import shutil
+                
+                s3_cached_path = f"{s3_cache_prefix.rstrip('/')}/{file_basename}.gz"
+                local_gz_path = local_path + ".gz"
                 print(f"[SWEEP] Checking S3 cache: {s3_cached_path}", file=sys.stderr)
                 
-                # Try to copy from S3 cache
+                # Try to copy gzipped file from S3 cache
                 result_cp = subprocess.run(
-                    ["aws", "s3", "cp", s3_cached_path, local_path],
+                    ["aws", "s3", "cp", s3_cached_path, local_gz_path],
                     capture_output=True,
                     text=True,
                     timeout=900
                 )
                 
-                if result_cp.returncode == 0 and os.path.exists(local_path):
+                if result_cp.returncode == 0 and os.path.exists(local_gz_path):
+                    gz_size = os.path.getsize(local_gz_path)
+                    print(f"[SWEEP] ✓ Cache HIT: {file_basename}.gz ({gz_size / 1e6:.1f} MB), decompressing...", file=sys.stderr)
+                    
+                    # Decompress to local_path
+                    with gzip.open(local_gz_path, 'rb') as f_in:
+                        with open(local_path, 'wb') as f_out:
+                            shutil.copyfileobj(f_in, f_out)
+                    
+                    # Clean up gz file
+                    os.remove(local_gz_path)
+                    
                     file_size = os.path.getsize(local_path)
-                    print(f"[SWEEP] ✓ Cache HIT: {file_basename} ({file_size / 1e6:.1f} MB from S3 cache)", file=sys.stderr)
+                    print(f"[SWEEP] ✓ Decompressed to {file_size / 1e6:.1f} MB", file=sys.stderr)
+                    cache_hit = True
                 else:
                     print(f"[SWEEP] Cache MISS: {file_basename}, downloading from source...", file=sys.stderr)
-                    s3_cached_path = None  # Will trigger upload after download
+                    # Clean up any partial download
+                    if os.path.exists(local_gz_path):
+                        os.remove(local_gz_path)
             
             # If not in cache (or no cache), download from HTTP
-            if not os.path.exists(local_path) or os.path.getsize(local_path) == 0:
+            if not cache_hit and (not os.path.exists(local_path) or os.path.getsize(local_path) == 0):
+                import gzip
+                import shutil
+                
                 print(f"[SWEEP] Downloading from HTTP: {original_path}", file=sys.stderr)
                 
                 with requests.get(original_path, stream=True, timeout=600) as resp:
@@ -216,17 +240,36 @@ def process_single_sweep_chunked(
                 download_time = time.time() - start_time
                 print(f"[SWEEP] ✓ Downloaded {file_size / 1e6:.1f} MB in {download_time:.1f}s ({file_size / download_time / 1e6:.1f} MB/s)", file=sys.stderr)
                 
-                # Upload to S3 cache for future runs
+                # Upload to S3 cache as gzip-compressed for future runs
                 if s3_cache_prefix and file_size > 0:
-                    s3_dest = f"{s3_cache_prefix.rstrip('/')}/{file_basename}"
+                    local_gz_path = local_path + ".gz"
+                    s3_dest = f"{s3_cache_prefix.rstrip('/')}/{file_basename}.gz"
+                    
+                    print(f"[SWEEP] Compressing for S3 cache...", file=sys.stderr)
+                    compress_start = time.time()
+                    
+                    # Gzip compress the file
+                    with open(local_path, 'rb') as f_in:
+                        with gzip.open(local_gz_path, 'wb', compresslevel=6) as f_out:
+                            shutil.copyfileobj(f_in, f_out)
+                    
+                    gz_size = os.path.getsize(local_gz_path)
+                    compress_time = time.time() - compress_start
+                    ratio = 100.0 * gz_size / file_size
+                    print(f"[SWEEP] Compressed {file_size / 1e6:.1f} MB → {gz_size / 1e6:.1f} MB ({ratio:.1f}%) in {compress_time:.1f}s", file=sys.stderr)
+                    
                     print(f"[SWEEP] Uploading to S3 cache: {s3_dest}", file=sys.stderr)
                     
                     result_upload = subprocess.run(
-                        ["aws", "s3", "cp", local_path, s3_dest],
+                        ["aws", "s3", "cp", local_gz_path, s3_dest],
                         capture_output=True,
                         text=True,
                         timeout=900
                     )
+                    
+                    # Clean up local gz file
+                    if os.path.exists(local_gz_path):
+                        os.remove(local_gz_path)
                     
                     if result_upload.returncode == 0:
                         print(f"[SWEEP] ✓ Cached to S3: {s3_dest}", file=sys.stderr)
