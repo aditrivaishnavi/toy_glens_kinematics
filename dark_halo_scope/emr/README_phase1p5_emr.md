@@ -149,7 +149,98 @@ The following EMR-related fields in `Phase1p5Config` control the cluster:
 
 ## Troubleshooting
 
-### Common Issues
+### ⚠️ Common Issue: Out of Memory (OOM) Errors
+
+**Symptom:**
+```
+OpenJDK 64-Bit Server VM warning: INFO: os::commit_memory(...) failed; error='Cannot allocate memory' (errno=12)
+Command exiting with ret '134'
+```
+
+**Cause:** The JVM cannot allocate the heap space it needs. This happens when:
+1. Instance type is too small (m5.xlarge has only 16 GB RAM)
+2. Spark memory settings are not configured
+3. Too many executors competing for memory
+
+**Solutions:**
+
+1. **Use larger instances (recommended):**
+   ```bash
+   --instance-type m5.2xlarge  # 32 GB RAM instead of 16 GB
+   ```
+
+2. **Use client deploy mode** (already set in updated code):
+   ```bash
+   --deploy-mode client  # Driver runs on master, not in YARN container
+   ```
+
+3. **Set explicit memory configs** (already set in updated code):
+   ```bash
+   --driver-memory 4g
+   --executor-memory 4g
+   --conf spark.executor.memoryOverhead=1g
+   ```
+
+### ⚠️ Common Issue: Job Takes Hours / Times Out
+
+**Cause:** Processing too many SWEEP files (full-sky scan).
+
+**Solution:** Limit the footprint and/or number of files:
+```bash
+# Process only a small region
+--ra-min 150 --ra-max 200 --dec-min 0 --dec-max 15
+
+# Or limit number of files for testing
+--max-sweeps 10
+```
+
+### Debug Workflow
+
+**Step 1: Test with the debug script first**
+
+Before running the full job, verify your EMR setup works:
+
+```bash
+# SSH to EMR master node, then:
+spark-submit \
+    --deploy-mode client \
+    --master yarn \
+    --driver-memory 2g \
+    --executor-memory 2g \
+    --conf spark.executor.memoryOverhead=512m \
+    /mnt/dark_halo_scope_code/emr/spark_hello_world_debug.py \
+    --output-prefix s3://YOUR_BUCKET/debug
+```
+
+This script:
+- Tests basic Spark RDD operations
+- Verifies numpy and astropy are installed
+- Tests S3 read/write
+- Logs memory and Python version info
+
+**Step 2: Test with a small subset**
+
+```bash
+python -m emr.submit_phase1p5_emr_cluster \
+    --region us-east-2 \
+    --sweep-index-s3 s3://bucket/sweep_urls.txt \
+    --output-prefix s3://bucket/phase1p5_test \
+    --code-archive-s3 s3://bucket/code/dark_halo_scope_code.tgz \
+    --max-sweeps 5 \
+    --ra-min 150 --ra-max 160 --dec-min 0 --dec-max 10
+```
+
+**Step 3: Scale up gradually**
+
+Once the small test succeeds:
+```bash
+# Medium test: 50 files
+--max-sweeps 50
+
+# Full region: remove --max-sweeps
+```
+
+### Other Common Issues
 
 1. **"Access Denied" errors on S3**
    - Ensure your IAM roles have `s3:GetObject`, `s3:PutObject`, and `s3:ListBucket`
@@ -158,19 +249,54 @@ The following EMR-related fields in `Phase1p5Config` control the cluster:
 2. **Bootstrap action failures**
    - Check EMR logs in the S3 log prefix for bootstrap stderr.
    - Ensure `aws s3 cp` can access the code archive location.
+   - Look at: `s3://YOUR_LOG_BUCKET/j-CLUSTERID/node/i-INSTANCEID/bootstrap-actions/`
 
-3. **Spark job failures**
-   - Check the Spark driver/executor logs in EMR logs.
-   - Common issues: missing Python dependencies, incorrect SWEEP paths.
+3. **Spark job failures with no logs**
+   - This usually means the driver died before it could write logs
+   - Use `--deploy-mode client` to run driver on master node (easier to debug)
+   - SSH to master and check `/var/log/spark/` for local logs
 
 4. **Empty output CSV**
-   - Verify the SWEEP index file contains valid URLs or paths.
-   - Check that the RA/Dec bounds match your SWEEP coverage.
+   - Verify the SWEEP index file contains valid URLs or paths
+   - Check that the RA/Dec bounds match your SWEEP coverage
+   - Look at executor stderr for "[SWEEP]" log messages
+
+5. **"File not found" for SWEEP files**
+   - If using HTTP URLs: verify the URLs are accessible (test with `curl`)
+   - If using S3 paths: verify IAM permissions and path format (s3://bucket/key)
 
 ### Viewing Logs
 
-EMR logs are written to the S3 prefix specified in `emr_s3_log_prefix`. You can
-also view logs in the AWS EMR console under the cluster's "Steps" tab.
+EMR logs are written to the S3 prefix specified in `emr_s3_log_prefix`:
+
+```
+s3://YOUR_BUCKET/emr-logs/j-CLUSTERID/
+├── containers/
+│   └── application_*/container_*/  # Executor logs
+├── node/
+│   └── i-INSTANCEID/
+│       ├── applications/spark/    # Spark logs
+│       └── bootstrap-actions/     # Bootstrap stderr
+└── steps/
+    └── s-STEPID/
+        ├── stderr.gz              # Step stderr (most useful!)
+        └── stdout.gz              # Step stdout
+```
+
+You can also view logs in the AWS EMR console under the cluster's "Steps" tab.
+
+### Memory Guidelines by Instance Type
+
+| Instance Type | RAM  | Recommended Config |
+|---------------|------|-------------------|
+| m5.xlarge     | 16 GB | Max 1 executor with 4G heap + 1G overhead (tight!) |
+| m5.2xlarge    | 32 GB | 2-3 executors with 4G heap + 1G overhead each |
+| m5.4xlarge    | 64 GB | 5-6 executors with 4G heap + 1G overhead each |
+| r5.xlarge     | 32 GB | Memory-optimized, good for astropy workloads |
+
+**Rule of thumb**: Each SWEEP file needs ~1-1.5 GB of RAM to process (astropy
+loads the entire FITS table into memory). With 4G executor memory and 1G
+overhead, you can safely process 1 file at a time per executor.
 
 ## Design Notes
 
