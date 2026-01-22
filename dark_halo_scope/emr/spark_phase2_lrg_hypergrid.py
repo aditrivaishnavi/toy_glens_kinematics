@@ -328,16 +328,16 @@ def download_to_local(path: str, s3_cache_prefix: Optional[str] = None) -> Tuple
         # Download from HTTP if not in cache
         if not cache_hit:
             start_time = time.time()
-            print(f"[SWEEP-IO] Downloading from HTTP: {path}", file=sys.stderr)
-            resp = requests.get(path, stream=True, timeout=600)
-            resp.raise_for_status()
+        print(f"[SWEEP-IO] Downloading from HTTP: {path}", file=sys.stderr)
+        resp = requests.get(path, stream=True, timeout=600)
+        resp.raise_for_status()
             total_size = int(resp.headers.get("content-length", 0))
             downloaded = 0
 
-            with open(local_path, "wb") as f:
-                for chunk in resp.iter_content(chunk_size=1 << 20):
-                    if chunk:
-                        f.write(chunk)
+        with open(local_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=1 << 20):
+                if chunk:
+                    f.write(chunk)
                         downloaded += len(chunk)
                         if total_size > 0 and downloaded % (100 * 1024 * 1024) < (1 << 20):
                             pct = 100.0 * downloaded / total_size
@@ -521,7 +521,7 @@ def process_single_sweep(
     # Check if already completed
     if check_success_marker(output_prefix, sweep_basename):
         return  # Skip - already done
-    
+
     print(f"[SWEEP] Starting: {path}", file=sys.stderr)
     local_path, is_temp = download_to_local(path, s3_cache_prefix=s3_cache_prefix)
     print(f"[SWEEP] Using local file: {local_path}", file=sys.stderr)
@@ -530,10 +530,10 @@ def process_single_sweep(
     n_cuts = len(lrg_cuts)
 
     try:
-        with fits.open(local_path, memmap=True) as hdul:
-            data = hdul[1].data
-            n_rows = len(data)
-            print(f"[SWEEP] {path} contains {n_rows} rows", file=sys.stderr)
+    with fits.open(local_path, memmap=True) as hdul:
+        data = hdul[1].data
+        n_rows = len(data)
+        print(f"[SWEEP] {path} contains {n_rows} rows", file=sys.stderr)
 
             # Resolve column names once (they don't change within a file)
             colnames_lower = {c.lower(): c for c in data.columns.names}
@@ -557,11 +557,11 @@ def process_single_sweep(
                 print(f"[SWEEP-ERROR] {e}", file=sys.stderr)
                 return
 
-            for start in range(0, n_rows, chunk_size):
-                stop = min(start + chunk_size, n_rows)
-                chunk = data[start:stop]
-                if len(chunk) == 0:
-                    continue
+        for start in range(0, n_rows, chunk_size):
+            stop = min(start + chunk_size, n_rows)
+            chunk = data[start:stop]
+            if len(chunk) == 0:
+                continue
 
                 # Extract only needed columns as numpy arrays (no full DataFrame copy)
                 # Use .astype() to handle byte order conversion efficiently
@@ -573,14 +573,14 @@ def process_single_sweep(
                 obj_type = np.asarray(chunk[col_type], dtype=str)
                 brickname_arr = np.asarray(chunk[col_brick], dtype=str)
 
-                # Apply footprint filter if requested
-                if None not in (ra_min, ra_max, dec_min, dec_max):
-                    mask_sky = (
+            # Apply footprint filter if requested
+            if None not in (ra_min, ra_max, dec_min, dec_max):
+                mask_sky = (
                         (ra >= ra_min) & (ra <= ra_max) &
                         (dec >= dec_min) & (dec <= dec_max)
-                    )
+                )
                     if not np.any(mask_sky):
-                        continue
+                    continue
                     # Apply mask to all arrays
                     ra = ra[mask_sky]
                     dec = dec[mask_sky]
@@ -594,57 +594,57 @@ def process_single_sweep(
                 # Strip and uppercase for comparison
                 obj_type_clean = np.char.strip(np.char.upper(obj_type))
                 is_gal = obj_type_clean != "PSF"
-                positive_flux = (flux_r > 0) & (flux_z > 0) & (flux_w1 > 0)
+            positive_flux = (flux_r > 0) & (flux_z > 0) & (flux_w1 > 0)
 
-                base_mask = is_gal & positive_flux
-                if not np.any(base_mask):
-                    continue
+            base_mask = is_gal & positive_flux
+            if not np.any(base_mask):
+                continue
 
                 # Apply base mask
-                flux_r = flux_r[base_mask]
-                flux_z = flux_z[base_mask]
-                flux_w1 = flux_w1[base_mask]
+            flux_r = flux_r[base_mask]
+            flux_z = flux_z[base_mask]
+            flux_w1 = flux_w1[base_mask]
                 bricknames = brickname_arr[base_mask]
 
                 # Compute magnitudes
-                mag_r = nanomaggies_to_mag(flux_r)
-                mag_z = nanomaggies_to_mag(flux_z)
-                mag_w1 = nanomaggies_to_mag(flux_w1)
+            mag_r = nanomaggies_to_mag(flux_r)
+            mag_z = nanomaggies_to_mag(flux_z)
+            mag_w1 = nanomaggies_to_mag(flux_w1)
 
-                r_minus_z = mag_r - mag_z
-                z_minus_w1 = mag_z - mag_w1
+            r_minus_z = mag_r - mag_z
+            z_minus_w1 = mag_z - mag_w1
 
                 # Build cut masks
-                cut_masks = []
-                for cut in lrg_cuts:
-                    m = (
-                        (mag_z < cut["z_mag_max"])
-                        & (r_minus_z > cut["rz_min"])
-                        & (z_minus_w1 > cut["zw1_min"])
-                    )
-                    cut_masks.append(m)
+            cut_masks = []
+            for cut in lrg_cuts:
+                m = (
+                    (mag_z < cut["z_mag_max"])
+                    & (r_minus_z > cut["rz_min"])
+                    & (z_minus_w1 > cut["zw1_min"])
+                )
+                cut_masks.append(m)
 
                 # Aggregate by brick using vectorized operations
-                unique_bricks, inverse = np.unique(bricknames, return_inverse=True)
+            unique_bricks, inverse = np.unique(bricknames, return_inverse=True)
                 
                 # Use bincount for fast counting (O(n) instead of O(n*k))
                 n_unique = len(unique_bricks)
                 total_per_brick = np.bincount(inverse, minlength=n_unique)
                 
-                for i, brick in enumerate(unique_bricks):
-                    vec = counts.get(brick)
-                    if vec is None:
-                        vec = np.zeros(1 + n_cuts, dtype=np.int64)
-                        counts[brick] = vec
+            for i, brick in enumerate(unique_bricks):
+                vec = counts.get(brick)
+                if vec is None:
+                    vec = np.zeros(1 + n_cuts, dtype=np.int64)
+                    counts[brick] = vec
 
                     vec[0] += int(total_per_brick[i])
                     
                     # For each cut, count how many pass in this brick
-                    for j, m in enumerate(cut_masks, start=1):
+                for j, m in enumerate(cut_masks, start=1):
                         # bincount with mask: count only where cut passes
                         cut_counts = np.bincount(inverse, weights=m.astype(np.int64), minlength=n_unique)
                         vec[j] += int(cut_counts[i])
-                
+
                 # Explicit cleanup to help garbage collector
                 del ra, dec, flux_r, flux_z, flux_w1, obj_type, brickname_arr
                 del mag_r, mag_z, mag_w1, r_minus_z, z_minus_w1, cut_masks, bricknames
@@ -652,9 +652,9 @@ def process_single_sweep(
     finally:
         # Clean up temporary file
         if is_temp and os.path.exists(local_path):
-            try:
-                os.remove(local_path)
-                print(f"[SWEEP] Deleted temp file: {local_path}", file=sys.stderr)
+        try:
+            os.remove(local_path)
+            print(f"[SWEEP] Deleted temp file: {local_path}", file=sys.stderr)
             except OSError as e:
                 print(f"[SWEEP] ⚠ Failed to delete temp file {local_path}: {e}", file=sys.stderr)
         sys.stderr.flush()
@@ -867,14 +867,14 @@ def main():
             sys.stderr.flush()
             
             process_single_sweep(
-                path=path,
-                ra_min=bc_ra_min.value,
-                ra_max=bc_ra_max.value,
-                dec_min=bc_dec_min.value,
-                dec_max=bc_dec_max.value,
-                chunk_size=int(bc_chunk_size.value),
-                s3_cache_prefix=bc_s3_cache_prefix.value,
-                lrg_cuts=bc_lrg_cuts.value,
+            path=path,
+            ra_min=bc_ra_min.value,
+            ra_max=bc_ra_max.value,
+            dec_min=bc_dec_min.value,
+            dec_max=bc_dec_max.value,
+            chunk_size=int(bc_chunk_size.value),
+            s3_cache_prefix=bc_s3_cache_prefix.value,
+            lrg_cuts=bc_lrg_cuts.value,
                 output_prefix=bc_output_prefix.value,
             )
             
@@ -893,7 +893,7 @@ def main():
     rdd.foreach(map_fn)
     
     print("[MAIN] All SWEEP files processed. Aggregating results...", file=sys.stderr)
-    
+
     # Aggregate all intermediate CSVs into final result
     aggregate_intermediate_csvs(spark, args.output_prefix, lrg_cuts)
 

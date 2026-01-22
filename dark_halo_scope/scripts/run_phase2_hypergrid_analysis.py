@@ -131,7 +131,7 @@ def fetch_bricks_for_hypergrid(
     pending_chunks: List[pd.DataFrame] = []
     flush_every = 10  # Flush to disk every N batches
     start_time = time.time()
-    
+
     for i in range(0, n_total, batch_size):
         batch = bricks_to_fetch[i : i + batch_size]
         in_list = ",".join(f"'{b}'" for b in batch)
@@ -153,7 +153,7 @@ def fetch_bricks_for_hypergrid(
             eta_str = f", ETA: {remaining/60:.1f}min"
         else:
             eta_str = ""
-        
+
         print(
             f"[BRICKS] Batch {batch_num}/{n_batches} ({pct:.0f}%) - {len(batch)} bricks [{elapsed:.0f}s{eta_str}]",
             flush=True,
@@ -283,14 +283,14 @@ def build_adjacency(nodes: List[BrickNode], max_sep_deg: float = 0.3, verify: bo
     # For small datasets, use simple O(n^2) approach
     if n_nodes < 500:
         print(f"[ADJACENCY] Using simple O(n²) for small dataset...", flush=True)
-        for i, bi in enumerate(nodes):
-            for j in range(i + 1, len(nodes)):
-                bj = nodes[j]
-                dra = _ra_delta_deg(bi.ra, bj.ra)
-                ddec = abs(bi.dec - bj.dec)
-                if dra <= max_sep_deg and ddec <= max_sep_deg:
-                    adj[bi.index].append(bj.index)
-                    adj[bj.index].append(bi.index)
+    for i, bi in enumerate(nodes):
+        for j in range(i + 1, len(nodes)):
+            bj = nodes[j]
+            dra = _ra_delta_deg(bi.ra, bj.ra)
+            ddec = abs(bi.dec - bj.dec)
+            if dra <= max_sep_deg and ddec <= max_sep_deg:
+                adj[bi.index].append(bj.index)
+                adj[bj.index].append(bi.index)
         elapsed = time.time() - start_time
         total_edges = sum(len(v) for v in adj.values()) // 2
         print(f"[ADJACENCY] ✓ Built graph: {total_edges} edges in {elapsed:.1f}s", flush=True)
@@ -503,7 +503,7 @@ def analyze_hypergrid(
         )
 
     print(f"[PHASE2] Bricks loaded in {_time.time() - step_start:.1f}s", flush=True)
-    
+
     # Merge hypergrid with bricks
     print(f"[PHASE2] === Step 3/6: Merging and computing densities ===", flush=True)
     step_start = _time.time()
@@ -742,7 +742,7 @@ def analyze_hypergrid(
                 )
 
     print(f"[PHASE2] Step 4 completed in {_time.time() - step_start:.1f}s", flush=True)
-    
+
     # -----------------------------
     # Write outputs
     # -----------------------------
@@ -762,7 +762,7 @@ def analyze_hypergrid(
     print(f"[PHASE2] Wrote region membership table to {regions_bricks_path}", flush=True)
 
     print(f"[PHASE2] Step 5 completed in {_time.time() - step_start:.1f}s", flush=True)
-    
+
     # -----------------------------
     # Markdown report
     # -----------------------------
@@ -1127,15 +1127,15 @@ def main(argv: Optional[List[str]] = None) -> None:
             hypergrid_csv=args.hypergrid_csv,
             output_dir=variant_output_dir,
             bricks_csv=bricks_csv_to_use,
-            tap_url=args.tap_url,
-            ra_min=args.ra_min,
-            ra_max=args.ra_max,
-            dec_min=args.dec_min,
-            dec_max=args.dec_max,
+        tap_url=args.tap_url,
+        ra_min=args.ra_min,
+        ra_max=args.ra_max,
+        dec_min=args.dec_min,
+        dec_max=args.dec_max,
             baseline_variant=variant,
-            high_percentiles=args.percentiles,
-            min_region_area_deg2=args.min_region_area_deg2,
-            max_region_area_deg2=args.max_region_area_deg2,
+        high_percentiles=args.percentiles,
+        min_region_area_deg2=args.min_region_area_deg2,
+        max_region_area_deg2=args.max_region_area_deg2,
             verify_adjacency=args.verify_adjacency,
         )
     

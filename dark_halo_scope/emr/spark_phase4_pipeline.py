@@ -73,6 +73,17 @@ except Exception:
     fits = None
     WCS = None
 
+# Lenstronomy for realistic SIE lens modeling (optional, falls back to SIS if unavailable)
+try:
+    from lenstronomy.LensModel.lens_model import LensModel
+    from lenstronomy.LightModel.light_model import LightModel
+    from lenstronomy.ImSim.image_model import ImageModel
+    from lenstronomy.Data.imaging_data import ImageData
+    from lenstronomy.Data.psf import PSF
+    LENSTRONOMY_AVAILABLE = True
+except Exception:
+    LENSTRONOMY_AVAILABLE = False
+
 
 # --------------------------
 # S3 utilities
@@ -107,19 +118,45 @@ def s3_prefix_exists(uri: str) -> bool:
     return "Contents" in resp and len(resp["Contents"]) > 0
 
 
+def s3_success_marker_exists(uri: str) -> bool:
+    """True if _SUCCESS marker exists under this prefix (indicates complete Spark write)."""
+    bucket, key = _parse_s3(uri)
+    if key and not key.endswith("/"):
+        key = key + "/"
+    success_key = key + "_SUCCESS"
+    c = _s3_client()
+    try:
+        c.head_object(Bucket=bucket, Key=success_key)
+        return True
+    except Exception:
+        return False
+
+
 def write_text_to_s3(uri: str, text: str) -> None:
     bucket, key = _parse_s3(uri)
     _s3_client().put_object(Bucket=bucket, Key=key, Body=text.encode("utf-8"))
 
 
 def stage_should_skip(output_uri: str, skip_if_exists: bool, force: bool) -> bool:
+    """Check if output already exists and is complete (has _SUCCESS marker)."""
     if force:
         return False
     if not skip_if_exists:
         return False
     if _is_s3(output_uri):
-        return s3_prefix_exists(output_uri)
-    return os.path.exists(output_uri)
+        # Check for _SUCCESS marker, not just any files (handles incomplete writes)
+        return s3_success_marker_exists(output_uri)
+    # For local paths, check for _SUCCESS file
+    success_path = os.path.join(output_uri, "_SUCCESS")
+    return os.path.exists(success_path)
+
+
+def read_parquet_safe(spark, path: str):
+    """Read parquet with basePath set to handle leftover _metadata_temp dirs."""
+    # Normalize path: remove trailing slash for consistency
+    base = path.rstrip("/")
+    # Use basePath option to avoid partition discovery issues with temp dirs
+    return spark.read.option("basePath", base).parquet(base)
 
 
 # --------------------------
@@ -271,6 +308,230 @@ def inject_sis_stamp(
     return src.astype(np.float32)
 
 
+# =========================================================================
+# SIE (SINGULAR ISOTHERMAL ELLIPSOID) INJECTION USING LENSTRONOMY
+# =========================================================================
+# This is a more realistic lens model than SIS, including:
+# - Elliptical mass distribution (not just circular)
+# - Proper ray tracing via lenstronomy
+# - Sersic source profile (more realistic than Gaussian)
+# - PSF convolution using actual PSF model
+#
+# Falls back to SIS if lenstronomy is not installed.
+# =========================================================================
+
+def inject_sie_stamp(
+    stamp_shape: Tuple[int, int],
+    theta_e_arcsec: float,
+    src_total_flux: float,
+    src_reff_arcsec: float,
+    src_e: float,  # Source ellipticity (0-1)
+    lens_e: float,  # Lens ellipticity (0-1)
+    shear: float,
+    rng: np.random.RandomState,
+    psf_fwhm_arcsec: Optional[float] = None,
+) -> Tuple[np.ndarray, Dict[str, float]]:
+    """
+    Generate a lensed source stamp using SIE lens model via lenstronomy.
+    
+    Returns:
+        Tuple of (stamp array, physics_metrics dict)
+        
+    Physics metrics include:
+        - magnification: Total magnification of the source
+        - tangential_stretch: Tangential eigenvalue of magnification tensor
+        - radial_stretch: Radial eigenvalue
+        - expected_arc_radius: Approximate arc radius in arcsec
+    """
+    if not LENSTRONOMY_AVAILABLE:
+        # Fallback to SIS with empty physics metrics
+        stamp = inject_sis_stamp(
+            stamp_shape, theta_e_arcsec, src_total_flux, 
+            src_reff_arcsec, src_e, shear, rng, psf_fwhm_arcsec
+        )
+        return stamp, {"magnification": None, "tangential_stretch": None, 
+                       "radial_stretch": None, "expected_arc_radius": None}
+    
+    h, w = stamp_shape
+    
+    # Random source position offset (within caustic region for lensing)
+    # Keep source within ~0.5 * theta_e to ensure strong lensing
+    max_offset = min(0.4, 0.5 * theta_e_arcsec)
+    src_x = rng.uniform(-max_offset, max_offset)
+    src_y = rng.uniform(-max_offset, max_offset)
+    
+    # Convert ellipticity to lenstronomy format (e1, e2)
+    phi_lens = rng.uniform(0, np.pi)  # Random orientation
+    e1_lens = lens_e * np.cos(2 * phi_lens)
+    e2_lens = lens_e * np.sin(2 * phi_lens)
+    
+    phi_src = rng.uniform(0, np.pi)
+    e1_src = src_e * np.cos(2 * phi_src)
+    e2_src = src_e * np.sin(2 * phi_src)
+    
+    # Setup lens model: SIE + external shear
+    lens_model_list = ['SIE', 'SHEAR']
+    lens_model = LensModel(lens_model_list)
+    
+    kwargs_lens = [
+        {'theta_E': theta_e_arcsec, 'e1': e1_lens, 'e2': e2_lens, 'center_x': 0, 'center_y': 0},
+        {'gamma1': shear, 'gamma2': 0, 'ra_0': 0, 'dec_0': 0}
+    ]
+    
+    # Setup source model: Sersic profile
+    light_model_list = ['SERSIC_ELLIPSE']
+    light_model = LightModel(light_model_list)
+    
+    # Convert flux to amplitude (approximate)
+    # Sersic total flux ~ 2 * pi * n * exp(b_n) * Gamma(2n) * R_eff^2 * I_eff / b_n^(2n)
+    # For n=1 (exponential), this simplifies
+    amplitude = src_total_flux / (2 * np.pi * src_reff_arcsec**2 + 1e-10)
+    
+    kwargs_source = [{
+        'amp': amplitude,
+        'R_sersic': src_reff_arcsec,
+        'n_sersic': 1.0,  # Exponential profile
+        'e1': e1_src,
+        'e2': e2_src,
+        'center_x': src_x,
+        'center_y': src_y,
+    }]
+    
+    # Setup image data
+    kwargs_data = {
+        'image_data': np.zeros((h, w)),
+        'transform_pix2angle': np.array([[PIX_SCALE_ARCSEC, 0], [0, PIX_SCALE_ARCSEC]]),
+        'ra_at_xy_0': -(w - 1) / 2.0 * PIX_SCALE_ARCSEC,
+        'dec_at_xy_0': -(h - 1) / 2.0 * PIX_SCALE_ARCSEC,
+    }
+    data_class = ImageData(**kwargs_data)
+    
+    # Setup PSF
+    if psf_fwhm_arcsec is not None and psf_fwhm_arcsec > 0:
+        psf_class = PSF(psf_type='GAUSSIAN', fwhm=psf_fwhm_arcsec)
+    else:
+        psf_class = PSF(psf_type='NONE')
+    
+    # Create image model and generate lensed image
+    image_model = ImageModel(data_class, psf_class, lens_model, light_model)
+    stamp = image_model.image(kwargs_lens, kwargs_source).astype(np.float32)
+    
+    # =========================================================================
+    # PHYSICS-BASED VALIDATION METRICS
+    # =========================================================================
+    # These metrics can be used downstream to verify physical consistency:
+    # 1. Magnification should be > 1 for strong lensing
+    # 2. Arc radius should be approximately theta_e (Einstein radius)
+    # 3. Tangential stretch should be > radial stretch near Einstein ring
+    #
+    # FIX (2026-01-22): Evaluate at IMAGE-PLANE position, not source-plane.
+    # For SIE, the Einstein ring is at radius theta_e from lens center.
+    # We evaluate at (theta_e, 0) as a representative image-plane point.
+    # =========================================================================
+    
+    # Compute magnification at IMAGE-PLANE position near Einstein ring
+    # Use (theta_e, 0) as representative point - this is where arcs form
+    try:
+        # Image-plane position at Einstein radius (not source position!)
+        image_x = theta_e_arcsec  # At Einstein radius
+        image_y = 0.0  # On the x-axis
+        
+        det_A = lens_model.hessian(image_x, image_y, kwargs_lens)
+        # det_A returns (f_xx, f_xy, f_yx, f_yy)
+        f_xx, f_xy, f_yx, f_yy = det_A
+        kappa = 0.5 * (f_xx + f_yy)  # Convergence
+        gamma1 = 0.5 * (f_xx - f_yy)  # Shear component 1
+        gamma2 = f_xy  # Shear component 2
+        gamma = np.sqrt(gamma1**2 + gamma2**2)
+        
+        # Eigenvalues of magnification tensor
+        # At the Einstein ring, tangential eigenvalue diverges (critical curve)
+        tangential = 1 / (1 - kappa - gamma + 1e-10)  # Add small epsilon to avoid div by 0
+        radial = 1 / (1 - kappa + gamma + 1e-10)
+        magnification = abs(tangential * radial)
+        
+        # Cap magnification to avoid infinities near critical curve
+        magnification = min(magnification, 1000.0)
+        
+        # Expected arc radius ~ theta_e for SIE
+        expected_arc_radius = theta_e_arcsec
+        
+        physics_metrics = {
+            "magnification": float(magnification) if np.isfinite(magnification) else None,
+            "tangential_stretch": float(abs(tangential)) if np.isfinite(tangential) else None,
+            "radial_stretch": float(abs(radial)) if np.isfinite(radial) else None,
+            "expected_arc_radius": float(expected_arc_radius),
+        }
+    except Exception:
+        physics_metrics = {
+            "magnification": None, "tangential_stretch": None,
+            "radial_stretch": None, "expected_arc_radius": theta_e_arcsec,
+        }
+    
+    return stamp, physics_metrics
+
+
+def validate_physics_consistency(
+    theta_e_arcsec: float,
+    arc_snr: Optional[float],
+    magnification: Optional[float],
+    tangential_stretch: Optional[float],
+    psfsize_r: Optional[float],
+) -> Tuple[bool, List[str]]:
+    """
+    Validate that injected lens parameters are physically consistent.
+    
+    =========================================================================
+    PHYSICS VALIDATION RULES:
+    =========================================================================
+    1. DETECTABILITY: Arc should be detectable only if theta_e > 0.5 * PSF FWHM
+       - Below this, lensing signal is unresolved
+    
+    2. MAGNIFICATION: Strong lensing requires magnification > 1
+       - Typical values for galaxy-scale lenses: 2-100
+       
+    3. TANGENTIAL STRETCH: Should be > 1 for arc formation
+       - This creates the elongated arc morphology
+       
+    4. SNR CONSISTENCY: High theta_e with good seeing should give high SNR
+       - Flags potential injection bugs if this fails
+    =========================================================================
+    
+    Returns:
+        Tuple of (is_valid, list of warning messages)
+    """
+    warnings = []
+    is_valid = True
+    
+    # Rule 1: Detectability threshold
+    if psfsize_r is not None and theta_e_arcsec > 0:
+        theta_over_psf = theta_e_arcsec / psfsize_r
+        if theta_over_psf < 0.5:
+            warnings.append(f"theta_e ({theta_e_arcsec:.2f}) < 0.5 * PSF ({psfsize_r:.2f}): unresolved")
+    
+    # Rule 2: Magnification check
+    if magnification is not None:
+        if magnification < 1.0:
+            warnings.append(f"Magnification ({magnification:.2f}) < 1: not strong lensing")
+            is_valid = False
+        elif magnification > 1000:
+            warnings.append(f"Magnification ({magnification:.2f}) > 1000: near caustic, may be unrealistic")
+    
+    # Rule 3: Tangential stretch check
+    if tangential_stretch is not None:
+        if tangential_stretch < 1.0:
+            warnings.append(f"Tangential stretch ({tangential_stretch:.2f}) < 1: no arc elongation")
+    
+    # Rule 4: SNR consistency (heuristic)
+    if arc_snr is not None and theta_e_arcsec > 0 and psfsize_r is not None:
+        # Expect SNR to scale roughly with (theta_e / psf)^2
+        expected_min_snr = 2.0 * (theta_e_arcsec / psfsize_r) ** 2
+        if arc_snr < expected_min_snr * 0.1:  # Allow 10× variation
+            warnings.append(f"SNR ({arc_snr:.1f}) much lower than expected (~{expected_min_snr:.1f})")
+    
+    return is_valid, warnings
+
+
 def encode_npz(arrs: Dict[str, np.ndarray]) -> bytes:
     bio = io.BytesIO()
     np.savez_compressed(bio, **arrs)
@@ -302,15 +563,14 @@ def build_coadd_urls(coadd_base_url: str, brickname: str, bands: List[str]) -> D
 
 def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> None:
     out_root = f"{args.output_s3.rstrip('/')}/phase4a/{args.variant}"
-    if stage_should_skip(out_root, args.skip_if_exists, args.force):
-        print(f"[4a] Skip (exists): {out_root}")
-        return
+    # NOTE: Per-experiment skip checks happen inside the loop below.
+    # Do NOT skip the entire stage here - we need to check each experiment individually.
 
     parent_path = args.parent_s3
     bricks_path = args.bricks_with_region_s3
     selections_path = args.region_selections_s3
 
-    df_parent = spark.read.parquet(parent_path)
+    df_parent = read_parquet_safe(spark, parent_path)
 
     # Expected parent fields (minimal)
     needed_cols = [
@@ -325,7 +585,7 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
     df_parent = df_parent.select(*needed_cols)
 
     # Bricks-with-region provides observing conditions per brick
-    df_bricks = spark.read.parquet(bricks_path)
+    df_bricks = read_parquet_safe(spark, bricks_path)
     for c in ["brickname", "psfsize_r", "psfdepth_r", "ebv"]:
         if c not in df_bricks.columns:
             raise RuntimeError(f"bricks_with_region missing required column: {c}")
@@ -334,7 +594,7 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
     df_parent = df_parent.join(df_bricks, on="brickname", how="left")
 
     # Region selections (3b)
-    df_sel = spark.read.parquet(selections_path)
+    df_sel = read_parquet_safe(spark, selections_path)
     for c in ["selection_set_id", "selection_strategy", "ranking_mode", "region_id", "region_split"]:
         if c not in df_sel.columns:
             raise RuntimeError(f"region_selections missing required column: {c}")
@@ -477,47 +737,100 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
                 base = base.withColumn("row_id", F.xxhash64("brickname", "ra", "dec", "zmag", "rmag"))
 
                 if tier in ("debug", "grid"):
+                    # =========================================================================
+                    # DEBUG/GRID TIER SAMPLING LOGIC
+                    # =========================================================================
+                    # Goal: For each (selection_set, split), sample n_per_config galaxies,
+                    # then crossJoin with n_cfg configs to get n_per_config × n_cfg tasks.
+                    #
+                    # IMPORTANT: We sample n_per_config galaxies (NOT n_per_config × n_cfg).
+                    # The crossJoin at the end multiplies by n_cfg to get the final task count.
+                    #
+                    # Example with n_per_config=40, n_cfg=360:
+                    #   - Sample 40 galaxies per (selection_set, split)
+                    #   - CrossJoin with 360 configs → 40 × 360 = 14,400 tasks per (set, split)
+                    #   - With 12 sets × 3 splits × 2 replicates → ~1.04M total tasks
+                    #
+                    # BUG FIX (2026-01-22): Previously this was n_per_config × n_cfg, which
+                    # caused O(n²) scaling: sampling 14,400 galaxies then crossJoining with
+                    # 360 configs gave 5.18M tasks per (set, split) → 325M total. Fixed below.
+                    # =========================================================================
+                    
                     cfg_df = grid_dfs[grid_name]
                     n_cfg = cfg_df.count()
 
-                    # Sample a base pool big enough so that (n_per_config * n_cfg) per split exists.
-                    # We attempt to evenly cover psf/depth bins.
-                    per_split_target = int(n_per_config) * int(n_cfg)
-                    bins = 16  # 4x4 from quantiles
+                    # Sample n_per_config galaxies per (selection_set, split).
+                    # The crossJoin below will multiply this by n_cfg to get final task count.
+                    # DO NOT multiply by n_cfg here - that was the O(n²) bug!
+                    per_split_target = int(n_per_config)  # FIX: was n_per_config * n_cfg (wrong!)
+                    
+                    # Stratified sampling across PSF/depth bins (4×4 = 16 bins)
+                    bins = 16
                     per_bin = int(math.ceil(per_split_target / bins))
 
+                    # First pass: sample evenly across PSF/depth bins within each (selection_set, split)
                     wbin = Window.partitionBy("selection_set_id", "region_split", "psf_bin", "depth_bin").orderBy(F.rand(args.split_seed))
                     tmp = base.withColumn("rn_bin", F.row_number().over(wbin))
                     tmp = tmp.filter(F.col("rn_bin") <= F.lit(per_bin))
 
-                    # Cap to the per-split target
+                    # Second pass: cap to exact per_split_target per (selection_set, split)
                     wtot = Window.partitionBy("selection_set_id", "region_split").orderBy(F.rand(args.split_seed + 1))
                     tmp = tmp.withColumn("rn_tot", F.row_number().over(wtot))
                     tmp = tmp.filter(F.col("rn_tot") <= F.lit(per_split_target))
 
-                    # Cross join with configs: each selected object gets every config
+                    # CrossJoin: each selected galaxy gets every config from the grid.
+                    # This is where the n_cfg multiplication happens (correctly).
+                    # Final tasks per (selection_set, split) = per_split_target × n_cfg
                     tasks = tmp.crossJoin(F.broadcast(cfg_df))
 
                 else:
-                    # train tier: large dataset, assign a single config (or control) per object
+                    # =========================================================================
+                    # TRAIN TIER SAMPLING LOGIC
+                    # =========================================================================
+                    # Goal: Create a large, diverse training dataset for ML/PINN training.
+                    #
+                    # KEY DIFFERENCE FROM DEBUG/GRID:
+                    # - Debug/Grid: Each galaxy gets EVERY config (crossJoin) for systematic grid
+                    # - Train: Each galaxy gets ONE config (random assignment) for training variety
+                    #
+                    # n_total_per_split samples this many galaxies PER (selection_set, split).
+                    # With 12 selection sets × 3 splits × 2 replicates:
+                    #   200k × 12 × 3 × 2 ≈ 14.4M tasks (actual ~10.65M due to filtering)
+                    #
+                    # This is INTENTIONAL - we want coverage across all selection strategies.
+                    # Each selection_set represents a different region ranking approach, so
+                    # having samples from each gives the model diverse training examples.
+                    #
+                    # Control samples: control_frac (default 50%) get theta_e=0 (no lens).
+                    # These are negative examples for the classifier.
+                    # =========================================================================
+                    
                     cfg_df = grid_dfs[grid_name]
                     n_cfg = cfg_df.count()
-                    per_split_target = int(n_total)
+                    per_split_target = int(n_total)  # Samples this many per (selection_set, split)
 
+                    # Stratified sampling across PSF/depth bins (4×4 = 16 bins)
                     wbin = Window.partitionBy("selection_set_id", "region_split", "psf_bin", "depth_bin").orderBy(F.rand(args.split_seed))
                     per_bin = int(math.ceil(per_split_target / 16))
                     tmp = base.withColumn("rn_bin", F.row_number().over(wbin)).filter(F.col("rn_bin") <= F.lit(per_bin))
+                    
+                    # Cap to exact per_split_target per (selection_set, split)
                     wtot = Window.partitionBy("selection_set_id", "region_split").orderBy(F.rand(args.split_seed + 1))
                     tmp = tmp.withColumn("rn_tot", F.row_number().over(wtot)).filter(F.col("rn_tot") <= F.lit(per_split_target))
 
-                    # Control assignment
+                    # Control assignment: randomly mark control_frac of samples as controls
+                    # Controls have theta_e=0 (no injection) and serve as negative examples
                     tmp = tmp.withColumn("is_control", (F.rand(args.split_seed + 7) < F.lit(control_frac)).cast("int"))
+                    
+                    # Assign each galaxy ONE config (via modulo hash) - NOT crossJoin!
+                    # This gives variety without the O(n×m) explosion of debug/grid tiers
                     tmp = tmp.withColumn("cfg_idx", (F.pmod(F.abs(F.col("row_id")), F.lit(n_cfg))).cast("int"))
 
                     cfg_df2 = cfg_df.withColumn("cfg_idx", F.row_number().over(Window.orderBy("config_id")) - 1)
                     tasks = tmp.join(F.broadcast(cfg_df2), on="cfg_idx", how="left")
 
-                    # If control, zero out lens params
+                    # For control samples, zero out all injection parameters
+                    # theta_e=0 means no lensing arc will be injected
                     tasks = tasks.withColumn("theta_e_arcsec", F.when(F.col("is_control") == 1, F.lit(0.0)).otherwise(F.col("theta_e_arcsec")))
                     tasks = tasks.withColumn("src_dmag", F.when(F.col("is_control") == 1, F.lit(0.0)).otherwise(F.col("src_dmag")))
                     tasks = tasks.withColumn("src_reff_arcsec", F.when(F.col("is_control") == 1, F.lit(0.0)).otherwise(F.col("src_reff_arcsec")))
@@ -573,11 +886,18 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
                 ]
                 tasks_out = tasks.select(*keep)
 
-                # Write parquet + a single CSV shard for convenience
+                # Write parquet + CSV for convenience
                 tasks_out.write.mode("overwrite").parquet(out_path)
 
                 csv_path = f"{out_path}_csv"
-                tasks_out.coalesce(1).write.mode("overwrite").option("header", True).csv(csv_path)
+                # For train tier (large manifests), avoid coalesce(1) bottleneck
+                if tier == "train":
+                    # Write as multiple CSV files (faster for millions of rows)
+                    tasks_out.repartition(20).write.mode("overwrite").option("header", True).csv(csv_path)
+                    print(f"[4a] Train tier: wrote CSV with 20 partitions to avoid bottleneck")
+                else:
+                    # Small manifests: single file for convenience
+                    tasks_out.coalesce(1).write.mode("overwrite").option("header", True).csv(csv_path)
 
                 all_manifest_paths.append(out_path)
                 print(f"[4a] Wrote manifest: {out_path}")
@@ -585,7 +905,7 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
     # Emit bricks manifest across all experiments
     df_all = None
     for p in all_manifest_paths:
-        dfm = spark.read.parquet(p).select("experiment_id", "brickname").dropDuplicates()
+        dfm = read_parquet_safe(spark, p).select("experiment_id", "brickname").dropDuplicates()
         df_all = dfm if df_all is None else df_all.unionByName(dfm)
 
     bricks_out = f"{out_root}/bricks_manifest"
@@ -599,37 +919,138 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
 # Stage 4b: Coadd cache
 # --------------------------
 
-def _download_http(url: str, out_path: str, timeout_s: int = 120) -> None:
+def _download_http(
+    url: str,
+    out_path: str,
+    timeout_s: int = 120,
+    max_retries: int = 5,
+    base_delay_s: float = 1.0,
+    max_delay_s: float = 60.0,
+) -> None:
+    """
+    Download a file from HTTP with exponential backoff and jitter on failure.
+    
+    =========================================================================
+    RETRY STRATEGY:
+    - Uses exponential backoff: delay = base_delay * 2^attempt
+    - Adds jitter (±25%) to prevent thundering herd when many workers retry
+    - Caps delay at max_delay_s to avoid excessive waits
+    - Retries on: connection errors, timeouts, 5xx server errors
+    - Does NOT retry on: 404 (not found), 403 (forbidden)
+    
+    Example with base_delay=1s:
+      Attempt 1: immediate
+      Attempt 2: ~1s delay (0.75-1.25s with jitter)
+      Attempt 3: ~2s delay (1.5-2.5s with jitter)
+      Attempt 4: ~4s delay (3-5s with jitter)
+      Attempt 5: ~8s delay (6-10s with jitter)
+    =========================================================================
+    """
+    import random
+    
     if requests is None:
         raise RuntimeError("requests not available; ensure bootstrap installed it")
-    with requests.get(url, stream=True, timeout=timeout_s) as r:
-        r.raise_for_status()
-        with open(out_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=1024 * 1024):
-                if chunk:
-                    f.write(chunk)
+    
+    last_exception = None
+    for attempt in range(max_retries):
+        try:
+            with requests.get(url, stream=True, timeout=timeout_s) as r:
+                # Don't retry client errors (4xx) except 429 (rate limit)
+                if 400 <= r.status_code < 500 and r.status_code != 429:
+                    r.raise_for_status()  # Will raise immediately, no retry
+                
+                r.raise_for_status()
+                
+                with open(out_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            f.write(chunk)
+                return  # Success!
+                
+        except requests.exceptions.RequestException as e:
+            last_exception = e
+            
+            # Check if this is a non-retryable error
+            if hasattr(e, 'response') and e.response is not None:
+                status = e.response.status_code
+                if 400 <= status < 500 and status != 429:
+                    # Client error (not rate limit) - don't retry
+                    raise
+            
+            if attempt < max_retries - 1:
+                # Calculate delay with exponential backoff
+                delay = base_delay_s * (2 ** attempt)
+                delay = min(delay, max_delay_s)
+                
+                # Add jitter (±25%)
+                jitter = delay * 0.25 * (2 * random.random() - 1)
+                delay += jitter
+                
+                print(f"  [retry] Attempt {attempt + 1}/{max_retries} failed for {url}: {e}. "
+                      f"Retrying in {delay:.1f}s...")
+                time.sleep(delay)
+    
+    # All retries exhausted
+    raise RuntimeError(
+        f"Failed to download {url} after {max_retries} attempts. Last error: {last_exception}"
+    )
 
 
 def stage_4b_cache_coadds(spark: SparkSession, args: argparse.Namespace) -> None:
+    """
+    Cache DR10 coadd images from NERSC to S3 for all required bricks.
+    
+    =========================================================================
+    CHECKPOINTING AND RESUMABILITY:
+    =========================================================================
+    This stage is designed for robust resumability:
+    
+    1. PER-BRICK IDEMPOTENCY: Each brick checks if it's already cached in S3
+       before downloading. If cached, it yields success immediately.
+    
+    2. ASSETS MANIFEST: After each run, an assets_manifest is written with
+       per-brick success/failure status. This serves as a checkpoint.
+    
+    3. RETRY WITH BACKOFF: _download_http uses exponential backoff (up to 5
+       retries) with jitter to handle transient network failures.
+    
+    4. FAILURE ISOLATION: If a brick fails, other bricks continue. Failed
+       bricks are recorded with error messages in the manifest.
+    
+    5. RESUMING A FAILED RUN: Simply re-run with same parameters. Successful
+       bricks are skipped (via S3 cache check), only failed bricks retry.
+    
+    6. FORCE RE-DOWNLOAD: Use --force to ignore cache and re-download all.
+    
+    To check progress during a run:
+      aws s3 ls s3://bucket/coadd_cache/ --recursive | wc -l
+    
+    To identify failed bricks after a run:
+      spark.read.parquet("s3://bucket/phase4b/.../assets_manifest")
+           .filter(F.col("ok") == 0).show()
+    =========================================================================
+    """
     out_root = f"{args.output_s3.rstrip('/')}/phase4b/{args.variant}"
-    if stage_should_skip(out_root, args.skip_if_exists, args.force):
-        print(f"[4b] Skip (exists): {out_root}")
-        return
+    # NOTE: Per-brick caching is idempotent - each brick checks cache before downloading.
+    # Do NOT skip entire stage based on output dir existing.
 
     if not _is_s3(args.coadd_s3_cache_prefix):
         raise ValueError("--coadd-s3-cache-prefix must be an s3:// uri")
 
     manifests_root = f"{args.output_s3.rstrip('/')}/phase4a/{args.variant}/bricks_manifest"
-    df_bricks = spark.read.parquet(manifests_root).select("brickname").dropDuplicates()
+    df_bricks = read_parquet_safe(spark, manifests_root).select("brickname").dropDuplicates()
+    
+    total_bricks = df_bricks.count()
+    print(f"[4b] Starting coadd cache for {total_bricks} unique bricks")
 
     bands = [b.strip() for b in args.bands.split(",") if b.strip()]
 
-    # Each brick downloads image/invvar for each band + maskbits once
+    # Schema for the assets manifest (serves as checkpoint)
     schema = T.StructType([
         T.StructField("brickname", T.StringType(), False),
-        T.StructField("ok", T.IntegerType(), False),
-        T.StructField("error", T.StringType(), True),
-        T.StructField("s3_prefix", T.StringType(), False),
+        T.StructField("ok", T.IntegerType(), False),  # 1=success, 0=failure
+        T.StructField("error", T.StringType(), True),  # Error message if failed
+        T.StructField("s3_prefix", T.StringType(), False),  # Where cached assets are stored
     ])
 
     coadd_base = args.coadd_base_url.rstrip("/")
@@ -749,9 +1170,8 @@ def _cutout(data: np.ndarray, x: float, y: float, size: int) -> Tuple[np.ndarray
 
 def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> None:
     out_root = f"{args.output_s3.rstrip('/')}/phase4c/{args.variant}"
-    if stage_should_skip(out_root, args.skip_if_exists, args.force):
-        print(f"[4c] Skip (exists): {out_root}")
-        return
+    # NOTE: Per-experiment checks happen via --experiment-id.
+    # Do NOT skip entire stage based on output dir existing.
 
     if WCS is None:
         raise RuntimeError("astropy.wcs not available; ensure astropy installed")
@@ -760,14 +1180,37 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
     if not args.experiment_id:
         raise ValueError("--experiment-id is required for stage 4c")
     in_path = f"{manifests_root}/{args.experiment_id}"
-    df_tasks = spark.read.parquet(in_path)
+    df_tasks = read_parquet_safe(spark, in_path)
 
     bands = [b.strip() for b in args.bands.split(",") if b.strip()]
 
     # Assume coadd cache uses /<brick>/<filename>
     cache_prefix = args.coadd_s3_cache_prefix.rstrip("/")
 
-    # Output schemas
+    # =========================================================================
+    # METRICS-ONLY MODE HANDLING:
+    # When --metrics-only 1, we still compute arc_snr and other metrics,
+    # but skip encoding and storing the actual stamp images.
+    # This saves ~100× storage for grid tier completeness analysis.
+    # =========================================================================
+    metrics_only = bool(args.metrics_only)
+    if metrics_only:
+        print(f"[4c] METRICS-ONLY mode enabled - stamps will NOT be saved")
+    
+    # =========================================================================
+    # LENS MODEL SELECTION:
+    # SIE is more realistic (elliptical, proper ray tracing via lenstronomy)
+    # SIS is simpler and faster (no lenstronomy dependency)
+    # =========================================================================
+    use_sie = bool(args.use_sie) and LENSTRONOMY_AVAILABLE
+    if args.use_sie and not LENSTRONOMY_AVAILABLE:
+        print(f"[4c] WARNING: --use-sie requested but lenstronomy not available. Falling back to SIS.")
+    if use_sie:
+        print(f"[4c] Using SIE lens model with physics validation (lenstronomy)")
+    else:
+        print(f"[4c] Using simplified SIS lens model")
+    
+    # Output schema: stamp_npz is nullable in metrics-only mode
     stamps_schema = T.StructType([
         T.StructField("task_id", T.StringType(), False),
         T.StructField("experiment_id", T.StringType(), False),
@@ -791,9 +1234,20 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
         T.StructField("psfsize_r", T.DoubleType(), True),
         T.StructField("psfdepth_r", T.DoubleType(), True),
         T.StructField("ebv", T.DoubleType(), True),
-        T.StructField("stamp_npz", T.BinaryType(), False),
+        T.StructField("stamp_npz", T.BinaryType(), True),  # Nullable for metrics-only mode
         T.StructField("cutout_ok", T.IntegerType(), False),
         T.StructField("arc_snr", T.DoubleType(), True),
+        T.StructField("metrics_only", T.IntegerType(), False),  # Track if stamp was skipped
+        # Lens model provenance (for dataset consistency checks)
+        T.StructField("lens_model", T.StringType(), True),  # "SIE" or "SIS" - tracks which model was used
+        T.StructField("lens_e", T.DoubleType(), True),  # Lens ellipticity (sampled independently)
+        # Physics validation metrics (from SIE injection)
+        T.StructField("magnification", T.DoubleType(), True),
+        T.StructField("tangential_stretch", T.DoubleType(), True),
+        T.StructField("radial_stretch", T.DoubleType(), True),
+        T.StructField("expected_arc_radius", T.DoubleType(), True),
+        T.StructField("physics_valid", T.IntegerType(), True),  # 1 if passed validation
+        T.StructField("physics_warnings", T.StringType(), True),  # Comma-separated warnings
     ])
 
     # Repartition by brick for cache locality
@@ -877,10 +1331,47 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
 
                 add = None
                 arc_snr = None
+                lens_model_str = None  # Will be "SIE" or "SIS"
+                lens_e_val = None  # Lens ellipticity (only set for SIE)
+                physics_metrics = {
+                    "magnification": None,
+                    "tangential_stretch": None,
+                    "radial_stretch": None,
+                    "expected_arc_radius": None,
+                }
+                physics_valid = None
+                physics_warnings_str = None
+                
                 if theta_e > 0 and src_flux > 0:
                     # Approximate PSF FWHM from brick psfsize_r if available
                     psf_fwhm = float(r["psfsize_r"]) if r["psfsize_r"] is not None else None
-                    add = inject_sis_stamp((size, size), theta_e, src_flux, src_reff, src_e, shear, rng, psf_fwhm_arcsec=psf_fwhm)
+                    
+                    # =========================================================================
+                    # LENS MODEL SELECTION:
+                    # SIE: More realistic, returns physics metrics for validation
+                    # SIS: Simpler, faster, no physics metrics
+                    # =========================================================================
+                    if use_sie:
+                        # Use SIE with lenstronomy - includes physics validation metrics
+                        # FIX (2026-01-22): Sample lens ellipticity INDEPENDENTLY from source
+                        # Lens and source shapes are physically uncorrelated, so coupling
+                        # them (e.g., lens_e = src_e * 0.8) could bias the model.
+                        # Sample lens_e from a realistic distribution for galaxy-scale lenses:
+                        # - Mean ~0.2-0.3, range 0-0.5 (rare to have very elongated lenses)
+                        lens_e_val = rng.uniform(0.05, 0.45)  # Independent of source
+                        lens_model_str = "SIE"
+                        add, physics_metrics = inject_sie_stamp(
+                            (size, size), theta_e, src_flux, src_reff, 
+                            src_e, lens_e_val, shear, rng, psf_fwhm_arcsec=psf_fwhm
+                        )
+                    else:
+                        # Use simplified SIS (spherical, no lens ellipticity)
+                        lens_model_str = "SIS"
+                        lens_e_val = 0.0  # SIS is spherically symmetric
+                        add = inject_sis_stamp(
+                            (size, size), theta_e, src_flux, src_reff, 
+                            src_e, shear, rng, psf_fwhm_arcsec=psf_fwhm
+                        )
 
                     # Add to each band with a simple color scaling (bluer source)
                     for b in use_bands:
@@ -897,9 +1388,26 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                         sigma = np.where(invr > 0, 1.0 / np.sqrt(invr + 1e-12), 0.0)
                         snr = np.where(sigma > 0, add / (sigma + 1e-12), 0.0)
                         arc_snr = float(np.nanmax(snr))
+                    
+                    # =========================================================================
+                    # PHYSICS VALIDATION:
+                    # Check that injection parameters are physically consistent.
+                    # This helps catch bugs and ensures PINN training data is realistic.
+                    # =========================================================================
+                    physics_valid_bool, warnings = validate_physics_consistency(
+                        theta_e, arc_snr,
+                        physics_metrics.get("magnification"),
+                        physics_metrics.get("tangential_stretch"),
+                        psf_fwhm,
+                    )
+                    physics_valid = 1 if physics_valid_bool else 0
+                    physics_warnings_str = "; ".join(warnings) if warnings else None
 
-                # Encode stamp
-                stamp_npz = encode_npz({f"image_{b}": imgs[b] for b in use_bands})
+                # Encode stamp (or skip if metrics-only mode)
+                if metrics_only:
+                    stamp_npz = None  # Don't store stamp to save space
+                else:
+                    stamp_npz = encode_npz({f"image_{b}": imgs[b] for b in use_bands})
 
                 yield Row(
                     task_id=r["task_id"],
@@ -927,11 +1435,23 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     stamp_npz=stamp_npz,
                     cutout_ok=int(bool(cut_ok_all)),
                     arc_snr=arc_snr,
+                    metrics_only=int(metrics_only),
+                    lens_model=lens_model_str,
+                    lens_e=lens_e_val,
+                    magnification=physics_metrics.get("magnification"),
+                    tangential_stretch=physics_metrics.get("tangential_stretch"),
+                    radial_stretch=physics_metrics.get("radial_stretch"),
+                    expected_arc_radius=physics_metrics.get("expected_arc_radius"),
+                    physics_valid=physics_valid,
+                    physics_warnings=physics_warnings_str,
                 )
 
             except Exception as e:
                 # Emit a row with cutout_ok=0 and an empty stamp to keep accounting consistent
-                empty = encode_npz({"image_r": np.zeros((int(r["stamp_size"]), int(r["stamp_size"])), dtype=np.float32)})
+                if metrics_only:
+                    empty = None  # Don't store stamp in metrics-only mode
+                else:
+                    empty = encode_npz({"image_r": np.zeros((int(r["stamp_size"]), int(r["stamp_size"])), dtype=np.float32)})
                 yield Row(
                     task_id=r["task_id"],
                     experiment_id=r["experiment_id"],
@@ -958,6 +1478,15 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     stamp_npz=empty,
                     cutout_ok=0,
                     arc_snr=None,
+                    metrics_only=int(metrics_only),
+                    lens_model="SIE" if use_sie else "SIS",  # Record intended model
+                    lens_e=None,  # Unknown due to error
+                    magnification=None,
+                    tangential_stretch=None,
+                    radial_stretch=None,
+                    expected_arc_radius=None,
+                    physics_valid=0,
+                    physics_warnings=f"Processing error: {str(e)[:200]}",
                 )
 
     rdd = df_tasks.rdd.mapPartitions(_proc_partition)
@@ -1001,15 +1530,14 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
 
 def stage_4d_completeness(spark: SparkSession, args: argparse.Namespace) -> None:
     out_root = f"{args.output_s3.rstrip('/')}/phase4d/{args.variant}"
-    if stage_should_skip(out_root, args.skip_if_exists, args.force):
-        print(f"[4d] Skip (exists): {out_root}")
-        return
+    # NOTE: Per-experiment checks happen via --experiment-id.
+    # Do NOT skip entire stage based on output dir existing.
 
     if not args.experiment_id:
         raise ValueError("--experiment-id is required for stage 4d")
 
     met_path = f"{args.output_s3.rstrip('/')}/phase4c/{args.variant}/metrics/{args.experiment_id}"
-    df = spark.read.parquet(met_path)
+    df = read_parquet_safe(spark, met_path)
 
     # Recovery proxy
     snr_th = float(args.recovery_snr_thresh)
@@ -1062,8 +1590,10 @@ def stage_4d_completeness(spark: SparkSession, args: argparse.Namespace) -> None
 
 def stage_4p5_compact(spark: SparkSession, args: argparse.Namespace) -> None:
     out_root = f"{args.output_s3.rstrip('/')}/phase4p5/{args.variant}"
-    if stage_should_skip(out_root, args.skip_if_exists, args.force):
-        print(f"[4p5] Skip (exists): {out_root}")
+    # NOTE: Skip logic should check compact_output_s3, not out_root.
+    # Check actual output path for _SUCCESS marker.
+    if args.compact_output_s3 and stage_should_skip(args.compact_output_s3, args.skip_if_exists, args.force):
+        print(f"[4p5] Skip (exists): {args.compact_output_s3}")
         return
 
     if not args.compact_input_s3:
@@ -1071,7 +1601,7 @@ def stage_4p5_compact(spark: SparkSession, args: argparse.Namespace) -> None:
     if not args.compact_output_s3:
         raise ValueError("--compact-output-s3 is required for stage 4p5")
 
-    df = spark.read.parquet(args.compact_input_s3)
+    df = read_parquet_safe(spark, args.compact_input_s3)
 
     # Coalesce by target partitions (optional)
     n = int(args.compact_partitions)
@@ -1145,6 +1675,27 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--experiment-id", default="", help="Experiment id under phase4a/manifests")
     p.add_argument("--sweep-partitions", type=int, default=600)
     p.add_argument("--src-flux-scale", type=float, default=1e6, help="Arbitrary scaling from mags to coadd units")
+    # =========================================================================
+    # METRICS-ONLY MODE:
+    # When enabled, stage 4c computes injection metrics (arc_snr, cutout_ok, etc.)
+    # but does NOT store the actual stamp images. This dramatically reduces storage
+    # for the grid tier where we need completeness statistics but not training data.
+    #
+    # Storage savings: Grid tier with 1M tasks at ~20KB/stamp = ~20GB
+    #                  With metrics-only: ~1M × ~200B = ~200MB (100× reduction)
+    #
+    # Use --metrics-only 1 for grid tier, --metrics-only 0 for train tier.
+    # =========================================================================
+    p.add_argument("--metrics-only", type=int, default=0, 
+                   help="If 1, skip saving stamp images (for grid tier completeness analysis)")
+    # =========================================================================
+    # LENS MODEL SELECTION:
+    # --use-sie 1: Use SIE (Singular Isothermal Ellipsoid) via lenstronomy
+    #              More realistic, includes ellipticity, proper ray tracing
+    # --use-sie 0: Use simplified SIS (faster, no lenstronomy dependency)
+    # =========================================================================
+    p.add_argument("--use-sie", type=int, default=1,
+                   help="If 1, use SIE lens model via lenstronomy (more realistic). If 0, use SIS (simpler).")
 
     # Stage 4d
     p.add_argument("--recovery-snr-thresh", type=float, default=5.0)
