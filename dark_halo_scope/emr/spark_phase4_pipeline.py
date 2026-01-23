@@ -216,6 +216,275 @@ def build_grid(name: str) -> List[InjectionConfig]:
 
 PIX_SCALE_ARCSEC = 0.262
 
+# =========================================================================
+# FLUX UNIT CONSTANTS (Legacy Survey coadds are in nanomaggies)
+# =========================================================================
+# 1 nanomaggy = flux of a mag 22.5 source (AB zero-point)
+# To convert magnitude to flux: flux_nMgy = 10^(-0.4 * (mag - 22.5))
+# =========================================================================
+AB_ZP_NMGY = 22.5  # AB zero-point for nanomaggies
+
+
+def mag_to_nMgy(mag: float) -> float:
+    """Convert AB magnitude to nanomaggies (Legacy Survey flux units)."""
+    return float(10.0 ** (-0.4 * (mag - AB_ZP_NMGY)))
+
+
+def nMgy_to_mag(nmgy: float) -> float:
+    """Convert nanomaggies to AB magnitude."""
+    if nmgy is None or nmgy <= 0 or not np.isfinite(nmgy):
+        return np.nan
+    return float(AB_ZP_NMGY - 2.5 * math.log10(nmgy))
+
+
+# =========================================================================
+# SERSIC PROFILE FUNCTIONS (Correct flux normalization)
+# =========================================================================
+# These functions implement proper Sersic profile normalization.
+# CRITICAL: We normalize the UNLENSED source analytically, then let lensing
+# naturally increase the observed flux (magnification). Never normalize the
+# lensed image-plane sum to the source flux - that destroys magnification!
+# =========================================================================
+
+def sersic_bn(n: float) -> float:
+    """Sersic b_n approximation (Ciotti & Bertin 1999)."""
+    n = max(n, 1e-6)
+    return 2.0 * n - (1.0 / 3.0) + (0.009876 / n)
+
+
+def sersic_unit_total_flux(reff_arcsec: float, q: float, n: float = 1.0) -> float:
+    """
+    Compute total flux for a Sersic profile with I(Re) = 1 flux/arcsec^2.
+    
+    For Sersic profile: I(R) = I_e * exp(-b_n * ((R/Re)^(1/n) - 1))
+    Total flux = 2*pi * q * Re^2 * n * exp(b_n) * Gamma(2n) / b_n^(2n)
+    
+    Args:
+        reff_arcsec: Effective radius in arcsec
+        q: Axis ratio (b/a), in (0, 1]
+        n: Sersic index (n=1 for exponential, n=4 for de Vaucouleurs)
+    
+    Returns:
+        Total flux in same units as I_e (flux/arcsec^2 * arcsec^2 = flux)
+    """
+    b = sersic_bn(n)
+    # Use math.gamma for the gamma function
+    gamma_2n = math.gamma(2.0 * n)
+    return (2.0 * math.pi * q * (reff_arcsec ** 2) *
+            n * math.exp(b) * gamma_2n / (b ** (2.0 * n)))
+
+
+def sersic_profile_Ie1(beta_x: np.ndarray, beta_y: np.ndarray, 
+                       reff_arcsec: float, q: float, phi_rad: float, 
+                       n: float = 1.0) -> np.ndarray:
+    """
+    Evaluate Sersic surface brightness profile with I(Re) = 1.
+    
+    The profile is evaluated in the source plane (beta coordinates).
+    Returns unnormalized surface brightness - must be scaled by amplitude.
+    
+    Args:
+        beta_x, beta_y: Source-plane coordinates in arcsec
+        reff_arcsec: Effective radius in arcsec
+        q: Axis ratio (b/a)
+        phi_rad: Position angle in radians
+        n: Sersic index (default 1.0 = exponential)
+    
+    Returns:
+        Surface brightness array with I(Re) = 1
+    """
+    # Rotate to align with major axis
+    c = math.cos(phi_rad)
+    s = math.sin(phi_rad)
+    xp = c * beta_x + s * beta_y
+    yp = -s * beta_x + c * beta_y
+    
+    # Elliptical radius
+    q = float(np.clip(q, 0.1, 1.0))
+    R = np.sqrt(xp**2 + (yp / q)**2 + 1e-18)
+    
+    # Sersic profile
+    b = sersic_bn(n)
+    reff = max(reff_arcsec, 1e-6)
+    return np.exp(-b * ((R / reff) ** (1.0 / n) - 1.0)).astype(np.float32)
+
+
+# =========================================================================
+# DEFLECTION FUNCTIONS (Dependency-free SIE/SIS + Shear)
+# =========================================================================
+# These implement gravitational lensing deflection without external deps.
+# SIE uses the analytic elliptical isothermal deflection formula.
+# =========================================================================
+
+def deflection_sis(x: np.ndarray, y: np.ndarray, theta_e: float, 
+                   eps: float = 1e-12) -> Tuple[np.ndarray, np.ndarray]:
+    """SIS (Singular Isothermal Sphere) deflection."""
+    r = np.sqrt(x * x + y * y) + eps
+    ax = theta_e * x / r
+    ay = theta_e * y / r
+    return ax, ay
+
+
+def deflection_sie(x: np.ndarray, y: np.ndarray, theta_e: float,
+                   lens_e: float, lens_phi_rad: float,
+                   eps: float = 1e-12) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    SIE (Singular Isothermal Ellipsoid) deflection.
+    
+    Uses the analytic SIE deflection formula (Kormann et al. 1994).
+    Falls back to SIS if lens is nearly circular.
+    
+    Args:
+        x, y: Image-plane coordinates in arcsec
+        theta_e: Einstein radius in arcsec
+        lens_e: Lens ellipticity (0 = circular, 0.5 = axis ratio 1:3)
+        lens_phi_rad: Lens position angle in radians
+        
+    Returns:
+        (alpha_x, alpha_y) deflection in arcsec
+    """
+    # Map ellipticity to axis ratio: q = (1-e)/(1+e)
+    q = float(np.clip((1.0 - lens_e) / (1.0 + lens_e + 1e-6), 0.2, 0.999))
+    
+    # Rotate to lens frame
+    c = math.cos(lens_phi_rad)
+    s = math.sin(lens_phi_rad)
+    xp = c * x + s * y
+    yp = -s * x + c * y
+    
+    # If nearly circular, use SIS
+    if 1.0 - q < 1e-4:
+        axp, ayp = deflection_sis(xp, yp, theta_e, eps=eps)
+    else:
+        # SIE deflection formula
+        fac = math.sqrt(max(1.0 - q * q, 1e-12))
+        psi = np.sqrt((q * xp)**2 + yp**2) + eps
+        
+        axp = (theta_e / fac) * np.arctan((fac * xp) / psi)
+        
+        # Clip argument to avoid arctanh divergence
+        arg = np.clip((fac * yp) / psi, -0.999999, 0.999999)
+        ayp = (theta_e / fac) * np.arctanh(arg)
+    
+    # Rotate back
+    ax = c * axp - s * ayp
+    ay = s * axp + c * ayp
+    return ax, ay
+
+
+def deflection_shear(x: np.ndarray, y: np.ndarray, 
+                     shear: float, shear_phi_rad: float) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    External shear deflection.
+    
+    Shear matrix: [[gamma1, gamma2], [gamma2, -gamma1]]
+    where gamma1 = shear * cos(2*phi), gamma2 = shear * sin(2*phi)
+    """
+    g1 = float(shear) * math.cos(2.0 * float(shear_phi_rad))
+    g2 = float(shear) * math.sin(2.0 * float(shear_phi_rad))
+    ax = g1 * x + g2 * y
+    ay = g2 * x - g1 * y
+    return ax, ay
+
+
+# =========================================================================
+# MAIN RENDERING FUNCTION (Correct magnification behavior)
+# =========================================================================
+
+def render_lensed_source(
+    stamp_size: int,
+    pixscale_arcsec: float,
+    lens_model: str,  # "SIS", "SIE", or "CONTROL"
+    theta_e_arcsec: float,
+    lens_e: float,
+    lens_phi_rad: float,
+    shear: float,
+    shear_phi_rad: float,
+    src_total_flux_nmgy: float,
+    src_reff_arcsec: float,
+    src_e: float,
+    src_phi_rad: float,
+    src_x_arcsec: float,
+    src_y_arcsec: float,
+    psf_sigma_pix: float,
+    psf_apply: bool = True,
+) -> np.ndarray:
+    """
+    Render a lensed source image with correct magnification behavior.
+    
+    CRITICAL: This function normalizes the UNLENSED source analytically,
+    then applies lensing. The observed (lensed) flux will be HIGHER than
+    the intrinsic source flux due to gravitational magnification.
+    
+    Args:
+        stamp_size: Output stamp size in pixels
+        pixscale_arcsec: Pixel scale in arcsec/pixel
+        lens_model: "SIS", "SIE", or "CONTROL" (no lensing)
+        theta_e_arcsec: Einstein radius in arcsec
+        lens_e: Lens ellipticity (for SIE)
+        lens_phi_rad: Lens position angle (for SIE)
+        shear: External shear amplitude
+        shear_phi_rad: External shear orientation
+        src_total_flux_nmgy: Source intrinsic flux in nanomaggies
+        src_reff_arcsec: Source effective radius in arcsec
+        src_e: Source ellipticity
+        src_phi_rad: Source position angle
+        src_x_arcsec: Source x offset from lens center
+        src_y_arcsec: Source y offset from lens center
+        psf_sigma_pix: PSF sigma in pixels (0 to skip convolution)
+        psf_apply: Whether to apply PSF convolution
+        
+    Returns:
+        Float32 array of shape (stamp_size, stamp_size) in nMgy/pixel
+    """
+    half = stamp_size // 2
+    coords = (np.arange(stamp_size) - half + 0.5) * pixscale_arcsec
+    x, y = np.meshgrid(coords, coords)
+    
+    # Compute deflection based on lens model
+    if lens_model == "CONTROL" or theta_e_arcsec <= 0:
+        # No lensing - return zeros (control sample)
+        return np.zeros((stamp_size, stamp_size), dtype=np.float32)
+    
+    if lens_model == "SIE":
+        ax_l, ay_l = deflection_sie(x, y, theta_e_arcsec, lens_e, lens_phi_rad)
+    else:  # SIS
+        ax_l, ay_l = deflection_sis(x, y, theta_e_arcsec)
+    
+    # Add external shear deflection
+    if abs(shear) > 1e-6:
+        ax_s, ay_s = deflection_shear(x, y, shear, shear_phi_rad)
+    else:
+        ax_s, ay_s = 0.0, 0.0
+    
+    # Lens equation: beta = theta - alpha
+    beta_x = x - ax_l - ax_s - src_x_arcsec
+    beta_y = y - ay_l - ay_s - src_y_arcsec
+    
+    # Source axis ratio from ellipticity
+    q_src = float(np.clip((1.0 - src_e) / (1.0 + src_e + 1e-6), 0.2, 0.999))
+    
+    # Evaluate Sersic profile (I(Re) = 1)
+    base = sersic_profile_Ie1(beta_x, beta_y, src_reff_arcsec, q_src, src_phi_rad, n=1.0)
+    
+    # Compute amplitude to give correct INTRINSIC total flux
+    # This is the key: we normalize the unlensed source, not the lensed image
+    unit_flux = sersic_unit_total_flux(src_reff_arcsec, q_src, n=1.0) + 1e-30
+    amp_Ie = src_total_flux_nmgy / unit_flux  # I_e in nMgy/arcsec^2
+    
+    # Pixel area for conversion to flux/pixel
+    pix_area = pixscale_arcsec ** 2
+    
+    # Surface brightness in nMgy/pixel
+    # Lensing magnification is implicit: more source-plane area maps to each pixel
+    img = base * amp_Ie * pix_area
+    
+    # PSF convolution
+    if psf_apply and psf_sigma_pix > 0:
+        img = _convolve_gaussian(img, psf_sigma_pix)
+    
+    return img.astype(np.float32)
+
 
 def _gaussian_kernel1d(sigma_pix: float, radius: int = 4) -> np.ndarray:
     sigma = max(float(sigma_pix), 1e-3)
@@ -256,15 +525,27 @@ def inject_sis_stamp(
     shear: float,
     rng: np.random.RandomState,
     psf_fwhm_arcsec: Optional[float] = None,
+    shear_phi: Optional[float] = None,
 ) -> np.ndarray:
-    """Return a lensed-source surface brightness stamp (float32) to add to an image.
-
-    Simplified but deterministic SIS lens with optional external shear.
-    - Lens center at stamp center.
-    - Source center randomly offset within a small box.
-
-    This is intended for injection-recovery and for building a training set.
     """
+    DEPRECATED: Use render_lensed_source() instead.
+    
+    This function has a critical bug: it normalizes the LENSED image to the
+    source flux, which destroys magnification. Lensed arcs should be brighter
+    than the unlensed source due to gravitational magnification.
+    
+    Kept for backward compatibility only. Do not use for new code.
+    
+    Args:
+        shear_phi: Shear orientation in radians. If None, randomly generated.
+    """
+    import warnings
+    warnings.warn(
+        "inject_sis_stamp is deprecated and has incorrect flux normalization. "
+        "Use render_lensed_source() instead.", 
+        DeprecationWarning, 
+        stacklevel=2
+    )
     h, w = stamp_shape
     cy, cx = (h - 1) / 2.0, (w - 1) / 2.0
 
@@ -273,19 +554,34 @@ def inject_sis_stamp(
     thx = (xx - cx) * PIX_SCALE_ARCSEC
     thy = (yy - cy) * PIX_SCALE_ARCSEC
 
-    # Shear (simple, aligned)
-    if abs(shear) > 0:
-        thx2 = thx + shear * thx
-        thy2 = thy - shear * thy
-    else:
-        thx2, thy2 = thx, thy
-
-    r = np.sqrt(thx2**2 + thy2**2) + 1e-6
-    alpha = theta_e_arcsec / r
-
+    # Compute shear components with random orientation if not provided
+    if shear_phi is None:
+        shear_phi = rng.uniform(0, np.pi)
+    
+    # =========================================================================
+    # PROPER SIS + EXTERNAL SHEAR LENS EQUATION
+    # =========================================================================
+    # The lens equation: beta = theta - alpha(theta) - Gamma * theta
+    # where alpha is the SIS deflection and Gamma is the shear matrix:
+    #   Gamma = [[gamma1, gamma2], [gamma2, -gamma1]]
+    # =========================================================================
+    
     # SIS deflection
-    betax = thx2 - alpha * thx2
-    betay = thy2 - alpha * thy2
+    eps = 1e-10
+    r = np.sqrt(thx**2 + thy**2) + eps
+    alpha_x = theta_e_arcsec * thx / r
+    alpha_y = theta_e_arcsec * thy / r
+    
+    # Shear components
+    if abs(shear) > 0:
+        g1 = shear * np.cos(2.0 * shear_phi)
+        g2 = shear * np.sin(2.0 * shear_phi)
+        # Apply shear matrix: [[g1, g2], [g2, -g1]]
+        betax = thx - alpha_x - (g1 * thx + g2 * thy)
+        betay = thy - alpha_y - (g2 * thx - g1 * thy)
+    else:
+        betax = thx - alpha_x
+        betay = thy - alpha_y
 
     # Random source offset within +-0.4 arcsec
     offx = rng.uniform(-0.4, 0.4)
@@ -306,6 +602,30 @@ def inject_sis_stamp(
         src = _convolve_gaussian(src, sigma_pix)
 
     return src.astype(np.float32)
+
+
+# =========================================================================
+# SHEAR COMPONENTS HELPER
+# =========================================================================
+# External shear has amplitude gamma and orientation phi.
+# The shear components are: gamma1 = gamma * cos(2*phi), gamma2 = gamma * sin(2*phi)
+# Previously gamma2 was hardcoded to 0, which is non-physical.
+# =========================================================================
+
+def _shear_components(shear: float, shear_phi: float) -> Tuple[float, float]:
+    """
+    Convert shear amplitude and orientation to (gamma1, gamma2) components.
+    
+    Args:
+        shear: Shear amplitude (typically 0.0-0.2)
+        shear_phi: Shear orientation angle in radians [0, pi)
+        
+    Returns:
+        Tuple of (gamma1, gamma2) shear components
+    """
+    g1 = float(shear) * math.cos(2.0 * float(shear_phi))
+    g2 = float(shear) * math.sin(2.0 * float(shear_phi))
+    return float(g1), float(g2)
 
 
 # =========================================================================
@@ -332,7 +652,10 @@ def inject_sie_stamp(
     psf_fwhm_arcsec: Optional[float] = None,
 ) -> Tuple[np.ndarray, Dict[str, float]]:
     """
-    Generate a lensed source stamp using SIE lens model via lenstronomy.
+    DEPRECATED: Use render_lensed_source() instead.
+    
+    This function requires lenstronomy and has been superseded by the
+    dependency-free render_lensed_source() which implements SIE natively.
     
     Returns:
         Tuple of (stamp array, physics_metrics dict)
@@ -343,6 +666,13 @@ def inject_sie_stamp(
         - radial_stretch: Radial eigenvalue
         - expected_arc_radius: Approximate arc radius in arcsec
     """
+    import warnings
+    warnings.warn(
+        "inject_sie_stamp is deprecated. Use render_lensed_source() instead, "
+        "which has dependency-free SIE implementation.", 
+        DeprecationWarning, 
+        stacklevel=2
+    )
     if not LENSTRONOMY_AVAILABLE:
         # Fallback to SIS with empty physics metrics
         stamp = inject_sis_stamp(
@@ -373,9 +703,14 @@ def inject_sie_stamp(
     lens_model_list = ['SIE', 'SHEAR']
     lens_model = LensModel(lens_model_list)
     
+    # FIX: Use random shear orientation instead of fixed gamma2=0
+    # Shear orientation should be random for realistic simulations
+    shear_phi = rng.uniform(0, np.pi)  # Random shear orientation [0, pi)
+    gamma1, gamma2 = _shear_components(shear, shear_phi)
+    
     kwargs_lens = [
         {'theta_E': theta_e_arcsec, 'e1': e1_lens, 'e2': e2_lens, 'center_x': 0, 'center_y': 0},
-        {'gamma1': shear, 'gamma2': 0, 'ra_0': 0, 'dec_0': 0}
+        {'gamma1': gamma1, 'gamma2': gamma2, 'ra_0': 0, 'dec_0': 0}
     ]
     
     # Setup source model: Sersic profile
@@ -430,10 +765,11 @@ def inject_sie_stamp(
     # =========================================================================
     
     # Compute magnification at IMAGE-PLANE position near Einstein ring
-    # Use (theta_e, 0) as representative point - this is where arcs form
+    # Use a point slightly OUTSIDE the Einstein radius to avoid critical curve singularity
+    # At r = theta_e, magnification diverges. At r = 1.1 * theta_e, we get a stable proxy.
     try:
-        # Image-plane position at Einstein radius (not source position!)
-        image_x = theta_e_arcsec  # At Einstein radius
+        # Image-plane position slightly outside Einstein radius to avoid singularity
+        image_x = 1.1 * theta_e_arcsec  # 10% outside Einstein radius
         image_y = 0.0  # On the x-axis
         
         det_A = lens_model.hessian(image_x, image_y, kwargs_lens)
@@ -666,6 +1002,41 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
         ) for c in cfgs]
         grid_dfs[gname] = spark.createDataFrame(rows, schema=grid_schema)
 
+    # =========================================================================
+    # TASK COUNT GUARDRAIL
+    # =========================================================================
+    # Estimate total tasks to catch accidental explosions before wasting compute.
+    # This is a soft limit - set --max-total-tasks-soft to 0 to disable.
+    # =========================================================================
+    if args.max_total_tasks_soft and args.max_total_tasks_soft > 0:
+        n_sel_sets = df.select("selection_set_id").distinct().count()
+        n_splits = df.select("region_split").distinct().count()
+        reps = max(1, args.replicates)
+        
+        est_total = 0
+        for tier in tiers:
+            if tier == "debug":
+                n_cfg = len(grids[args.grid_debug])
+                n_per_cfg = args.n_per_config_debug
+                est_tier = n_per_cfg * n_cfg * n_sel_sets * n_splits * reps * len(bandsets) * len(stamp_sizes)
+            elif tier == "grid":
+                n_cfg = len(grids[args.grid_grid])
+                n_per_cfg = args.n_per_config_grid
+                est_tier = n_per_cfg * n_cfg * n_sel_sets * n_splits * reps * len(bandsets) * len(stamp_sizes)
+            elif tier == "train":
+                est_tier = args.n_total_train_per_split * n_sel_sets * n_splits * reps * len(bandsets) * len(stamp_sizes)
+            else:
+                est_tier = 0
+            est_total += est_tier
+        
+        if est_total > args.max_total_tasks_soft:
+            raise RuntimeError(
+                f"[GUARDRAIL] Estimated total tasks ({est_total:,}) exceeds max_total_tasks_soft "
+                f"({args.max_total_tasks_soft:,}). Reduce sampling parameters or increase "
+                f"--max-total-tasks-soft if this is intentional."
+            )
+        print(f"[4a] Guardrail passed: estimated {est_total:,} tasks (limit: {args.max_total_tasks_soft:,})")
+
     # Stage config record
     stage_cfg = {
         "stage": "4a",
@@ -684,8 +1055,8 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
             "depth_edges": depth_edges,
         },
         "tiers": {
-            "debug": {"grid": args.grid_debug, "n_per_config": args.n_per_config_debug},
-            "grid": {"grid": args.grid_grid, "n_per_config": args.n_per_config_grid},
+            "debug": {"grid": args.grid_debug, "n_per_config": args.n_per_config_debug, "control_frac": args.control_frac_debug},
+            "grid": {"grid": args.grid_grid, "n_per_config": args.n_per_config_grid, "control_frac": args.control_frac_grid},
             "train": {"grid": args.grid_train, "n_total_per_split": args.n_total_train_per_split, "control_frac": args.control_frac_train},
         },
         "stamp_sizes": stamp_sizes,
@@ -711,12 +1082,12 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
                     grid_name = args.grid_debug
                     n_per_config = int(args.n_per_config_debug)
                     n_total = None
-                    control_frac = 0.0
+                    control_frac = float(args.control_frac_debug)
                 elif tier == "grid":
                     grid_name = args.grid_grid
                     n_per_config = int(args.n_per_config_grid)
                     n_total = None
-                    control_frac = 0.0
+                    control_frac = float(args.control_frac_grid)
                 elif tier == "train":
                     grid_name = args.grid_train
                     n_total = int(args.n_total_train_per_split)
@@ -782,6 +1153,29 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
                     # This is where the n_cfg multiplication happens (correctly).
                     # Final tasks per (selection_set, split) = per_split_target × n_cfg
                     tasks = tmp.crossJoin(F.broadcast(cfg_df))
+                    
+                    # =========================================================================
+                    # CONTROL SAMPLES FOR DEBUG/GRID TIERS
+                    # =========================================================================
+                    # Control samples (is_control=1) have theta_e=0 and serve as negatives.
+                    # Use deterministic hashing for reproducible control assignment.
+                    # =========================================================================
+                    if control_frac > 0:
+                        # Deterministic control assignment using xxhash64
+                        ctrl_hash = F.xxhash64(F.col("brickname"), F.col("ra").cast("string"), 
+                                               F.col("dec").cast("string"), F.lit(hash(tier) & 0xffffffff))
+                        ctrl_u = (F.pmod(F.abs(ctrl_hash), F.lit(1_000_000)) / F.lit(1_000_000.0))
+                        tasks = tasks.withColumn("is_control", (ctrl_u < F.lit(control_frac)).cast("int"))
+                        
+                        # Zero out injection params for controls
+                        tasks = tasks.withColumn("theta_e_arcsec", F.when(F.col("is_control") == 1, F.lit(0.0)).otherwise(F.col("theta_e_arcsec")))
+                        tasks = tasks.withColumn("src_dmag", F.when(F.col("is_control") == 1, F.lit(0.0)).otherwise(F.col("src_dmag")))
+                        tasks = tasks.withColumn("src_reff_arcsec", F.when(F.col("is_control") == 1, F.lit(0.0)).otherwise(F.col("src_reff_arcsec")))
+                        tasks = tasks.withColumn("src_e", F.when(F.col("is_control") == 1, F.lit(0.0)).otherwise(F.col("src_e")))
+                        tasks = tasks.withColumn("shear", F.when(F.col("is_control") == 1, F.lit(0.0)).otherwise(F.col("shear")))
+                    else:
+                        # No controls for this tier
+                        tasks = tasks.withColumn("is_control", F.lit(0).cast("int"))
 
                 else:
                     # =========================================================================
@@ -850,6 +1244,116 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
                 tasks = tasks.withColumn("stamp_size", F.lit(int(stamp)))
                 tasks = tasks.withColumn("bandset", F.lit(bandset))
 
+                # =========================================================================
+                # FROZEN RANDOMNESS COLUMNS (for reproducibility)
+                # =========================================================================
+                # All random degrees of freedom for Stage 4c are frozen here in the manifest.
+                # This ensures that reruns of Stage 4c produce identical injections.
+                #
+                # Uses xxhash64 for deterministic per-row hashing based on stable identifiers.
+                # =========================================================================
+                
+                # Base hash from stable identifiers
+                base_hash = F.xxhash64(
+                    F.col("brickname"),
+                    F.col("ra").cast("string"),
+                    F.col("dec").cast("string"),
+                    F.coalesce(F.col("config_id"), F.lit("ctrl")),
+                    F.col("replicate").cast("string"),
+                    F.lit(int(args.split_seed)),
+                )
+                
+                # Store as task_seed64 for reproducibility
+                tasks = tasks.withColumn("task_seed64", base_hash)
+                
+                # Helper for uniform [0,1) from hash with salt
+                def h_uniform(salt: int):
+                    return (F.pmod(F.abs(F.xxhash64(base_hash, F.lit(salt))), F.lit(1_000_000)) / F.lit(1_000_000.0))
+                
+                # Source position offset (area-uniform within 0.8 * theta_e)
+                u_pos = h_uniform(101)
+                u_ang = h_uniform(102)
+                r_offset = F.sqrt(u_pos) * 0.8 * F.col("theta_e_arcsec")
+                ang = 2.0 * math.pi * u_ang
+                tasks = tasks.withColumn(
+                    "src_x_arcsec", 
+                    F.when(F.col("theta_e_arcsec") > 0, r_offset * F.cos(ang)).otherwise(F.lit(0.0))
+                )
+                tasks = tasks.withColumn(
+                    "src_y_arcsec",
+                    F.when(F.col("theta_e_arcsec") > 0, r_offset * F.sin(ang)).otherwise(F.lit(0.0))
+                )
+                
+                # Source position angle [0, 2*pi)
+                u_srcphi = h_uniform(103)
+                tasks = tasks.withColumn(
+                    "src_phi_rad",
+                    F.when(F.col("theta_e_arcsec") > 0, 2.0 * math.pi * u_srcphi).otherwise(F.lit(0.0))
+                )
+                
+                # Shear orientation [0, pi) (2*phi periodicity)
+                u_shphi = h_uniform(104)
+                tasks = tasks.withColumn(
+                    "shear_phi_rad",
+                    F.when(F.col("theta_e_arcsec") > 0, math.pi * u_shphi).otherwise(F.lit(0.0))
+                )
+                
+                # Source colors (blue-ish): g-r ~ 0.2 +/- 0.2; r-z ~ 0.1 +/- 0.2
+                # Use Box-Muller for normal distribution
+                u1 = F.greatest(h_uniform(105), F.lit(1e-12))
+                u2 = h_uniform(106)
+                z1 = F.sqrt(F.lit(-2.0) * F.log(u1)) * F.cos(F.lit(2.0 * math.pi) * u2)
+                
+                u3 = F.greatest(h_uniform(107), F.lit(1e-12))
+                u4 = h_uniform(108)
+                z2 = F.sqrt(F.lit(-2.0) * F.log(u3)) * F.cos(F.lit(2.0 * math.pi) * u4)
+                
+                tasks = tasks.withColumn(
+                    "src_gr",
+                    F.when(F.col("theta_e_arcsec") > 0, 
+                           F.greatest(F.lit(-0.5), F.least(F.lit(1.5), z1 * 0.2 + 0.2))
+                    ).otherwise(F.lit(None).cast("double"))
+                )
+                tasks = tasks.withColumn(
+                    "src_rz",
+                    F.when(F.col("theta_e_arcsec") > 0,
+                           F.greatest(F.lit(-0.5), F.least(F.lit(1.5), z2 * 0.2 + 0.1))
+                    ).otherwise(F.lit(None).cast("double"))
+                )
+                
+                # =========================================================================
+                # LENS MODEL AND LENS ELLIPTICITY COLUMNS
+                # =========================================================================
+                # These define the lens mass distribution for SIE injections.
+                # Controls have lens_model="CONTROL" and lens_e/lens_phi_rad = 0.
+                # =========================================================================
+                
+                # Lens ellipticity: uniform in [0.05, 0.5] for realistic elliptical lenses
+                u_lens_e = h_uniform(109)
+                tasks = tasks.withColumn(
+                    "lens_e",
+                    F.when(F.col("theta_e_arcsec") > 0,
+                           0.05 + u_lens_e * 0.45  # Range [0.05, 0.5]
+                    ).otherwise(F.lit(0.0))
+                )
+                
+                # Lens position angle: uniform in [0, pi)
+                u_lens_phi = h_uniform(110)
+                tasks = tasks.withColumn(
+                    "lens_phi_rad",
+                    F.when(F.col("theta_e_arcsec") > 0, math.pi * u_lens_phi).otherwise(F.lit(0.0))
+                )
+                
+                # Lens model: "SIE" for injections, "CONTROL" for controls
+                tasks = tasks.withColumn(
+                    "lens_model",
+                    F.when(F.col("theta_e_arcsec") > 0, F.lit("SIE")).otherwise(F.lit("CONTROL"))
+                )
+                
+                # Add flux unit constant for provenance
+                tasks = tasks.withColumn("ab_zp_nmgy", F.lit(float(AB_ZP_NMGY)))
+                tasks = tasks.withColumn("pipeline_version", F.lit("phase4_pipeline_merged_v2"))
+
                 # Deterministic task id
                 tasks = tasks.withColumn(
                     "task_id",
@@ -883,6 +1387,15 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
                     "psfsize_r", "psfdepth_r", "ebv", "psf_bin", "depth_bin",
                     "config_id", "theta_e_arcsec", "src_dmag", "src_reff_arcsec", "src_e", "shear",
                     "stamp_size", "bandset", "replicate",
+                    # Control sample flag
+                    "is_control",
+                    # Frozen randomness columns (for reproducibility in Stage 4c)
+                    "task_seed64", "src_x_arcsec", "src_y_arcsec", "src_phi_rad", "shear_phi_rad",
+                    "src_gr", "src_rz",
+                    # Lens model and lens ellipticity (for SIE)
+                    "lens_model", "lens_e", "lens_phi_rad",
+                    # Provenance columns
+                    "ab_zp_nmgy", "pipeline_version",
                 ]
                 tasks_out = tasks.select(*keep)
 
@@ -1057,23 +1570,56 @@ def stage_4b_cache_coadds(spark: SparkSession, args: argparse.Namespace) -> None
     s3_cache = args.coadd_s3_cache_prefix.rstrip("/")
 
     def _proc_partition(it: Iterable[Row]):
+        import random as _random
+        
         c = _s3_client()
+        
+        # Per-partition jitter to avoid thundering herd on NERSC endpoints
+        _random.seed()
+        time.sleep(_random.uniform(0, 2.0))
+        
+        def s3_object_exists(bucket: str, key: str) -> bool:
+            """Check if a specific S3 object exists using head_object."""
+            try:
+                c.head_object(Bucket=bucket, Key=key)
+                return True
+            except Exception:
+                return False
+        
         for r in it:
             brick = r["brickname"]
             prefix = f"{s3_cache}/{brick}"
             try:
-                # Skip if already cached
-                if (not args.force) and s3_prefix_exists(prefix + "/"):
+                urls = build_coadd_urls(coadd_base, brick, bands)
+                
+                # =========================================================================
+                # IDEMPOTENT CACHING: Check each file individually with head_object
+                # =========================================================================
+                # This ensures partial caches are completed rather than skipped entirely.
+                # Only download files that don't already exist in S3.
+                # =========================================================================
+                files_to_download = []
+                if not args.force:
+                    for k, url in urls.items():
+                        fname = url.split("/")[-1]
+                        s3_uri = f"{prefix}/{fname}"
+                        bkt, key = _parse_s3(s3_uri)
+                        if not s3_object_exists(bkt, key):
+                            files_to_download.append((k, url, fname))
+                else:
+                    # Force mode: download everything
+                    files_to_download = [(k, url, url.split("/")[-1]) for k, url in urls.items()]
+                
+                if not files_to_download:
+                    # All files already exist, skip this brick
                     yield Row(brickname=brick, ok=1, error=None, s3_prefix=prefix + "/")
                     continue
 
-                urls = build_coadd_urls(coadd_base, brick, bands)
                 tmpdir = f"/mnt/tmp/phase4b_{brick}"
                 os.makedirs(tmpdir, exist_ok=True)
 
-                # Download and upload
-                for k, url in urls.items():
-                    fname = url.split("/")[-1]
+                # Download and upload only missing files
+                for k, url, fname in files_to_download:
                     local = os.path.join(tmpdir, fname)
                     _download_http(url, local, timeout_s=args.http_timeout_s)
                     if os.path.getsize(local) <= 0:
@@ -1198,17 +1744,13 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
         print(f"[4c] METRICS-ONLY mode enabled - stamps will NOT be saved")
     
     # =========================================================================
-    # LENS MODEL SELECTION:
-    # SIE is more realistic (elliptical, proper ray tracing via lenstronomy)
-    # SIS is simpler and faster (no lenstronomy dependency)
+    # LENS MODEL: Now determined by manifest's `lens_model` column
     # =========================================================================
-    use_sie = bool(args.use_sie) and LENSTRONOMY_AVAILABLE
-    if args.use_sie and not LENSTRONOMY_AVAILABLE:
-        print(f"[4c] WARNING: --use-sie requested but lenstronomy not available. Falling back to SIS.")
-    if use_sie:
-        print(f"[4c] Using SIE lens model with physics validation (lenstronomy)")
-    else:
-        print(f"[4c] Using simplified SIS lens model")
+    # The manifest specifies "SIE", "SIS", or "CONTROL" per task.
+    # The new dependency-free render_lensed_source() handles all models.
+    # This ensures reproducibility - no runtime model switching.
+    # =========================================================================
+    print(f"[4c] Lens model will be read from manifest (SIE/SIS/CONTROL per task)")
     
     # Output schema: stamp_npz is nullable in metrics-only mode
     stamps_schema = T.StructType([
@@ -1239,8 +1781,9 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
         T.StructField("arc_snr", T.DoubleType(), True),
         T.StructField("metrics_only", T.IntegerType(), False),  # Track if stamp was skipped
         # Lens model provenance (for dataset consistency checks)
-        T.StructField("lens_model", T.StringType(), True),  # "SIE" or "SIS" - tracks which model was used
-        T.StructField("lens_e", T.DoubleType(), True),  # Lens ellipticity (sampled independently)
+        T.StructField("lens_model", T.StringType(), True),  # "SIE", "SIS", or "CONTROL"
+        T.StructField("lens_e", T.DoubleType(), True),  # Lens ellipticity
+        T.StructField("lens_phi_rad", T.DoubleType(), True),  # Lens position angle
         # Physics validation metrics (from SIE injection)
         T.StructField("magnification", T.DoubleType(), True),
         T.StructField("tangential_stretch", T.DoubleType(), True),
@@ -1313,87 +1856,128 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     invs[b] = invs_b
                     cut_ok_all = cut_ok_all and ok1 and ok2
 
-                # Injection
+                # =========================================================================
+                # INJECTION USING FROZEN RANDOMNESS FROM MANIFEST
+                # =========================================================================
+                # All random degrees of freedom were frozen in Stage 4a.
+                # Stage 4c is now DETERMINISTIC - reruns produce identical output.
+                # =========================================================================
+                
                 theta_e = float(r["theta_e_arcsec"])
-                src_dmag = float(r["src_dmag"])
-                src_reff = float(r["src_reff_arcsec"])
-                src_e = float(r["src_e"])
-                shear = float(r["shear"])
+                src_dmag = float(r["src_dmag"]) if r["src_dmag"] is not None else 0.0
+                src_reff = float(r["src_reff_arcsec"]) if r["src_reff_arcsec"] is not None else 0.1
+                src_e = float(r["src_e"]) if r["src_e"] is not None else 0.2
+                shear = float(r["shear"]) if r["shear"] is not None else 0.0
 
-                # Use r-band for flux scaling
-                # Flux ~ 10^(-0.4*mag), scale by an arbitrary constant because coadds are in nanomaggies.
-                # We keep relative scaling; downstream can re-normalize.
-                rmag = float(r["rmag"])
-                flux0 = 10 ** (-0.4 * rmag)
-                src_flux = flux0 * (10 ** (-0.4 * src_dmag)) * float(args.src_flux_scale)
+                # Read frozen randomness from manifest
+                src_x_arcsec = float(r["src_x_arcsec"]) if r["src_x_arcsec"] is not None else 0.0
+                src_y_arcsec = float(r["src_y_arcsec"]) if r["src_y_arcsec"] is not None else 0.0
+                src_phi_rad = float(r["src_phi_rad"]) if r["src_phi_rad"] is not None else 0.0
+                shear_phi_rad = float(r["shear_phi_rad"]) if r["shear_phi_rad"] is not None else 0.0
+                lens_e_val = float(r["lens_e"]) if r["lens_e"] is not None else 0.0
+                lens_phi_rad = float(r["lens_phi_rad"]) if r["lens_phi_rad"] is not None else 0.0
+                lens_model_str = str(r["lens_model"]) if r["lens_model"] is not None else "CONTROL"
+                src_gr = float(r["src_gr"]) if r["src_gr"] is not None else 0.2
+                src_rz = float(r["src_rz"]) if r["src_rz"] is not None else 0.1
 
-                rng = np.random.RandomState(int((hash(r["task_id"]) & 0xFFFFFFFF) ^ int(r["replicate"])) )
+                # =========================================================================
+                # CORRECT FLUX CALCULATION (nanomaggies with AB ZP=22.5)
+                # =========================================================================
+                # lens_rmag = host galaxy r-band mag
+                # src_rmag = lens_rmag + src_dmag (source is fainter by src_dmag)
+                # Use proper nanomaggy conversion, NOT arbitrary flux scale!
+                # =========================================================================
+                rmag = float(r["rmag"]) if r["rmag"] is not None else 20.0
+                src_rmag = rmag + src_dmag
+                src_flux_r_nmgy = mag_to_nMgy(src_rmag)
+                
+                # Source flux in g and z bands using frozen colors
+                src_gmag = src_rmag + src_gr  # g-r color
+                src_zmag = src_rmag - src_rz  # r-z color
+                src_flux_g_nmgy = mag_to_nMgy(src_gmag)
+                src_flux_z_nmgy = mag_to_nMgy(src_zmag)
 
-                add = None
+                add_r = None
                 arc_snr = None
-                lens_model_str = None  # Will be "SIE" or "SIS"
-                lens_e_val = None  # Lens ellipticity (only set for SIE)
                 physics_metrics = {
                     "magnification": None,
                     "tangential_stretch": None,
                     "radial_stretch": None,
-                    "expected_arc_radius": None,
+                    "expected_arc_radius": theta_e if theta_e > 0 else None,
                 }
                 physics_valid = None
                 physics_warnings_str = None
                 
-                if theta_e > 0 and src_flux > 0:
-                    # Approximate PSF FWHM from brick psfsize_r if available
-                    psf_fwhm = float(r["psfsize_r"]) if r["psfsize_r"] is not None else None
+                if theta_e > 0 and src_flux_r_nmgy > 0:
+                    # Approximate PSF sigma from FWHM (sigma = FWHM / 2.355)
+                    psf_fwhm = float(r["psfsize_r"]) if r["psfsize_r"] is not None else 1.4
+                    psf_sigma_pix = (psf_fwhm / 2.355) / PIX_SCALE_ARCSEC
                     
                     # =========================================================================
-                    # LENS MODEL SELECTION:
-                    # SIE: More realistic, returns physics metrics for validation
-                    # SIS: Simpler, faster, no physics metrics
+                    # USE NEW RENDER FUNCTION WITH CORRECT FLUX NORMALIZATION
                     # =========================================================================
-                    if use_sie:
-                        # Use SIE with lenstronomy - includes physics validation metrics
-                        # FIX (2026-01-22): Sample lens ellipticity INDEPENDENTLY from source
-                        # Lens and source shapes are physically uncorrelated, so coupling
-                        # them (e.g., lens_e = src_e * 0.8) could bias the model.
-                        # Sample lens_e from a realistic distribution for galaxy-scale lenses:
-                        # - Mean ~0.2-0.3, range 0-0.5 (rare to have very elongated lenses)
-                        lens_e_val = rng.uniform(0.05, 0.45)  # Independent of source
-                        lens_model_str = "SIE"
-                        add, physics_metrics = inject_sie_stamp(
-                            (size, size), theta_e, src_flux, src_reff, 
-                            src_e, lens_e_val, shear, rng, psf_fwhm_arcsec=psf_fwhm
-                        )
-                    else:
-                        # Use simplified SIS (spherical, no lens ellipticity)
-                        lens_model_str = "SIS"
-                        lens_e_val = 0.0  # SIS is spherically symmetric
-                        add = inject_sis_stamp(
-                            (size, size), theta_e, src_flux, src_reff, 
-                            src_e, shear, rng, psf_fwhm_arcsec=psf_fwhm
-                        )
-
-                    # Add to each band with a simple color scaling (bluer source)
+                    # This normalizes the UNLENSED source analytically, so lensed images
+                    # are naturally brighter due to magnification. No more image-sum normalization!
+                    # =========================================================================
+                    
+                    # Render lensed source for each band
                     for b in use_bands:
-                        scale = 1.0
-                        if b == "g":
-                            scale = 1.2
+                        if b == "r":
+                            src_flux_b = src_flux_r_nmgy
+                        elif b == "g":
+                            src_flux_b = src_flux_g_nmgy
                         elif b == "z":
-                            scale = 0.8
-                        imgs[b] = (imgs[b] + scale * add).astype(np.float32)
+                            src_flux_b = src_flux_z_nmgy
+                        else:
+                            src_flux_b = src_flux_r_nmgy
+                        
+                        add_b = render_lensed_source(
+                            stamp_size=size,
+                            pixscale_arcsec=PIX_SCALE_ARCSEC,
+                            lens_model=lens_model_str,
+                            theta_e_arcsec=theta_e,
+                            lens_e=lens_e_val,
+                            lens_phi_rad=lens_phi_rad,
+                            shear=shear,
+                            shear_phi_rad=shear_phi_rad,
+                            src_total_flux_nmgy=src_flux_b,
+                            src_reff_arcsec=src_reff,
+                            src_e=src_e,
+                            src_phi_rad=src_phi_rad,
+                            src_x_arcsec=src_x_arcsec,
+                            src_y_arcsec=src_y_arcsec,
+                            psf_sigma_pix=psf_sigma_pix,
+                            psf_apply=True,
+                        )
+                        
+                        imgs[b] = (imgs[b] + add_b).astype(np.float32)
+                        
+                        # Keep r-band injection for SNR calculation
+                        if b == "r":
+                            add_r = add_b
 
-                    # Proxy SNR in r
-                    invr = invs.get("r")
-                    if invr is not None:
-                        sigma = np.where(invr > 0, 1.0 / np.sqrt(invr + 1e-12), 0.0)
-                        snr = np.where(sigma > 0, add / (sigma + 1e-12), 0.0)
-                        arc_snr = float(np.nanmax(snr))
+                    # Proxy SNR in r-band
+                    if add_r is not None:
+                        invr = invs.get("r")
+                        if invr is not None:
+                            sigma = np.where(invr > 0, 1.0 / np.sqrt(invr + 1e-12), 0.0)
+                            snr = np.where(sigma > 0, add_r / (sigma + 1e-12), 0.0)
+                            arc_snr = float(np.nanmax(snr))
                     
                     # =========================================================================
-                    # PHYSICS VALIDATION:
-                    # Check that injection parameters are physically consistent.
-                    # This helps catch bugs and ensures PINN training data is realistic.
+                    # MAGNIFICATION PROXY (evaluated off critical curve)
                     # =========================================================================
+                    # Use simple SIS approximation: mu_t ~ 1 / (1 - theta_e / r)
+                    # Evaluate at r = 1.1 * theta_e to avoid singularity
+                    # =========================================================================
+                    r_eval = 1.1 * theta_e
+                    denom = (1.0 - theta_e / r_eval)
+                    if abs(denom) > 1e-6:
+                        mu_proxy = 1.0 / denom
+                        physics_metrics["magnification"] = float(np.clip(mu_proxy, -1000, 1000))
+                        physics_metrics["tangential_stretch"] = abs(physics_metrics["magnification"])
+                    
+                    # Physics validation
                     physics_valid_bool, warnings = validate_physics_consistency(
                         theta_e, arc_snr,
                         physics_metrics.get("magnification"),
@@ -1438,6 +2022,7 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     metrics_only=int(metrics_only),
                     lens_model=lens_model_str,
                     lens_e=lens_e_val,
+                    lens_phi_rad=lens_phi_rad if theta_e > 0 else None,
                     magnification=physics_metrics.get("magnification"),
                     tangential_stretch=physics_metrics.get("tangential_stretch"),
                     radial_stretch=physics_metrics.get("radial_stretch"),
@@ -1479,8 +2064,9 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     cutout_ok=0,
                     arc_snr=None,
                     metrics_only=int(metrics_only),
-                    lens_model="SIE" if use_sie else "SIS",  # Record intended model
-                    lens_e=None,  # Unknown due to error
+                    lens_model=str(r["lens_model"]) if r["lens_model"] is not None else "CONTROL",
+                    lens_e=float(r["lens_e"]) if r["lens_e"] is not None else None,
+                    lens_phi_rad=float(r["lens_phi_rad"]) if r["lens_phi_rad"] is not None else None,
                     magnification=None,
                     tangential_stretch=None,
                     radial_stretch=None,
@@ -1663,6 +2249,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--n-per-config-grid", type=int, default=25)
     p.add_argument("--n-total-train-per-split", type=int, default=200000)
     p.add_argument("--control-frac-train", type=float, default=0.25)
+    p.add_argument("--control-frac-grid", type=float, default=0.10,
+                   help="Fraction of grid tier samples to mark as controls (theta_e=0)")
+    p.add_argument("--control-frac-debug", type=float, default=0.0,
+                   help="Fraction of debug tier samples to mark as controls (theta_e=0)")
+    p.add_argument("--max-total-tasks-soft", type=int, default=30_000_000,
+                   help="Soft limit on total estimated tasks to catch accidental explosions. Set to 0 to disable.")
 
     p.add_argument("--replicates", type=int, default=2)
     p.add_argument("--split-seed", type=int, default=13)
@@ -1674,7 +2266,8 @@ def build_parser() -> argparse.ArgumentParser:
     # Stage 4c
     p.add_argument("--experiment-id", default="", help="Experiment id under phase4a/manifests")
     p.add_argument("--sweep-partitions", type=int, default=600)
-    p.add_argument("--src-flux-scale", type=float, default=1e6, help="Arbitrary scaling from mags to coadd units")
+    # NOTE: --src-flux-scale is deprecated. Flux is now computed correctly using
+    # mag_to_nMgy() with AB ZP=22.5 (Legacy Survey nanomaggy convention).
     # =========================================================================
     # METRICS-ONLY MODE:
     # When enabled, stage 4c computes injection metrics (arc_snr, cutout_ok, etc.)
@@ -1690,12 +2283,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="If 1, skip saving stamp images (for grid tier completeness analysis)")
     # =========================================================================
     # LENS MODEL SELECTION:
-    # --use-sie 1: Use SIE (Singular Isothermal Ellipsoid) via lenstronomy
-    #              More realistic, includes ellipticity, proper ray tracing
-    # --use-sie 0: Use simplified SIS (faster, no lenstronomy dependency)
+    # The lens model is now determined by the manifest's `lens_model` column,
+    # which is set in Stage 4a. This ensures reproducibility.
+    # --use-sie is kept for backwards compatibility but is effectively ignored.
+    # The new dependency-free SIE implementation works without lenstronomy.
     # =========================================================================
     p.add_argument("--use-sie", type=int, default=1,
-                   help="If 1, use SIE lens model via lenstronomy (more realistic). If 0, use SIS (simpler).")
+                   help="DEPRECATED: Lens model is now read from manifest. Kept for backward compatibility.")
 
     # Stage 4d
     p.add_argument("--recovery-snr-thresh", type=float, default=5.0)
