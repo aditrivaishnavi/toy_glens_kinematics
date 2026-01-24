@@ -242,6 +242,12 @@ MASKBITS_BAD = (
     | (1 << 11) # MEDIUM - medium-bright star nearby
 )
 
+# WISE detection bits (informational, not "bad" - for LRG science tracking)
+# Reference: https://www.legacysurvey.org/dr10/bitmasks
+MASKBIT_WISEM1 = (1 << 8)   # 0x100 - WISE W1 (3.4μm) detected source
+MASKBIT_WISEM2 = (1 << 9)   # 0x200 - WISE W2 (4.6μm) detected source
+MASKBITS_WISE = MASKBIT_WISEM1 | MASKBIT_WISEM2
+
 
 def mag_to_nMgy(mag: float) -> float:
     """Convert AB magnitude to nanomaggies (Legacy Survey flux units)."""
@@ -532,7 +538,10 @@ def render_unlensed_source(
     dx = theta_x - src_x_arcsec
     dy = theta_y - src_y_arcsec
 
-    unit_flux = sersic_unit_total_flux(reff_arcsec=src_reff_arcsec, q=1.0, n=n)
+    # Compute axis ratio from ellipticity for consistent normalization
+    # Must match the ellipticity used in sersic_profile() below
+    q_src = (1.0 - src_e) / (1.0 + src_e)
+    unit_flux = sersic_unit_total_flux(reff_arcsec=src_reff_arcsec, q=q_src, n=n)
     amp = float(src_total_flux_nmgy) / max(float(unit_flux), 1e-30)
 
     img = amp * sersic_profile(dx, dy, src_reff_arcsec, n, src_e, src_phi_rad)
@@ -1865,6 +1874,11 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
     if metrics_only:
         print(f"[4c] METRICS-ONLY mode enabled - stamps will NOT be saved")
     
+    # Capture flag for psfsize map loading (gated to avoid failed S3 reads if not cached)
+    use_psfsize_maps = bool(args.use_psfsize_maps)
+    if use_psfsize_maps:
+        print(f"[4c] Using center-evaluated PSF from psfsize maps (requires 4b with --include-psfsize 1)")
+    
     # =========================================================================
     # LENS MODEL: Now determined by manifest's `lens_model` column
     # =========================================================================
@@ -1914,6 +1928,10 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
         T.StructField("cutout_ok", T.IntegerType(), False),
         T.StructField("arc_snr", T.DoubleType(), True),
         T.StructField("bad_pixel_frac", T.DoubleType(), True),  # Fraction of masked/bad pixels in stamp
+        T.StructField("wise_frac", T.DoubleType(), True),  # Fraction with WISE detections (WISEM1|WISEM2)
+        T.StructField("psf_fwhm_used_g", T.DoubleType(), True),  # Actual PSF FWHM used for g-band injection
+        T.StructField("psf_fwhm_used_r", T.DoubleType(), True),  # Actual PSF FWHM used for r-band injection
+        T.StructField("psf_fwhm_used_z", T.DoubleType(), True),  # Actual PSF FWHM used for z-band injection
         T.StructField("metrics_only", T.IntegerType(), False),  # Track if stamp was skipped
         # Lens model provenance (for dataset consistency checks)
         T.StructField("lens_model", T.StringType(), True),  # "SIE", "SIS", or "CONTROL"
@@ -1967,14 +1985,16 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     mask_arr, _ = _read_fits_from_s3(mask_uri)
                     cur["maskbits"] = mask_arr
 
-                    # psfsize maps for center-evaluated PSF (if available from 4b --include-psfsize)
-                    for b in bands:
-                        psfsize_uri = f"{cache_prefix}/{brick}/legacysurvey-{brick}-psfsize-{b}.fits.fz"
-                        try:
-                            psfsize_b, _ = _read_fits_from_s3(psfsize_uri)
-                            cur[f"psfsize_{b}"] = psfsize_b
-                        except Exception:
-                            cur[f"psfsize_{b}"] = None  # Fall back to manifest value
+                    # psfsize maps for center-evaluated PSF (only if --use-psfsize-maps 1)
+                    # Requires 4b to have been run with --include-psfsize 1
+                    if use_psfsize_maps:
+                        for b in bands:
+                            psfsize_uri = f"{cache_prefix}/{brick}/legacysurvey-{brick}-psfsize-{b}.fits.fz"
+                            try:
+                                psfsize_b, _ = _read_fits_from_s3(psfsize_uri)
+                                cur[f"psfsize_{b}"] = psfsize_b
+                            except Exception:
+                                cur[f"psfsize_{b}"] = None  # Fall back to manifest value
 
                 except Exception as e:
                     # Mark all tasks for this brick as failed cutouts
@@ -2006,15 +2026,22 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     cut_ok_all = cut_ok_all and ok1 and ok2
 
                 # Cut maskbits stamp for SNR filtering
+                # If maskbits missing/corrupt, set arc_snr=None to avoid biased completeness
                 mask_stamp = None
-                bad_pixel_frac = 0.0
+                bad_pixel_frac = None  # None if mask unavailable
                 good_mask = None
+                mask_valid = False
+                wise_frac = None
                 if "maskbits" in cur:
                     mask_stamp, mask_ok = _cutout(cur["maskbits"], x, y, size)
                     if mask_ok and mask_stamp is not None:
+                        mask_valid = True
                         # Apply DR10 bad pixel mask
                         good_mask = (mask_stamp.astype(np.int64) & MASKBITS_BAD) == 0
                         bad_pixel_frac = 1.0 - float(good_mask.mean())
+                        # Track WISE coverage (not "bad", but scientifically interesting for LRGs)
+                        wise_mask = (mask_stamp.astype(np.int64) & MASKBITS_WISE) != 0
+                        wise_frac = float(wise_mask.mean())
 
                 # =========================================================================
                 # INJECTION USING FROZEN RANDOMNESS FROM MANIFEST
@@ -2059,6 +2086,10 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
 
                 add_r = None
                 arc_snr = None
+                # Track actual PSF FWHM used (for provenance/reproducibility)
+                psf_fwhm_used_g = None
+                psf_fwhm_used_r = None
+                psf_fwhm_used_z = None
                 physics_metrics = {
                     "magnification": None,
                     "tangential_stretch": None,
@@ -2096,6 +2127,11 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     psf_fwhm_r = _get_psf_fwhm_at_center(cur, "r", x, y, manifest_fwhm_r)
                     psf_fwhm_g = _get_psf_fwhm_at_center(cur, "g", x, y, manifest_fwhm_g)
                     psf_fwhm_z = _get_psf_fwhm_at_center(cur, "z", x, y, manifest_fwhm_z)
+                    
+                    # Store for output provenance
+                    psf_fwhm_used_g = psf_fwhm_g
+                    psf_fwhm_used_r = psf_fwhm_r
+                    psf_fwhm_used_z = psf_fwhm_z
                     
                     # Convert FWHM to sigma in pixels: sigma = FWHM / 2.355
                     psf_sigma_r = (psf_fwhm_r / 2.355) / PIX_SCALE_ARCSEC
@@ -2150,16 +2186,13 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                             add_r = add_b
 
                     # Proxy SNR in r-band (filtered by maskbits to exclude bad pixels)
-                    if add_r is not None:
+                    # Only compute if mask is valid; otherwise arc_snr remains None
+                    # to prevent biased completeness from missing/corrupt maskbits
+                    if add_r is not None and mask_valid and good_mask is not None:
                         invr = invs.get("r")
                         if invr is not None:
-                            # Apply maskbits filtering if available
-                            if good_mask is not None:
-                                sigma = np.where((invr > 0) & good_mask, 1.0 / np.sqrt(invr + 1e-12), 0.0)
-                                snr = np.where((sigma > 0) & good_mask, add_r / (sigma + 1e-12), 0.0)
-                            else:
-                                sigma = np.where(invr > 0, 1.0 / np.sqrt(invr + 1e-12), 0.0)
-                                snr = np.where(sigma > 0, add_r / (sigma + 1e-12), 0.0)
+                            sigma = np.where((invr > 0) & good_mask, 1.0 / np.sqrt(invr + 1e-12), 0.0)
+                            snr = np.where((sigma > 0) & good_mask, add_r / (sigma + 1e-12), 0.0)
                             arc_snr = float(np.nanmax(snr))
                     
                                         # =========================================================================
@@ -2252,6 +2285,10 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     cutout_ok=int(bool(cut_ok_all)),
                     arc_snr=arc_snr,
                     bad_pixel_frac=bad_pixel_frac,
+                    wise_frac=wise_frac,
+                    psf_fwhm_used_g=psf_fwhm_used_g,
+                    psf_fwhm_used_r=psf_fwhm_used_r,
+                    psf_fwhm_used_z=psf_fwhm_used_z,
                     metrics_only=int(metrics_only),
                     lens_model=lens_model_str,
                     lens_e=lens_e_val,
@@ -2297,6 +2334,10 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     cutout_ok=0,
                     arc_snr=None,
                     bad_pixel_frac=None,
+                    wise_frac=None,
+                    psf_fwhm_used_g=None,
+                    psf_fwhm_used_r=None,
+                    psf_fwhm_used_z=None,
                     metrics_only=int(metrics_only),
                     lens_model=str(r["lens_model"]) if r["lens_model"] is not None else "CONTROL",
                     lens_e=float(r["lens_e"]) if r["lens_e"] is not None else None,
@@ -2498,6 +2539,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--http-timeout-s", type=int, default=180)
     p.add_argument("--include-psfsize", type=int, default=0,
                    help="If 1, download psfsize maps (per-pixel PSF FWHM) for spatially varying PSF")
+    p.add_argument("--use-psfsize-maps", type=int, default=0,
+                   help="Stage 4c: If 1, load psfsize maps for center-evaluated PSF (requires 4b with --include-psfsize 1)")
 
     # Stage 4c
     p.add_argument("--experiment-id", default="", help="Experiment id under phase4a/manifests")
