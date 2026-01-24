@@ -242,11 +242,26 @@ MASKBITS_BAD = (
     | (1 << 11) # MEDIUM - medium-bright star nearby
 )
 
-# WISE detection bits (informational, not "bad" - for LRG science tracking)
+# WISE bright-star mask bits (not "detected sources" - these are masking flags)
 # Reference: https://www.legacysurvey.org/dr10/bitmasks
-MASKBIT_WISEM1 = (1 << 8)   # 0x100 - WISE W1 (3.4μm) detected source
-MASKBIT_WISEM2 = (1 << 9)   # 0x200 - WISE W2 (4.6μm) detected source
+# These indicate pixels affected by WISE-detected bright stars, not WISE sources themselves
+MASKBIT_WISEM1 = (1 << 8)   # 0x100 - WISE W1 (3.4μm) bright star mask
+MASKBIT_WISEM2 = (1 << 9)   # 0x200 - WISE W2 (4.6μm) bright star mask
 MASKBITS_WISE = MASKBIT_WISEM1 | MASKBIT_WISEM2
+
+# R-band specific bad bits for arc_snr calculation (cleaner than all-band mask)
+# Using r-band-specific bits avoids masking valid r pixels due to g/z issues
+MASKBITS_BAD_COMMON = (
+    (1 << 0)    # NPRIMARY
+    | (1 << 1)  # BRIGHT
+    | (1 << 10) # BAILOUT
+    | (1 << 11) # MEDIUM
+)
+MASKBITS_BAD_R = MASKBITS_BAD_COMMON | (1 << 3) | (1 << 6)  # + SATUR_R + ALLMASK_R
+
+# Default split seed - hardcoded for reproducibility
+# CRITICAL: This must match across 4a reruns for consistent sampling
+DEFAULT_SPLIT_SEED = 42
 
 
 def mag_to_nMgy(mag: float) -> float:
@@ -1928,7 +1943,8 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
         T.StructField("cutout_ok", T.IntegerType(), False),
         T.StructField("arc_snr", T.DoubleType(), True),
         T.StructField("bad_pixel_frac", T.DoubleType(), True),  # Fraction of masked/bad pixels in stamp
-        T.StructField("wise_frac", T.DoubleType(), True),  # Fraction with WISE detections (WISEM1|WISEM2)
+        T.StructField("wise_brightmask_frac", T.DoubleType(), True),  # Fraction affected by WISE bright-star mask
+        T.StructField("metrics_ok", T.IntegerType(), True),  # 1 if all metrics computed successfully
         T.StructField("psf_fwhm_used_g", T.DoubleType(), True),  # Actual PSF FWHM used for g-band injection
         T.StructField("psf_fwhm_used_r", T.DoubleType(), True),  # Actual PSF FWHM used for r-band injection
         T.StructField("psf_fwhm_used_z", T.DoubleType(), True),  # Actual PSF FWHM used for z-band injection
@@ -2031,17 +2047,17 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                 bad_pixel_frac = None  # None if mask unavailable
                 good_mask = None
                 mask_valid = False
-                wise_frac = None
+                wise_brightmask_frac = None
                 if "maskbits" in cur:
                     mask_stamp, mask_ok = _cutout(cur["maskbits"], x, y, size)
                     if mask_ok and mask_stamp is not None:
                         mask_valid = True
-                        # Apply DR10 bad pixel mask
-                        good_mask = (mask_stamp.astype(np.int64) & MASKBITS_BAD) == 0
+                        # Apply DR10 bad pixel mask (r-band specific for arc_snr)
+                        good_mask = (mask_stamp.astype(np.int64) & MASKBITS_BAD_R) == 0
                         bad_pixel_frac = 1.0 - float(good_mask.mean())
-                        # Track WISE coverage (not "bad", but scientifically interesting for LRGs)
+                        # Track WISE bright-star mask coverage (not "detections" - masking flags)
                         wise_mask = (mask_stamp.astype(np.int64) & MASKBITS_WISE) != 0
-                        wise_frac = float(wise_mask.mean())
+                        wise_brightmask_frac = float(wise_mask.mean())
 
                 # =========================================================================
                 # INJECTION USING FROZEN RANDOMNESS FROM MANIFEST
@@ -2285,7 +2301,8 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     cutout_ok=int(bool(cut_ok_all)),
                     arc_snr=arc_snr,
                     bad_pixel_frac=bad_pixel_frac,
-                    wise_frac=wise_frac,
+                    wise_brightmask_frac=wise_brightmask_frac,
+                    metrics_ok=int(mask_valid and cut_ok_all and arc_snr is not None) if theta_e > 0 else int(mask_valid and cut_ok_all),
                     psf_fwhm_used_g=psf_fwhm_used_g,
                     psf_fwhm_used_r=psf_fwhm_used_r,
                     psf_fwhm_used_z=psf_fwhm_used_z,
@@ -2334,7 +2351,8 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     cutout_ok=0,
                     arc_snr=None,
                     bad_pixel_frac=None,
-                    wise_frac=None,
+                    wise_brightmask_frac=None,
+                    metrics_ok=0,
                     psf_fwhm_used_g=None,
                     psf_fwhm_used_r=None,
                     psf_fwhm_used_z=None,
@@ -2532,7 +2550,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Soft limit on total estimated tasks to catch accidental explosions. Set to 0 to disable.")
 
     p.add_argument("--replicates", type=int, default=2)
-    p.add_argument("--split-seed", type=int, default=13)
+    p.add_argument("--split-seed", type=int, default=DEFAULT_SPLIT_SEED,
+                   help=f"Seed for deterministic sampling (default: {DEFAULT_SPLIT_SEED})")
 
     # Stage 4b / 4b2
     p.add_argument("--cache-partitions", type=int, default=200)
