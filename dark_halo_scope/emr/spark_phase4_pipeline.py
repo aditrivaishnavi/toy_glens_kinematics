@@ -515,7 +515,7 @@ def render_unlensed_source(
     dx = theta_x - src_x_arcsec
     dy = theta_y - src_y_arcsec
 
-    unit_flux = sersic_unit_total_flux(n=n, reff=src_reff_arcsec, q=1.0)
+    unit_flux = sersic_unit_total_flux(reff_arcsec=src_reff_arcsec, q=1.0, n=n)
     amp = float(src_total_flux_nmgy) / max(float(unit_flux), 1e-30)
 
     img = amp * sersic_profile(dx, dy, src_reff_arcsec, n, src_e, src_phi_rad)
@@ -919,21 +919,25 @@ def encode_npz(arrs: Dict[str, np.ndarray]) -> bytes:
 # --------------------------
 
 def build_coadd_urls(coadd_base_url: str, brickname: str, bands: List[str], 
-                      include_psfex: bool = False) -> Dict[str, str]:
-    """Return URLs for image/invvar/maskbits (and optionally PSFEx) for each band.
+                      include_psfsize: bool = False) -> Dict[str, str]:
+    """Return URLs for image/invvar/maskbits (and optionally psfsize maps) for each band.
     
     Args:
         coadd_base_url: Base URL for DR10 coadds (e.g., https://portal.nersc.gov/.../coadd)
         brickname: Brick name (e.g., "0001m002")
         bands: List of bands (e.g., ["g", "r", "z"])
-        include_psfex: If True, also include PSFEx model files for each band
+        include_psfsize: If True, also include per-pixel PSF FWHM maps for each band
         
     Returns:
         Dict mapping file keys to URLs:
         - image_{band}: Flux coadd
         - invvar_{band}: Inverse variance
         - maskbits: Bad pixel mask
-        - psfex_{band}: (if include_psfex) PSF model
+        - psfsize_{band}: (if include_psfsize) Per-pixel PSF FWHM map
+        
+    Note:
+        DR10 provides psfsize-*.fits.fz files (per-pixel PSF FWHM maps),
+        NOT psfex files. PSFEx models are not available in the coadd directory.
     """
     # DR10 structure: .../dr10/south/coadd/000/000p025/legacysurvey-000p025-image-g.fits.fz
     # with directory coadd/<brickname[:3]>/<brickname>/
@@ -944,9 +948,9 @@ def build_coadd_urls(coadd_base_url: str, brickname: str, bands: List[str],
     for b in bands:
         out[f"image_{b}"] = f"{d}/legacysurvey-{brickname}-image-{b}.fits.fz"
         out[f"invvar_{b}"] = f"{d}/legacysurvey-{brickname}-invvar-{b}.fits.fz"
-        if include_psfex:
-            # PSFEx models are uncompressed .fits (not .fits.fz)
-            out[f"psfex_{b}"] = f"{d}/legacysurvey-{brickname}-psfex-{b}.fits"
+        if include_psfsize:
+            # psfsize maps contain per-pixel PSF FWHM in arcsec
+            out[f"psfsize_{b}"] = f"{d}/legacysurvey-{brickname}-psfsize-{b}.fits.fz"
     out["maskbits"] = f"{d}/legacysurvey-{brickname}-maskbits.fits.fz"
     return out
 
@@ -1634,8 +1638,8 @@ def stage_4b_cache_coadds(spark: SparkSession, args: argparse.Namespace) -> None
     df_bricks = read_parquet_safe(spark, manifests_root).select("brickname").dropDuplicates()
     
     total_bricks = df_bricks.count()
-    psfex_str = " (with PSFEx)" if args.include_psfex else ""
-    print(f"[4b] Starting coadd cache for {total_bricks} unique bricks{psfex_str}")
+    psfsize_str = " (with psfsize maps)" if args.include_psfsize else ""
+    print(f"[4b] Starting coadd cache for {total_bricks} unique bricks{psfsize_str}")
 
     bands = [b.strip() for b in args.bands.split(",") if b.strip()]
 
@@ -1679,7 +1683,7 @@ def stage_4b_cache_coadds(spark: SparkSession, args: argparse.Namespace) -> None
                 continue
 
             try:
-                urls = build_coadd_urls(coadd_base, brick, bands, include_psfex=bool(args.include_psfex))
+                urls = build_coadd_urls(coadd_base, brick, bands, include_psfsize=bool(args.include_psfsize))
                 
                 # =========================================================================
                 # IDEMPOTENT CACHING: Check each file individually with head_object
@@ -1758,7 +1762,7 @@ def stage_4b_cache_coadds(spark: SparkSession, args: argparse.Namespace) -> None
         "coadd_s3_cache_prefix": args.coadd_s3_cache_prefix,
         "cache_partitions": int(args.cache_partitions),
         "http_timeout_s": int(args.http_timeout_s),
-        "include_psfex": bool(args.include_psfex),
+        "include_psfsize": bool(args.include_psfsize),
         "idempotency": {"skip_if_exists": int(args.skip_if_exists), "force": int(args.force)},
     }
     write_text_to_s3(f"{out_root}/_stage_config.json", json.dumps(cfg, indent=2))
@@ -1766,7 +1770,7 @@ def stage_4b_cache_coadds(spark: SparkSession, args: argparse.Namespace) -> None
     # Basic success stats
     ok = df_out.filter(F.col("ok") == 1).count()
     bad = df_out.filter(F.col("ok") == 0).count()
-    files_per_brick = 7 + (3 if args.include_psfex else 0)  # 7 base + 3 PSFEx
+    files_per_brick = 7 + (3 if args.include_psfsize else 0)  # 7 base + 3 psfsize maps
     print(f"[4b] Cached bricks ok={ok} bad={bad} (files/brick={files_per_brick}). Output: {out_root}")
 
 
@@ -2422,8 +2426,8 @@ def build_parser() -> argparse.ArgumentParser:
     # Stage 4b / 4b2
     p.add_argument("--cache-partitions", type=int, default=200)
     p.add_argument("--http-timeout-s", type=int, default=180)
-    p.add_argument("--include-psfex", type=int, default=0,
-                   help="If 1, download PSFEx model files in addition to coadds (for high-fidelity PSF)")
+    p.add_argument("--include-psfsize", type=int, default=0,
+                   help="If 1, download psfsize maps (per-pixel PSF FWHM) for spatially varying PSF")
 
     # Stage 4c
     p.add_argument("--experiment-id", default="", help="Experiment id under phase4a/manifests")
