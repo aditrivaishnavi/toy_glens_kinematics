@@ -261,7 +261,8 @@ MASKBITS_BAD_R = MASKBITS_BAD_COMMON | (1 << 3) | (1 << 6)  # + SATUR_R + ALLMAS
 
 # Default split seed - hardcoded for reproducibility
 # CRITICAL: This must match across 4a reruns for consistent sampling
-DEFAULT_SPLIT_SEED = 42
+# Value 13 matches the original Phase 4a run (before explicit seed tracking)
+DEFAULT_SPLIT_SEED = 13
 
 
 def mag_to_nMgy(mag: float) -> float:
