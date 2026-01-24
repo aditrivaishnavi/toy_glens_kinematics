@@ -918,8 +918,23 @@ def encode_npz(arrs: Dict[str, np.ndarray]) -> bytes:
 # Coadd URL builder
 # --------------------------
 
-def build_coadd_urls(coadd_base_url: str, brickname: str, bands: List[str]) -> Dict[str, str]:
-    """Return URLs for image/invvar/maskbits for each band."""
+def build_coadd_urls(coadd_base_url: str, brickname: str, bands: List[str], 
+                      include_psfex: bool = False) -> Dict[str, str]:
+    """Return URLs for image/invvar/maskbits (and optionally PSFEx) for each band.
+    
+    Args:
+        coadd_base_url: Base URL for DR10 coadds (e.g., https://portal.nersc.gov/.../coadd)
+        brickname: Brick name (e.g., "0001m002")
+        bands: List of bands (e.g., ["g", "r", "z"])
+        include_psfex: If True, also include PSFEx model files for each band
+        
+    Returns:
+        Dict mapping file keys to URLs:
+        - image_{band}: Flux coadd
+        - invvar_{band}: Inverse variance
+        - maskbits: Bad pixel mask
+        - psfex_{band}: (if include_psfex) PSF model
+    """
     # DR10 structure: .../dr10/south/coadd/000/000p025/legacysurvey-000p025-image-g.fits.fz
     # with directory coadd/<brickname[:3]>/<brickname>/
     p3 = brickname[:3]
@@ -929,7 +944,10 @@ def build_coadd_urls(coadd_base_url: str, brickname: str, bands: List[str]) -> D
     for b in bands:
         out[f"image_{b}"] = f"{d}/legacysurvey-{brickname}-image-{b}.fits.fz"
         out[f"invvar_{b}"] = f"{d}/legacysurvey-{brickname}-invvar-{b}.fits.fz"
-        out[f"maskbits"] = f"{d}/legacysurvey-{brickname}-maskbits.fits.fz"
+        if include_psfex:
+            # PSFEx models are uncompressed .fits (not .fits.fz)
+            out[f"psfex_{b}"] = f"{d}/legacysurvey-{brickname}-psfex-{b}.fits"
+    out["maskbits"] = f"{d}/legacysurvey-{brickname}-maskbits.fits.fz"
     return out
 
 
@@ -962,11 +980,24 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
 
     # Bricks-with-region provides observing conditions per brick
     df_bricks = read_parquet_safe(spark, bricks_path)
+    # Required columns
     for c in ["brickname", "psfsize_r", "psfdepth_r", "ebv"]:
         if c not in df_bricks.columns:
             raise RuntimeError(f"bricks_with_region missing required column: {c}")
-
-    df_bricks = df_bricks.select("brickname", "psfsize_r", "psfdepth_r", "ebv")
+    
+    # Per-band PSF columns (g, r, z) for realistic injection
+    # psfsize_r is required; psfsize_g and psfsize_z fallback to psfsize_r if missing
+    df_bricks = df_bricks.select("brickname", "psfsize_r", "psfdepth_r", "ebv",
+        *[c for c in ["psfsize_g", "psfsize_z"] if c in df_bricks.columns]
+    )
+    
+    # Add fallback columns if missing (use psfsize_r as approximation)
+    if "psfsize_g" not in df_bricks.columns:
+        print("[4a] Warning: psfsize_g not found in bricks_with_region, using psfsize_r as fallback")
+        df_bricks = df_bricks.withColumn("psfsize_g", F.col("psfsize_r"))
+    if "psfsize_z" not in df_bricks.columns:
+        print("[4a] Warning: psfsize_z not found in bricks_with_region, using psfsize_r as fallback")
+        df_bricks = df_bricks.withColumn("psfsize_z", F.col("psfsize_r"))
     df_parent = df_parent.join(df_bricks, on="brickname", how="left")
 
     # Region selections (3b)
@@ -1431,7 +1462,9 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
                     "task_id", "experiment_id", "selection_set_id", "selection_strategy", "ranking_mode",
                     "region_id", "region_split", "brickname", "ra", "dec",
                     "zmag", "rmag", "w1mag", "rz", "zw1",
-                    "psfsize_r", "psfdepth_r", "ebv", "psf_bin", "depth_bin",
+                    # Per-band PSF sizes for realistic injection (g, r, z)
+                    "psfsize_g", "psfsize_r", "psfsize_z",
+                    "psfdepth_r", "ebv", "psf_bin", "depth_bin",
                     "config_id", "theta_e_arcsec", "src_dmag", "src_reff_arcsec", "src_e", "shear",
                     "stamp_size", "bandset", "replicate",
                     # Control sample flag
@@ -1601,7 +1634,8 @@ def stage_4b_cache_coadds(spark: SparkSession, args: argparse.Namespace) -> None
     df_bricks = read_parquet_safe(spark, manifests_root).select("brickname").dropDuplicates()
     
     total_bricks = df_bricks.count()
-    print(f"[4b] Starting coadd cache for {total_bricks} unique bricks")
+    psfex_str = " (with PSFEx)" if args.include_psfex else ""
+    print(f"[4b] Starting coadd cache for {total_bricks} unique bricks{psfex_str}")
 
     bands = [b.strip() for b in args.bands.split(",") if b.strip()]
 
@@ -1645,7 +1679,7 @@ def stage_4b_cache_coadds(spark: SparkSession, args: argparse.Namespace) -> None
                 continue
 
             try:
-                urls = build_coadd_urls(coadd_base, brick, bands)
+                urls = build_coadd_urls(coadd_base, brick, bands, include_psfex=bool(args.include_psfex))
                 
                 # =========================================================================
                 # IDEMPOTENT CACHING: Check each file individually with head_object
@@ -1724,6 +1758,7 @@ def stage_4b_cache_coadds(spark: SparkSession, args: argparse.Namespace) -> None
         "coadd_s3_cache_prefix": args.coadd_s3_cache_prefix,
         "cache_partitions": int(args.cache_partitions),
         "http_timeout_s": int(args.http_timeout_s),
+        "include_psfex": bool(args.include_psfex),
         "idempotency": {"skip_if_exists": int(args.skip_if_exists), "force": int(args.force)},
     }
     write_text_to_s3(f"{out_root}/_stage_config.json", json.dumps(cfg, indent=2))
@@ -1731,7 +1766,8 @@ def stage_4b_cache_coadds(spark: SparkSession, args: argparse.Namespace) -> None
     # Basic success stats
     ok = df_out.filter(F.col("ok") == 1).count()
     bad = df_out.filter(F.col("ok") == 0).count()
-    print(f"[4b] Cached bricks ok={ok} bad={bad}. Output: {out_root}")
+    files_per_brick = 7 + (3 if args.include_psfex else 0)  # 7 base + 3 PSFEx
+    print(f"[4b] Cached bricks ok={ok} bad={bad} (files/brick={files_per_brick}). Output: {out_root}")
 
 
 # --------------------------
@@ -1986,9 +2022,18 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                 physics_warnings_str = None
                 
                 if theta_e > 0 and src_flux_r_nmgy > 0:
-                    # Approximate PSF sigma from FWHM (sigma = FWHM / 2.355)
-                    psf_fwhm = float(r["psfsize_r"]) if r["psfsize_r"] is not None else 1.4
-                    psf_sigma_pix = (psf_fwhm / 2.355) / PIX_SCALE_ARCSEC
+                    # =========================================================================
+                    # PER-BAND PSF: Use band-specific FWHM for realistic injection
+                    # =========================================================================
+                    # Get per-band PSF sizes (fall back to r-band if not available)
+                    psf_fwhm_r = float(r["psfsize_r"]) if r["psfsize_r"] is not None else 1.4
+                    psf_fwhm_g = float(r["psfsize_g"]) if r.get("psfsize_g") is not None else psf_fwhm_r
+                    psf_fwhm_z = float(r["psfsize_z"]) if r.get("psfsize_z") is not None else psf_fwhm_r
+                    
+                    # Convert FWHM to sigma in pixels: sigma = FWHM / 2.355
+                    psf_sigma_r = (psf_fwhm_r / 2.355) / PIX_SCALE_ARCSEC
+                    psf_sigma_g = (psf_fwhm_g / 2.355) / PIX_SCALE_ARCSEC
+                    psf_sigma_z = (psf_fwhm_z / 2.355) / PIX_SCALE_ARCSEC
                     
                     # =========================================================================
                     # USE NEW RENDER FUNCTION WITH CORRECT FLUX NORMALIZATION
@@ -1997,16 +2042,20 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     # are naturally brighter due to magnification. No more image-sum normalization!
                     # =========================================================================
                     
-                    # Render lensed source for each band
+                    # Render lensed source for each band (with per-band PSF and flux)
                     for b in use_bands:
                         if b == "r":
                             src_flux_b = src_flux_r_nmgy
+                            psf_sigma_b = psf_sigma_r
                         elif b == "g":
                             src_flux_b = src_flux_g_nmgy
+                            psf_sigma_b = psf_sigma_g
                         elif b == "z":
                             src_flux_b = src_flux_z_nmgy
+                            psf_sigma_b = psf_sigma_z
                         else:
                             src_flux_b = src_flux_r_nmgy
+                            psf_sigma_b = psf_sigma_r
                         
                         add_b = render_lensed_source(
                             stamp_size=size,
@@ -2023,7 +2072,7 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                             src_phi_rad=src_phi_rad,
                             src_x_arcsec=src_x_arcsec,
                             src_y_arcsec=src_y_arcsec,
-                            psf_sigma_pix=psf_sigma_pix,
+                            psf_sigma_pix=psf_sigma_b,
                             psf_apply=True,
                         )
                         
@@ -2049,18 +2098,22 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     # =========================================================================
                     if theta_e > 0:
                         try:
+                            # Compute flux-based magnification proxy
+                            # NOTE: Variable names fixed 2026-01-24:
+                            #   size (not stamp_size), PIX_SCALE_ARCSEC (not pixscale),
+                            #   src_reff (not src_reff_arcsec), True (not psf_apply)
                             add_r_unlensed = render_unlensed_source(
-                                stamp_size=stamp_size,
-                                pixscale_arcsec=pixscale,
+                                stamp_size=size,
+                                pixscale_arcsec=PIX_SCALE_ARCSEC,
                                 src_total_flux_nmgy=src_flux_r_nmgy,
                                 src_x_arcsec=src_x_arcsec,
                                 src_y_arcsec=src_y_arcsec,
-                                src_reff_arcsec=src_reff_arcsec,
+                                src_reff_arcsec=src_reff,
                                 n=1.0,
                                 src_e=src_e,
                                 src_phi_rad=src_phi_rad,
-                                psf_apply=psf_apply,
-                                psf_sigma_pix=psf_sigma_pix,
+                                psf_apply=True,
+                                psf_sigma_pix=psf_sigma_r,  # Use r-band PSF for magnification proxy
                             )
                             unlensed_sum = float(np.sum(add_r_unlensed))
                             lensed_sum = float(np.sum(add_r))
@@ -2068,15 +2121,16 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                                 physics_metrics["magnification"] = float(lensed_sum / unlensed_sum)
                                 physics_metrics["tangential_stretch"] = float(abs(physics_metrics["magnification"]))
                                 physics_metrics["radial_stretch"] = 1.0
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            # Log but don't fail - magnification is a diagnostic, not critical
+                            print(f"[4c] Warning: magnification proxy failed: {e}")
 
-# Physics validation
+                    # Physics validation
                     physics_valid_bool, warnings = validate_physics_consistency(
                         theta_e, arc_snr,
                         physics_metrics.get("magnification"),
                         physics_metrics.get("tangential_stretch"),
-                        psf_fwhm,
+                        psf_fwhm_r,  # Use r-band PSF for physics validation
                     )
                     physics_valid = 1 if physics_valid_bool else 0
                     physics_warnings_str = "; ".join(warnings) if warnings else None
@@ -2365,9 +2419,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--replicates", type=int, default=2)
     p.add_argument("--split-seed", type=int, default=13)
 
-    # Stage 4b
+    # Stage 4b / 4b2
     p.add_argument("--cache-partitions", type=int, default=200)
     p.add_argument("--http-timeout-s", type=int, default=180)
+    p.add_argument("--include-psfex", type=int, default=0,
+                   help="If 1, download PSFEx model files in addition to coadds (for high-fidelity PSF)")
 
     # Stage 4c
     p.add_argument("--experiment-id", default="", help="Experiment id under phase4a/manifests")
