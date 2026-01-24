@@ -326,7 +326,92 @@ This enables safe reruns to fill gaps.
 
 ---
 
-## 15. Next Steps
+## 15. Phase 4a Parameter Audit
+
+### EMR Cluster Details
+
+| Property | Value |
+|----------|-------|
+| **Cluster ID** | j-1ZU6HUOZZYSUI |
+| **Cluster Name** | darkhaloscope-phase4-4a |
+| **Master** | m5.xlarge × 1 |
+| **Core** | m5.2xlarge × 10 |
+| **Step Start** | 2026-01-24T02:36:54Z |
+| **Step End** | 2026-01-24T02:41:57Z |
+| **Duration** | 5 min 3 sec |
+| **Log URI** | s3://darkhaloscope/emr-logs/phase4/ |
+
+### Explicit Parameters Passed (from EMR Step Config)
+
+These parameters were explicitly passed on the command line:
+
+| Parameter | Value |
+|-----------|-------|
+| `--stage` | `4a` |
+| `--output-s3` | `s3://darkhaloscope/phase4_pipeline` |
+| `--variant` | `v3_color_relaxed` |
+| `--parent-s3` | `s3://darkhaloscope/phase3_pipeline/phase3p5/v3_color_relaxed/parent_compact/` |
+| `--region-selections-s3` | `s3://darkhaloscope/phase3_pipeline/phase3b/v3_color_relaxed/region_selections/` |
+| `--bricks-with-region-s3` | `s3://darkhaloscope/phase3_pipeline/phase3a/v3_color_relaxed/bricks_with_region/` |
+| `--tiers` | `debug,grid,train` |
+| `--stamp-sizes` | `64` |
+| `--bandsets` | `grz` |
+| `--n-total-train-per-split` | `200000` |
+| `--n-per-config-grid` | `40` |
+| `--n-per-config-debug` | `5` |
+| `--replicates` | `2` |
+| `--control-frac-train` | `0.50` |
+| `--control-frac-grid` | `0.10` |
+| `--control-frac-debug` | `0.0` |
+| `--skip-if-exists` | `0` |
+| `--force` | `1` |
+
+### Implicit Parameters (Code Defaults)
+
+These parameters used code defaults and were **NOT** passed explicitly:
+
+| Parameter | Default Value | Source Location |
+|-----------|---------------|-----------------|
+| `--split-seed` | `13` | `spark_phase4_pipeline.py` line 2363 |
+
+### Stage Config Gap Identified
+
+**ISSUE**: The original `_stage_config.json` did not include the `split_seed` parameter.
+
+**RISK**: Without recording the seed, reruns could produce different galaxy samples, breaking reproducibility.
+
+**FIX**: The stage config has been updated to include a `seeds` section with `split_seed: 13`.
+
+### Reproducibility Requirements for 4a Rerun
+
+To produce identical manifests (same galaxies, same task_ids, same frozen randomness), any rerun must use:
+
+```bash
+--split-seed 13 \
+--n-total-train-per-split 200000 \
+--n-per-config-grid 40 \
+--n-per-config-debug 5 \
+--replicates 2 \
+--control-frac-train 0.50 \
+--control-frac-grid 0.10 \
+--control-frac-debug 0.0
+```
+
+### Verification After Any 4a Rerun
+
+After any rerun, verify manifest consistency:
+```python
+old = spark.read.parquet("s3://.../manifests_backup/")
+new = spark.read.parquet("s3://.../manifests/")
+
+# These must be identical:
+old.groupBy("experiment_id").count().orderBy("experiment_id").show()
+new.groupBy("experiment_id").count().orderBy("experiment_id").show()
+```
+
+---
+
+## 16. Next Steps
 
 1. **Validate Cache Completeness**: Run `validate_phase4b_cache.py` to identify missing bricks
 2. **Fill Gaps**: Rerun 4b with `--force 0` if needed
@@ -334,7 +419,7 @@ This enables safe reruns to fill gaps.
 
 ---
 
-## 16. References
+## 17. References
 
 - [Legacy Survey DR10 Documentation](https://www.legacysurvey.org/dr10/)
 - [FITS File Format](https://fits.gsfc.nasa.gov/fits_documentation.html)
@@ -342,7 +427,7 @@ This enables safe reruns to fill gaps.
 
 ---
 
-## 17. Reproducibility
+## 18. Reproducibility
 
 ### Code Version
 

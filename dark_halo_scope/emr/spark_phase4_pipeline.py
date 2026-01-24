@@ -1088,6 +1088,9 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
             "bricks_with_region_s3": bricks_path,
             "region_selections_s3": selections_path,
         },
+        "seeds": {
+            "split_seed": int(args.split_seed),
+        },
         "sampling": {
             "selection_set_ids": args.selection_set_ids,
             "require_lrg_flag": args.require_lrg_flag,
