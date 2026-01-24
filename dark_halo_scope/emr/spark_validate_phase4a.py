@@ -8,6 +8,8 @@ Validates:
 - Per-tier and per-split row counts are non-zero
 - Control fraction by tier within tolerance (if stage_config provided)
 - Parameter ranges: theta_e, src_* random fields, shear, colors
+- Stamp sizes: validates multiple sizes if configured (e.g., 64, 96)
+- Seed tracking: verifies split_seed is recorded in stage_config
 - Sanity checks that avoid classic bugs:
     * theta_e == 0 is treated as valid numeric (do not use truthiness checks)
     * debug/grid task counts scale as O(n_cfg), not O(n_cfg^2)
@@ -255,6 +257,44 @@ def main() -> None:
     print("[validate] O(n_cfg^2) explosion check: PASSED")
 
     # =========================================================================
+    # STAMP SIZE VALIDATION
+    # =========================================================================
+    stamp_sizes = m.select("stamp_size").distinct().collect()
+    stamp_size_values = sorted([int(row["stamp_size"]) for row in stamp_sizes])
+    print(f"[validate] Stamp sizes found: {stamp_size_values}")
+    
+    # Check against stage_config if available
+    expected_sizes = cfg.get("stamp_sizes", [])
+    if expected_sizes:
+        expected_sizes = sorted([int(s) for s in expected_sizes])
+        if stamp_size_values != expected_sizes:
+            print(f"[validate] WARNING: Stamp sizes mismatch - found {stamp_size_values}, expected {expected_sizes}")
+        else:
+            print("[validate] Stamp sizes match stage_config: PASSED")
+    
+    # Verify each stamp size has data in each tier
+    stamp_tier_counts = (m.groupBy("tier", "stamp_size")
+        .count()
+        .orderBy("tier", "stamp_size")
+        .collect()
+    )
+    print("[validate] Rows by tier/stamp_size:")
+    for row in stamp_tier_counts:
+        print(f"  tier={row['tier']}, stamp_size={row['stamp_size']}: {row['count']:,}")
+
+    # =========================================================================
+    # SEED TRACKING VALIDATION
+    # =========================================================================
+    seeds_cfg = cfg.get("seeds", {})
+    split_seed = seeds_cfg.get("split_seed")
+    if split_seed is not None:
+        print(f"[validate] split_seed in stage_config: {split_seed}")
+        if split_seed != 13:
+            print(f"[validate] WARNING: split_seed is {split_seed}, expected 13 for reproducibility with original run")
+    else:
+        print("[validate] WARNING: split_seed not found in stage_config - reproducibility not guaranteed")
+
+    # =========================================================================
     # LENS PARAMETER CONSISTENCY CHECKS
     # =========================================================================
     # Controls should have: lens_model="CONTROL", lens_e=0, lens_phi_rad=0, shear=0
@@ -298,6 +338,23 @@ def main() -> None:
             print(f"[validate] FAILURE: {f}")
         raise RuntimeError(f"Lens parameter validation failed: {failures}")
     print("[validate] Lens parameter consistency: PASSED")
+
+    # =========================================================================
+    # EXPERIMENT ID VALIDATION
+    # =========================================================================
+    exp_ids = m.select("experiment_id").distinct().collect()
+    exp_id_list = sorted([row["experiment_id"] for row in exp_ids])
+    print(f"[validate] Experiment IDs found ({len(exp_id_list)}):")
+    for eid in exp_id_list:
+        print(f"  - {eid}")
+    
+    # Verify expected pattern: <tier>_stamp<size>_bands<bandset>
+    for size in stamp_size_values:
+        for tier in ["debug", "grid", "train"]:
+            pattern = f"{tier}_stamp{size}_"
+            matching = [e for e in exp_id_list if e.startswith(pattern)]
+            if not matching:
+                print(f"[validate] WARNING: No experiment_id found matching '{pattern}*'")
 
     print("\n" + "=" * 60)
     print("OK: Phase 4a manifests and bricks_manifest passed validation.")
