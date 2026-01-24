@@ -72,8 +72,10 @@ def main() -> None:
         except Exception as e:
             print(f"[validate] Warning: could not load stage config: {e}")
 
-    # Read manifests
-    m = spark.read.parquet(args.manifests_s3)
+    # Read manifests (supports comma-separated paths)
+    manifest_paths = [p.strip() for p in args.manifests_s3.split(",") if p.strip()]
+    print(f"[validate] Reading manifests from {len(manifest_paths)} path(s): {manifest_paths}")
+    m = spark.read.parquet(*manifest_paths)
     print(f"[validate] Loaded manifests from {args.manifests_s3}")
     print(f"[validate] Manifest columns: {m.columns}")
 
@@ -82,14 +84,19 @@ def main() -> None:
     print(f"[validate] Loaded bricks_manifest from {args.bricks_manifest_s3}")
 
     # Required columns (matching our merged pipeline schema)
+    
     required = [
-        "task_id", "experiment_id", "selection_set_id", "region_split", 
+        "task_id", "experiment_id", "selection_set_id", "region_split",
         "brickname", "ra", "dec", "stamp_size", "bandset", "replicate", "is_control",
         "config_id", "theta_e_arcsec",
-        # Frozen randomness columns
-        "task_seed64", "src_x_arcsec", "src_y_arcsec", "src_phi_rad", "shear_phi_rad",
-        # Lens model and ellipticity (added 2026-01-23)
+        # Lens + source parameter columns used downstream
         "lens_model", "lens_e", "lens_phi_rad",
+        "shear",  # Shear amplitude (not shear_gamma)
+        "src_reff_arcsec", "src_e", "src_dmag",
+        "src_gr", "src_rz",
+        "psf_bin", "depth_bin",
+        # Frozen randomness columns (must be deterministic across reruns)
+        "task_seed64", "src_x_arcsec", "src_y_arcsec", "src_phi_rad", "shear_phi_rad",
         # Provenance
         "ab_zp_nmgy", "pipeline_version",
     ]
@@ -247,48 +254,50 @@ def main() -> None:
                 )
     print("[validate] O(n_cfg^2) explosion check: PASSED")
 
-    # Lens model validation
-    lens_model_check = m.groupBy("lens_model").count().orderBy("lens_model").collect()
-    print("[validate] Lens model distribution:")
-    for row in lens_model_check:
-        print(f"  {row['lens_model']}: {row['count']:,}")
+    # =========================================================================
+    # LENS PARAMETER CONSISTENCY CHECKS
+    # =========================================================================
+    # Controls should have: lens_model="CONTROL", lens_e=0, lens_phi_rad=0, shear=0
+    # Injections should have: valid lens_model, lens_e in [0, 0.95], etc.
+    # =========================================================================
     
-    # Controls should have lens_model = "CONTROL"
-    bad_control_model = m.where(
-        (F.col("is_control") == 1) & (F.col("lens_model") != "CONTROL")
+    ctrl = m.where(F.col("is_control") == 1)
+    inj = m.where(F.col("is_control") == 0)
+    failures = []
+    
+    # Lens parameter consistency for controls
+    bad_ctrl_lens = ctrl.where(
+        (F.col("lens_model") != F.lit("CONTROL"))
+        | (F.abs(F.col("lens_e")) > F.lit(1e-12))
+        | (F.abs(F.col("lens_phi_rad")) > F.lit(1e-12))
+        | (F.abs(F.col("shear")) > F.lit(1e-12))
+        | (F.abs(F.col("shear_phi_rad")) > F.lit(1e-12))
     ).count()
-    if bad_control_model > 0:
-        print(f"[validate] WARNING: {bad_control_model} control rows with lens_model != 'CONTROL'")
-    else:
-        print("[validate] Control lens_model consistency: PASSED")
+    if bad_ctrl_lens > 0:
+        failures.append(f"{bad_ctrl_lens} controls have non-control lens parameters")
 
-    # Non-controls should have lens_model = "SIE" or "SIS"
-    bad_noncontrol_model = m.where(
-        (F.col("is_control") == 0) & (~F.col("lens_model").isin("SIE", "SIS"))
+    bad_inj_lens = inj.where(
+        (F.col("lens_model").isNull())
+        | (F.col("lens_model") == F.lit("CONTROL"))
     ).count()
-    if bad_noncontrol_model > 0:
-        raise RuntimeError(f"Found {bad_noncontrol_model} non-control rows with invalid lens_model")
-    print("[validate] Non-control lens_model consistency: PASSED")
+    if bad_inj_lens > 0:
+        failures.append(f"{bad_inj_lens} injections have invalid lens_model")
 
-    # Lens ellipticity range check (should be in [0, 0.5])
-    bad_lens_e = m.where(
-        (F.col("is_control") == 0) & 
-        ((F.col("lens_e") < 0.0) | (F.col("lens_e") > 0.6))
+    # Lens parameter ranges for injections
+    bad_lens_ranges = inj.where(
+        (F.col("lens_e") < F.lit(0.0)) | (F.col("lens_e") > F.lit(0.95))
+        | (F.col("lens_phi_rad") < F.lit(0.0)) | (F.col("lens_phi_rad") >= F.lit(2 * math.pi))
+        | (F.col("shear") < F.lit(0.0)) | (F.col("shear") > F.lit(0.5))
+        | (F.col("shear_phi_rad") < F.lit(0.0)) | (F.col("shear_phi_rad") >= F.lit(math.pi))
     ).count()
-    if bad_lens_e > 0:
-        print(f"[validate] WARNING: {bad_lens_e} non-control rows with lens_e outside [0, 0.6]")
-    else:
-        print("[validate] lens_e range: PASSED")
-
-    # Lens phi range check
-    bad_lens_phi = m.where(
-        (F.col("is_control") == 0) &
-        ((F.col("lens_phi_rad") < 0.0) | (F.col("lens_phi_rad") > math.pi + 0.01))
-    ).count()
-    if bad_lens_phi > 0:
-        print(f"[validate] WARNING: {bad_lens_phi} non-control rows with lens_phi_rad outside [0, pi]")
-    else:
-        print("[validate] lens_phi_rad range: PASSED")
+    if bad_lens_ranges > 0:
+        failures.append(f"{bad_lens_ranges} injections have out-of-range lens/shear parameters")
+    
+    if failures:
+        for f in failures:
+            print(f"[validate] FAILURE: {f}")
+        raise RuntimeError(f"Lens parameter validation failed: {failures}")
+    print("[validate] Lens parameter consistency: PASSED")
 
     print("\n" + "=" * 60)
     print("OK: Phase 4a manifests and bricks_manifest passed validation.")
@@ -299,3 +308,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

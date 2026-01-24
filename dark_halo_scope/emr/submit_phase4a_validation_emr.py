@@ -22,12 +22,12 @@ def upload_to_s3(local_path: str, s3_uri: str, region: str):
 def main():
     parser = argparse.ArgumentParser(description="Submit Phase 4a validation EMR job")
     
-    # S3 paths
+    # S3 paths (must match spark_validate_phase4a.py arguments)
     parser.add_argument("--manifests-s3", required=True, help="S3 path to manifests")
     parser.add_argument("--bricks-manifest-s3", required=True, help="S3 path to bricks manifest")
-    parser.add_argument("--stage-config-s3", required=True, help="S3 path to stage config JSON")
-    parser.add_argument("--output-s3", required=True, help="S3 path for validation report JSON")
-    parser.add_argument("--output-md-s3", help="S3 path for markdown summary")
+    parser.add_argument("--stage-config-json", default="", help="S3 path to stage config JSON")
+    parser.add_argument("--control-frac-tol", type=float, default=0.05, help="Tolerance for control fraction")
+    parser.add_argument("--min-rows-per-split", type=int, default=100, help="Minimum rows per split")
     
     # EMR config
     parser.add_argument("--code-s3-prefix", default="s3://darkhaloscope/code/phase4_validation",
@@ -61,15 +61,15 @@ def main():
     upload_to_s3("emr/spark_validate_phase4a.py", script_s3, args.region)
     upload_to_s3("emr/bootstrap_phase4a_validation.sh", bootstrap_s3, args.region)
     
-    # 2. Build Spark step
+    # 2. Build Spark step (must match spark_validate_phase4a.py arguments)
     spark_args = [
         "--manifests-s3", args.manifests_s3,
         "--bricks-manifest-s3", args.bricks_manifest_s3,
-        "--stage-config-s3", args.stage_config_s3,
-        "--output-s3", args.output_s3,
     ]
-    if args.output_md_s3:
-        spark_args.extend(["--output-md-s3", args.output_md_s3])
+    if args.stage_config_json:
+        spark_args.extend(["--stage-config-json", args.stage_config_json])
+    spark_args.extend(["--control-frac-tol", str(args.control_frac_tol)])
+    spark_args.extend(["--min-rows-per-split", str(args.min_rows_per_split)])
     
     step = {
         "Name": "phase4a-validation",
@@ -148,10 +148,8 @@ def main():
     print(f"Nodes: 1 master + {args.core_instance_count} core ({args.core_instance_type})")
     print(f"\nMonitor:")
     print(f"  https://{args.region}.console.aws.amazon.com/emr/home?region={args.region}#/clusterDetails/{cluster_id}")
-    print(f"\nOutput will be written to:")
-    print(f"  JSON: {args.output_s3}")
-    if args.output_md_s3:
-        print(f"  Markdown: {args.output_md_s3}")
+    print(f"\nValidation output will be in EMR logs (stdout).")
+    print(f"Check logs at: {args.log_uri}")
 
 
 if __name__ == "__main__":

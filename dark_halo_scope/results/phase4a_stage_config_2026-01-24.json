@@ -1,0 +1,57 @@
+{
+  "stage": "4a",
+  "timestamp_utc": "2026-01-24T02:37:44Z",
+  "variant": "v3_color_relaxed",
+  "output_s3": "s3://darkhaloscope/phase4_pipeline",
+  "inputs": {
+    "parent_s3": "s3://darkhaloscope/phase3_pipeline/phase3p5/v3_color_relaxed/parent_compact/",
+    "bricks_with_region_s3": "s3://darkhaloscope/phase3_pipeline/phase3a/v3_color_relaxed/bricks_with_region/",
+    "region_selections_s3": "s3://darkhaloscope/phase3_pipeline/phase3b/v3_color_relaxed/region_selections/"
+  },
+  "sampling": {
+    "selection_set_ids": "*",
+    "require_lrg_flag": "is_v3_color_relaxed",
+    "psf_edges": [
+      0.7540557384490967,
+      1.2181154489517212,
+      1.301286220550537,
+      1.411108374595642,
+      1.5999999046325684
+    ],
+    "depth_edges": [
+      23.600093841552734,
+      24.212675094604492,
+      24.464431762695312,
+      25.06955909729004,
+      26.841259002685547
+    ]
+  },
+  "tiers": {
+    "debug": {
+      "grid": "grid_small",
+      "n_per_config": 5,
+      "control_frac": 0.0
+    },
+    "grid": {
+      "grid": "grid_medium",
+      "n_per_config": 40,
+      "control_frac": 0.1
+    },
+    "train": {
+      "grid": "grid_small",
+      "n_total_per_split": 200000,
+      "control_frac": 0.5
+    }
+  },
+  "stamp_sizes": [
+    64
+  ],
+  "bandsets": [
+    "grz"
+  ],
+  "replicates": 2,
+  "idempotency": {
+    "skip_if_exists": 0,
+    "force": 1
+  }
+}

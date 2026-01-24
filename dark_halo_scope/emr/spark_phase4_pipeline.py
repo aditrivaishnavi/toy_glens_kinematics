@@ -223,6 +223,7 @@ PIX_SCALE_ARCSEC = 0.262
 # To convert magnitude to flux: flux_nMgy = 10^(-0.4 * (mag - 22.5))
 # =========================================================================
 AB_ZP_NMGY = 22.5  # AB zero-point for nanomaggies
+PIPELINE_VERSION = "phase4_pipeline_v1"
 
 
 def mag_to_nMgy(mag: float) -> float:
@@ -485,6 +486,45 @@ def render_lensed_source(
     
     return img.astype(np.float32)
 
+
+def render_unlensed_source(
+    stamp_size: int,
+    pixscale_arcsec: float,
+    src_total_flux_nmgy: float,
+    src_x_arcsec: float,
+    src_y_arcsec: float,
+    src_reff_arcsec: float,
+    n: float,
+    src_e: float,
+    src_phi_rad: float,
+    psf_apply: bool,
+    psf_sigma_pix: float,
+) -> np.ndarray:
+    """Render an unlensed source on the same stamp grid.
+
+    Returns an image in nanomaggies / pixel.
+
+    This is used only for a stamp-limited flux-ratio magnification proxy. It MUST NOT be used
+    to renormalize the lensed image.
+    """
+    half = stamp_size // 2
+    ys, xs = np.mgrid[0:stamp_size, 0:stamp_size]
+    theta_x = (xs - half + 0.5) * pixscale_arcsec
+    theta_y = (ys - half + 0.5) * pixscale_arcsec
+
+    dx = theta_x - src_x_arcsec
+    dy = theta_y - src_y_arcsec
+
+    unit_flux = sersic_unit_total_flux(n=n, reff=src_reff_arcsec, q=1.0)
+    amp = float(src_total_flux_nmgy) / max(float(unit_flux), 1e-30)
+
+    img = amp * sersic_profile(dx, dy, src_reff_arcsec, n, src_e, src_phi_rad)
+    img = img * (pixscale_arcsec ** 2)
+
+    if psf_apply and psf_sigma_pix > 0:
+        img = _convolve_gaussian(img, psf_sigma_pix)
+
+    return img.astype(np.float32)
 
 def _gaussian_kernel1d(sigma_pix: float, radius: int = 4) -> np.ndarray:
     sigma = max(float(sigma_pix), 1e-3)
@@ -845,18 +885,18 @@ def validate_physics_consistency(
         if theta_over_psf < 0.5:
             warnings.append(f"theta_e ({theta_e_arcsec:.2f}) < 0.5 * PSF ({psfsize_r:.2f}): unresolved")
     
-    # Rule 2: Magnification check
+    # Rule 2: Magnification sanity check (do not assume >1: demagnification is possible)
     if magnification is not None:
-        if magnification < 1.0:
-            warnings.append(f"Magnification ({magnification:.2f}) < 1: not strong lensing")
+        if (not np.isfinite(magnification)) or magnification <= 0.0:
+            warnings.append(f"Magnification ({magnification}): non-finite or <= 0")
             is_valid = False
         elif magnification > 1000:
             warnings.append(f"Magnification ({magnification:.2f}) > 1000: near caustic, may be unrealistic")
     
-    # Rule 3: Tangential stretch check
+    # Rule 3: Tangential stretch sanity check
     if tangential_stretch is not None:
-        if tangential_stretch < 1.0:
-            warnings.append(f"Tangential stretch ({tangential_stretch:.2f}) < 1: no arc elongation")
+        if (not np.isfinite(tangential_stretch)) or tangential_stretch <= 0.0:
+            warnings.append(f"Tangential stretch ({tangential_stretch}): non-finite or <= 0")
     
     # Rule 4: SNR consistency (heuristic)
     if arc_snr is not None and theta_e_arcsec > 0 and psfsize_r is not None:
@@ -1140,12 +1180,12 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
                     per_bin = int(math.ceil(per_split_target / bins))
 
                     # First pass: sample evenly across PSF/depth bins within each (selection_set, split)
-                    wbin = Window.partitionBy("selection_set_id", "region_split", "psf_bin", "depth_bin").orderBy(F.rand(args.split_seed))
+                    wbin = Window.partitionBy("selection_set_id", "region_split", "psf_bin", "depth_bin").orderBy(F.xxhash64(F.col("row_id"), F.lit(int(args.split_seed))))
                     tmp = base.withColumn("rn_bin", F.row_number().over(wbin))
                     tmp = tmp.filter(F.col("rn_bin") <= F.lit(per_bin))
 
                     # Second pass: cap to exact per_split_target per (selection_set, split)
-                    wtot = Window.partitionBy("selection_set_id", "region_split").orderBy(F.rand(args.split_seed + 1))
+                    wtot = Window.partitionBy("selection_set_id", "region_split").orderBy(F.xxhash64(F.col("row_id"), F.lit(int(args.split_seed) + 1)))
                     tmp = tmp.withColumn("rn_tot", F.row_number().over(wtot))
                     tmp = tmp.filter(F.col("rn_tot") <= F.lit(per_split_target))
 
@@ -1162,8 +1202,15 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
                     # =========================================================================
                     if control_frac > 0:
                         # Deterministic control assignment using xxhash64
-                        ctrl_hash = F.xxhash64(F.col("brickname"), F.col("ra").cast("string"), 
-                                               F.col("dec").cast("string"), F.lit(hash(tier) & 0xffffffff))
+                        ctrl_hash = F.xxhash64(
+                            F.col("brickname"),
+                            F.round(F.col("ra") * F.lit(1e6)).cast("long"),
+                            F.round(F.col("dec") * F.lit(1e6)).cast("long"),
+                            F.col("selection_set_id").cast("string"),
+                            F.col("region_split").cast("string"),
+                            F.lit(tier),
+                            F.lit(int(args.split_seed) + 7001),
+                        )
                         ctrl_u = (F.pmod(F.abs(ctrl_hash), F.lit(1_000_000)) / F.lit(1_000_000.0))
                         tasks = tasks.withColumn("is_control", (ctrl_u < F.lit(control_frac)).cast("int"))
                         
@@ -1204,17 +1251,19 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
                     per_split_target = int(n_total)  # Samples this many per (selection_set, split)
 
                     # Stratified sampling across PSF/depth bins (4×4 = 16 bins)
-                    wbin = Window.partitionBy("selection_set_id", "region_split", "psf_bin", "depth_bin").orderBy(F.rand(args.split_seed))
+                    wbin = Window.partitionBy("selection_set_id", "region_split", "psf_bin", "depth_bin").orderBy(F.xxhash64(F.col("row_id"), F.lit(int(args.split_seed))))
                     per_bin = int(math.ceil(per_split_target / 16))
                     tmp = base.withColumn("rn_bin", F.row_number().over(wbin)).filter(F.col("rn_bin") <= F.lit(per_bin))
                     
                     # Cap to exact per_split_target per (selection_set, split)
-                    wtot = Window.partitionBy("selection_set_id", "region_split").orderBy(F.rand(args.split_seed + 1))
+                    wtot = Window.partitionBy("selection_set_id", "region_split").orderBy(F.xxhash64(F.col("row_id"), F.lit(int(args.split_seed) + 1)))
                     tmp = tmp.withColumn("rn_tot", F.row_number().over(wtot)).filter(F.col("rn_tot") <= F.lit(per_split_target))
 
                     # Control assignment: randomly mark control_frac of samples as controls
                     # Controls have theta_e=0 (no injection) and serve as negative examples
-                    tmp = tmp.withColumn("is_control", (F.rand(args.split_seed + 7) < F.lit(control_frac)).cast("int"))
+                    ctrl_hash = F.xxhash64(F.col("row_id"), F.col("brickname"), F.col("region_split"), F.lit("train"), F.lit(int(args.split_seed) + 7003))
+                    ctrl_u = (F.pmod(F.abs(ctrl_hash), F.lit(1_000_000)) / F.lit(1_000_000.0))
+                    tmp = tmp.withColumn("is_control", (ctrl_u < F.lit(control_frac)).cast("int"))
                     
                     # Assign each galaxy ONE config (via modulo hash) - NOT crossJoin!
                     # This gives variety without the O(n×m) explosion of debug/grid tiers
@@ -1310,17 +1359,12 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
                 
                 tasks = tasks.withColumn(
                     "src_gr",
-                    F.when(F.col("theta_e_arcsec") > 0, 
-                           F.greatest(F.lit(-0.5), F.least(F.lit(1.5), z1 * 0.2 + 0.2))
-                    ).otherwise(F.lit(None).cast("double"))
+                    F.greatest(F.lit(-0.5), F.least(F.lit(1.5), z1 * 0.2 + 0.2))
                 )
                 tasks = tasks.withColumn(
                     "src_rz",
-                    F.when(F.col("theta_e_arcsec") > 0,
-                           F.greatest(F.lit(-0.5), F.least(F.lit(1.5), z2 * 0.2 + 0.1))
-                    ).otherwise(F.lit(None).cast("double"))
+                    F.greatest(F.lit(-0.5), F.least(F.lit(1.5), z2 * 0.2 + 0.1))
                 )
-                
                 # =========================================================================
                 # LENS MODEL AND LENS ELLIPTICITY COLUMNS
                 # =========================================================================
@@ -1589,6 +1633,14 @@ def stage_4b_cache_coadds(spark: SparkSession, args: argparse.Namespace) -> None
         for r in it:
             brick = r["brickname"]
             prefix = f"{s3_cache}/{brick}"
+
+            # Fast-path: if a per-brick _SUCCESS marker exists, treat the brick cache as complete.
+            # If _SUCCESS is missing, fall back to per-file existence checks.
+            success_uri = f"{prefix}/_SUCCESS"
+            sbkt, skey = _parse_s3(success_uri)
+            if (not args.force) and s3_object_exists(sbkt, skey):
+                continue
+
             try:
                 urls = build_coadd_urls(coadd_base, brick, bands)
                 
@@ -1611,7 +1663,11 @@ def stage_4b_cache_coadds(spark: SparkSession, args: argparse.Namespace) -> None
                     files_to_download = [(k, url, url.split("/")[-1]) for k, url in urls.items()]
                 
                 if not files_to_download:
-                    # All files already exist, skip this brick
+                    # All files already exist. Ensure per-brick _SUCCESS marker exists for fast resumes.
+                    try:
+                        c.put_object(Bucket=sbkt, Key=skey, Body=b"")
+                    except Exception:
+                        pass
                     yield Row(brickname=brick, ok=1, error=None, s3_prefix=prefix + "/")
                     continue
 
@@ -1634,6 +1690,12 @@ def stage_4b_cache_coadds(spark: SparkSession, args: argparse.Namespace) -> None
                     for fn in os.listdir(tmpdir):
                         os.remove(os.path.join(tmpdir, fn))
                     os.rmdir(tmpdir)
+                except Exception:
+                    pass
+
+                # Mark brick as complete for fast resumes
+                try:
+                    c.put_object(Bucket=sbkt, Key=skey, Body=b"")
                 except Exception:
                     pass
 
@@ -1773,6 +1835,18 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
         T.StructField("src_e", T.DoubleType(), False),
         T.StructField("shear", T.DoubleType(), False),
         T.StructField("replicate", T.IntegerType(), False),
+        T.StructField("is_control", T.IntegerType(), False),
+        T.StructField("task_seed64", T.LongType(), True),
+        T.StructField("src_x_arcsec", T.DoubleType(), True),
+        T.StructField("src_y_arcsec", T.DoubleType(), True),
+        T.StructField("src_phi_rad", T.DoubleType(), True),
+        T.StructField("shear_phi_rad", T.DoubleType(), True),
+        T.StructField("src_gr", T.DoubleType(), True),
+        T.StructField("src_rz", T.DoubleType(), True),
+        T.StructField("psf_bin", T.IntegerType(), True),
+        T.StructField("depth_bin", T.IntegerType(), True),
+        T.StructField("ab_zp_nmgy", T.DoubleType(), True),
+        T.StructField("pipeline_version", T.StringType(), True),
         T.StructField("psfsize_r", T.DoubleType(), True),
         T.StructField("psfdepth_r", T.DoubleType(), True),
         T.StructField("ebv", T.DoubleType(), True),
@@ -1964,20 +2038,37 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                             snr = np.where(sigma > 0, add_r / (sigma + 1e-12), 0.0)
                             arc_snr = float(np.nanmax(snr))
                     
+                                        # =========================================================================
+                    # Flux-based magnification proxy (stamp-limited):
+                    # Compare total injected flux of the lensed source to the total flux of the unlensed source
+                    # rendered on the same stamp with the same PSF. This preserves the "do not renormalize"
+                    # requirement and avoids unstable Jacobian evaluation near the critical curve.
                     # =========================================================================
-                    # MAGNIFICATION PROXY (evaluated off critical curve)
-                    # =========================================================================
-                    # Use simple SIS approximation: mu_t ~ 1 / (1 - theta_e / r)
-                    # Evaluate at r = 1.1 * theta_e to avoid singularity
-                    # =========================================================================
-                    r_eval = 1.1 * theta_e
-                    denom = (1.0 - theta_e / r_eval)
-                    if abs(denom) > 1e-6:
-                        mu_proxy = 1.0 / denom
-                        physics_metrics["magnification"] = float(np.clip(mu_proxy, -1000, 1000))
-                        physics_metrics["tangential_stretch"] = abs(physics_metrics["magnification"])
-                    
-                    # Physics validation
+                    if theta_e > 0:
+                        try:
+                            add_r_unlensed = render_unlensed_source(
+                                stamp_size=stamp_size,
+                                pixscale_arcsec=pixscale,
+                                src_total_flux_nmgy=src_flux_r_nmgy,
+                                src_x_arcsec=src_x_arcsec,
+                                src_y_arcsec=src_y_arcsec,
+                                src_reff_arcsec=src_reff_arcsec,
+                                n=1.0,
+                                src_e=src_e,
+                                src_phi_rad=src_phi_rad,
+                                psf_apply=psf_apply,
+                                psf_sigma_pix=psf_sigma_pix,
+                            )
+                            unlensed_sum = float(np.sum(add_r_unlensed))
+                            lensed_sum = float(np.sum(add_r))
+                            if unlensed_sum > 0:
+                                physics_metrics["magnification"] = float(lensed_sum / unlensed_sum)
+                                physics_metrics["tangential_stretch"] = float(abs(physics_metrics["magnification"]))
+                                physics_metrics["radial_stretch"] = 1.0
+                        except Exception:
+                            pass
+
+# Physics validation
                     physics_valid_bool, warnings = validate_physics_consistency(
                         theta_e, arc_snr,
                         physics_metrics.get("magnification"),
@@ -2013,6 +2104,18 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     src_e=src_e,
                     shear=shear,
                     replicate=int(r["replicate"]),
+                    is_control=int(r["is_control"]) if r["is_control"] is not None else 0,
+                    task_seed64=int(r["task_seed64"]) if r["task_seed64"] is not None else None,
+                    src_x_arcsec=float(r["src_x_arcsec"]) if r["src_x_arcsec"] is not None else 0.0,
+                    src_y_arcsec=float(r["src_y_arcsec"]) if r["src_y_arcsec"] is not None else 0.0,
+                    src_phi_rad=float(r["src_phi_rad"]) if r["src_phi_rad"] is not None else 0.0,
+                    shear_phi_rad=float(r["shear_phi_rad"]) if r["shear_phi_rad"] is not None else 0.0,
+                    src_gr=float(r["src_gr"]) if r["src_gr"] is not None else 0.0,
+                    src_rz=float(r["src_rz"]) if r["src_rz"] is not None else 0.0,
+                    psf_bin=int(r["psf_bin"]) if r["psf_bin"] is not None else None,
+                    depth_bin=int(r["depth_bin"]) if r["depth_bin"] is not None else None,
+                    ab_zp_nmgy=float(AB_ZP_NMGY),
+                    pipeline_version=str(PIPELINE_VERSION),
                     psfsize_r=float(r["psfsize_r"]) if r["psfsize_r"] is not None else None,
                     psfdepth_r=float(r["psfdepth_r"]) if r["psfdepth_r"] is not None else None,
                     ebv=float(r["ebv"]) if r["ebv"] is not None else None,
