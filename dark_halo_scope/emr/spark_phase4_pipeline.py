@@ -54,6 +54,7 @@ from pyspark.sql import SparkSession, Row
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
 from pyspark.sql.window import Window
+from pyspark import StorageLevel
 
 # Optional runtime deps installed by bootstrap
 try:
@@ -1788,10 +1789,16 @@ def stage_4b_cache_coadds(spark: SparkSession, args: argparse.Namespace) -> None
 
     rdd = df_bricks.repartition(int(args.cache_partitions)).rdd.mapPartitions(_proc_partition)
     df_out = spark.createDataFrame(rdd, schema=schema)
+    
+    # Persist to avoid recomputing mapPartitions for both parquet and CSV writes
+    df_out.persist(StorageLevel.MEMORY_AND_DISK)
 
     out_path = f"{out_root}/assets_manifest"
     df_out.write.mode("overwrite").parquet(out_path)
     df_out.coalesce(1).write.mode("overwrite").option("header", True).csv(f"{out_path}_csv")
+    
+    # Release persisted DataFrame
+    df_out.unpersist()
 
     # Stage config
     cfg = {
@@ -1842,6 +1849,9 @@ def _read_fits_from_s3(s3_uri: str) -> Tuple[np.ndarray, object]:
 
 
 def _cutout(data: np.ndarray, x: float, y: float, size: int) -> Tuple[np.ndarray, bool]:
+    # Guard against None data (e.g., failed coadd load)
+    if data is None:
+        return None, False
     half = size // 2
     x0 = int(round(x)) - half
     y0 = int(round(y)) - half
@@ -2375,11 +2385,14 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
 
     rdd = df_tasks.rdd.mapPartitions(_proc_partition)
     df_out = spark.createDataFrame(rdd, schema=stamps_schema)
+    
+    # Persist to avoid recomputing mapPartitions for both stamps and metrics writes
+    df_out.persist(StorageLevel.MEMORY_AND_DISK)
 
     out_path = f"{out_root}/stamps/{args.experiment_id}"
     df_out.write.mode("overwrite").partitionBy("region_split").parquet(out_path)
 
-    # Metrics-only table
+    # Metrics-only table (derived from persisted df_out)
     metrics = df_out.select(
         "task_id", "experiment_id", "selection_set_id", "ranking_mode", "selection_strategy",
         "region_id", "region_split", "brickname",
@@ -2388,16 +2401,29 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
     )
     met_path = f"{out_root}/metrics/{args.experiment_id}"
     metrics.write.mode("overwrite").partitionBy("region_split").parquet(met_path)
+    
+    # Release persisted DataFrame
+    df_out.unpersist()
 
     cfg = {
         "stage": "4c",
+        "pipeline_version": PIPELINE_VERSION,
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "variant": args.variant,
         "output_s3": args.output_s3,
         "experiment_id": args.experiment_id,
-        "inputs": {"manifest": in_path, "coadd_s3_cache_prefix": args.coadd_s3_cache_prefix},
+        "inputs": {
+            "manifest": in_path,
+            "manifests_subdir": manifests_subdir,
+            "coadd_s3_cache_prefix": args.coadd_s3_cache_prefix,
+        },
         "bands": bands,
-        "src_flux_scale": float(args.src_flux_scale),
+        "psf": {
+            "use_psfsize_maps": bool(args.use_psfsize_maps),
+        },
+        "output_mode": {
+            "metrics_only": bool(args.metrics_only),
+        },
         "spark": {"sweep_partitions": int(args.sweep_partitions)},
         "idempotency": {"skip_if_exists": int(args.skip_if_exists), "force": int(args.force)},
     }
