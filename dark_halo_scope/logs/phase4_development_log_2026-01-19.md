@@ -382,5 +382,211 @@ python3 submit_phase4_pipeline_emr_cluster.py \
 
 ---
 
+### 2026-01-24: Phase 4a Manifest Build (Full Scale)
+
+**Context**: After extensive code review, bug fixes, and validation script development, I ran the full Phase 4a manifest build.
+
+#### EMR Cluster Details
+
+| Parameter | Value |
+|-----------|-------|
+| Cluster ID | j-1ZU6HUOZZYSUI |
+| Instance Type (Core) | m5.2xlarge |
+| Core Count | 10 |
+| Runtime | ~1.5 hours |
+
+#### Stage 4a Parameters
+
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| `--stamp-sizes` | 64,96 | Dual stamp sizes for multi-scale analysis |
+| `--split-seed` | 13 | Fixed seed for reproducibility |
+| `--replicates` | 2 | Two injection replicates per (galaxy × config) |
+| `--control-frac-train` | 0.50 | 50% controls for balanced training |
+| `--control-frac-grid` | 0.10 | 10% controls for grid tier |
+| `--control-frac-debug` | 0.0 | No controls in debug tier |
+| `--max-total-tasks-soft` | 35000000 | Guardrail raised to accommodate dual stamps |
+
+#### Output Summary
+
+| Experiment | Stamp Size | Row Count |
+|------------|------------|-----------|
+| debug_stamp64_bandsgrz_gridgrid_small | 64px | ~5,000 |
+| debug_stamp96_bandsgrz_gridgrid_small | 96px | ~5,000 |
+| grid_stamp64_bandsgrz_gridgrid_medium | 64px | ~200,000 |
+| grid_stamp96_bandsgrz_gridgrid_medium | 96px | ~200,000 |
+| train_stamp64_bandsgrz_gridgrid_small | 64px | ~15,000,000 |
+| train_stamp96_bandsgrz_gridgrid_small | 96px | ~15,000,000 |
+
+**Total Tasks**: ~30.9M across all experiments
+
+#### Output Paths
+
+```
+s3://darkhaloscope/phase4_pipeline/phase4a/v3_color_relaxed/
+├── _stage_config.json (1414 bytes)
+├── bricks_manifest/ (180,373 unique bricks)
+├── manifests/
+│   ├── debug_stamp64_bandsgrz_gridgrid_small/
+│   ├── debug_stamp96_bandsgrz_gridgrid_small/
+│   ├── grid_stamp64_bandsgrz_gridgrid_medium/
+│   ├── grid_stamp96_bandsgrz_gridgrid_medium/
+│   ├── train_stamp64_bandsgrz_gridgrid_small/
+│   └── train_stamp96_bandsgrz_gridgrid_small/
+```
+
+---
+
+### 2026-01-24 to 2026-01-25: Phase 4b Coadd Caching
+
+**Context**: Downloaded and cached DR10 South coadd files for all bricks referenced in the Phase 4a manifests.
+
+#### EMR Cluster Details
+
+| Parameter | Value |
+|-----------|-------|
+| Cluster ID | j-B3PS5INIGW95 |
+| Instance Type (Core) | m5.2xlarge |
+| Core Count | 10 |
+| Runtime | ~5 hours |
+
+#### Files Downloaded Per Brick (7 files)
+
+| File | Purpose |
+|------|---------|
+| `legacysurvey-{brick}-image-g.fits.fz` | g-band science image |
+| `legacysurvey-{brick}-image-r.fits.fz` | r-band science image |
+| `legacysurvey-{brick}-image-z.fits.fz` | z-band science image |
+| `legacysurvey-{brick}-invvar-g.fits.fz` | g-band inverse variance |
+| `legacysurvey-{brick}-invvar-r.fits.fz` | r-band inverse variance |
+| `legacysurvey-{brick}-invvar-z.fits.fz` | z-band inverse variance |
+| `legacysurvey-{brick}-maskbits.fits.fz` | Mask bits |
+
+#### Results
+
+| Metric | Value |
+|--------|-------|
+| Bricks Targeted | 180,373 |
+| Bricks Succeeded | 180,152 |
+| Bricks Failed | 221 (404 Not Found on NERSC) |
+| Total Files Cached | 1,261,064 (180,152 × 7) |
+| Success Rate | 99.88% |
+
+#### Output Path
+
+```
+s3://darkhaloscope/dr10/coadd_cache/{brickname}/
+├── _SUCCESS
+├── legacysurvey-{brick}-image-g.fits.fz
+├── legacysurvey-{brick}-image-r.fits.fz
+├── legacysurvey-{brick}-image-z.fits.fz
+├── legacysurvey-{brick}-invvar-g.fits.fz
+├── legacysurvey-{brick}-invvar-r.fits.fz
+├── legacysurvey-{brick}-invvar-z.fits.fz
+└── legacysurvey-{brick}-maskbits.fits.fz
+```
+
+---
+
+### 2026-01-25: Brick Blacklist Creation
+
+**Context**: 221 bricks failed to download because they don't exist on NERSC (DR10 South coverage gaps). Created a blacklist and filtered manifests.
+
+#### Blacklist
+
+Created `brick_blacklist.json` with 221 bricks that returned 404 from NERSC.
+
+```
+s3://darkhaloscope/phase4_pipeline/phase4a/v3_color_relaxed/brick_blacklist.json
+```
+
+#### Filtered Manifests
+
+Ran Spark job (EMR cluster j-34LJYZ2C8P23R) to remove blacklisted bricks from all manifests:
+
+| Original Path | Filtered Path |
+|---------------|---------------|
+| `manifests/` | `manifests_filtered/` |
+| `bricks_manifest/` | `bricks_manifest_filtered/` |
+
+**Validation**: Confirmed 0 overlap between filtered bricks and blacklist.
+
+---
+
+### 2026-01-25: Phase 4b2 PSFsize Repair
+
+**Context**: Added per-pixel PSF FWHM maps (psfsize files) to the coadd cache for higher fidelity PSF modeling in Stage 4c.
+
+#### EMR Cluster Details
+
+| Parameter | Value |
+|-----------|-------|
+| Cluster ID | j-1EM1V712P8YT |
+| Instance Type (Core) | m5.2xlarge |
+| Core Count | 10 |
+| Script | `one_time_spark_4b_psfsize.py` |
+
+#### Files Added Per Brick (3 files)
+
+| File | Purpose |
+|------|---------|
+| `legacysurvey-{brick}-psfsize-g.fits.fz` | g-band PSF FWHM map |
+| `legacysurvey-{brick}-psfsize-r.fits.fz` | r-band PSF FWHM map |
+| `legacysurvey-{brick}-psfsize-z.fits.fz` | z-band PSF FWHM map |
+
+#### Results
+
+| Metric | Value |
+|--------|-------|
+| Bricks in Input Manifest | 180,373 |
+| Bricks Succeeded | 180,152 |
+| Bricks Failed | 221 (same as blacklist) |
+| PSFsize Files Added | 540,456 (180,152 × 3) |
+
+#### Termination Note
+
+The job was terminated manually after the main work completed. The Spark script had a bug where `df_out` was not cached before calling `.count()` and `.agg()`, causing the entire mapPartitions to re-execute 4 times for statistics computation. The actual file uploads and manifest writing completed successfully before termination.
+
+The `_psfsize_repair_config.json` was written manually after termination with accurate statistics.
+
+#### Output Paths
+
+```
+s3://darkhaloscope/dr10/coadd_cache/{brickname}/
+├── ... (existing 7 files)
+├── legacysurvey-{brick}-psfsize-g.fits.fz  ← NEW
+├── legacysurvey-{brick}-psfsize-r.fits.fz  ← NEW
+└── legacysurvey-{brick}-psfsize-z.fits.fz  ← NEW
+
+s3://darkhaloscope/phase4_pipeline/phase4b_psfsize/v3_color_relaxed/
+├── _psfsize_repair_config.json
+└── psfsize_repair_manifest/
+    ├── _SUCCESS
+    └── part-*.parquet (400 files)
+```
+
+#### Final Coadd Cache State
+
+Each of the 180,152 valid bricks now has **11 files**:
+- 3 image files (g, r, z)
+- 3 invvar files (g, r, z)
+- 1 maskbits file
+- 3 psfsize files (g, r, z)
+- 1 _SUCCESS marker
+
+---
+
+### Phase 4 Status Summary (as of 2026-01-25)
+
+| Stage | Status | Output |
+|-------|--------|--------|
+| 4a (Manifests) | ✅ Complete | `phase4a/v3_color_relaxed/manifests_filtered/` |
+| 4b (Coadd Cache) | ✅ Complete | `dr10/coadd_cache/` (180,152 bricks × 11 files) |
+| 4b2 (PSFsize Repair) | ✅ Complete | Integrated into coadd_cache |
+| 4c (Injected Cutouts) | ⏳ Pending | - |
+| 4d (Completeness) | ⏳ Pending | - |
+
+---
+
 *End of Log Entry*
 
