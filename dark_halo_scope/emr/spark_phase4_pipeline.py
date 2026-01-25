@@ -1809,9 +1809,11 @@ def stage_4b_cache_coadds(spark: SparkSession, args: argparse.Namespace) -> None
     }
     write_text_to_s3(f"{out_root}/_stage_config.json", json.dumps(cfg, indent=2))
 
-    # Basic success stats
-    ok = df_out.filter(F.col("ok") == 1).count()
-    bad = df_out.filter(F.col("ok") == 0).count()
+    # Read back from written parquet to get counts efficiently (avoids recomputation)
+    df_out_saved = spark.read.parquet(out_path)
+    counts = df_out_saved.groupBy("ok").count().collect()
+    ok = sum(r["count"] for r in counts if r["ok"] == 1)
+    bad = sum(r["count"] for r in counts if r["ok"] == 0)
     files_per_brick = 7 + (3 if args.include_psfsize else 0)  # 7 base + 3 psfsize maps
     print(f"[4b] Cached bricks ok={ok} bad={bad} (files/brick={files_per_brick}). Output: {out_root}")
 
@@ -1869,10 +1871,12 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
     if WCS is None:
         raise RuntimeError("astropy.wcs not available; ensure astropy installed")
 
-    manifests_root = f"{args.output_s3.rstrip('/')}/phase4a/{args.variant}/manifests"
+    manifests_subdir = getattr(args, 'manifests_subdir', 'manifests_filtered')
+    manifests_root = f"{args.output_s3.rstrip('/')}/phase4a/{args.variant}/{manifests_subdir}"
     if not args.experiment_id:
         raise ValueError("--experiment-id is required for stage 4c")
     in_path = f"{manifests_root}/{args.experiment_id}"
+    print(f"[4c] Reading manifests from: {in_path}")
     df_tasks = read_parquet_safe(spark, in_path)
 
     bands = [b.strip() for b in args.bands.split(",") if b.strip()]
@@ -2399,8 +2403,11 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
     }
     write_text_to_s3(f"{out_root}/_stage_config_{args.experiment_id}.json", json.dumps(cfg, indent=2))
 
-    ok = metrics.filter(F.col("cutout_ok") == 1).count()
-    bad = metrics.filter(F.col("cutout_ok") == 0).count()
+    # Read back from written parquet to get counts efficiently (avoids recomputation)
+    metrics_saved = spark.read.parquet(met_path)
+    counts = metrics_saved.groupBy("cutout_ok").count().collect()
+    ok = sum(r["count"] for r in counts if r["cutout_ok"] == 1)
+    bad = sum(r["count"] for r in counts if r["cutout_ok"] == 0)
     print(f"[4c] Done. ok={ok} bad={bad}. Output: {out_path}")
 
 
@@ -2564,6 +2571,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Stage 4c
     p.add_argument("--experiment-id", default="", help="Experiment id under phase4a/manifests")
+    p.add_argument("--manifests-subdir", default="manifests_filtered",
+                   help="Subdirectory under phase4a/ to read manifests from (use 'manifests_filtered' for blacklist-filtered manifests)")
     p.add_argument("--sweep-partitions", type=int, default=600)
     # NOTE: --src-flux-scale is deprecated. Flux is now computed correctly using
     # mag_to_nMgy() with AB ZP=22.5 (Legacy Survey nanomaggy convention).
