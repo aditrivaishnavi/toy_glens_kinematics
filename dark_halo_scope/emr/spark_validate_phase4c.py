@@ -82,7 +82,19 @@ def validate_counts(df) -> Dict:
     
     # Success rate
     ok_count = cutout_stats.get("cutout_ok_1", 0)
+    fail_count = cutout_stats.get("cutout_ok_0", 0)
     success_rate = ok_count / total if total > 0 else 0
+    
+    # Analyze failure reasons if there are failures
+    failure_reasons = {}
+    if fail_count > 0 and "physics_warnings" in df.columns:
+        # Get top 10 error messages from failed tasks
+        failed = df.filter(F.col("cutout_ok") == 0).select("physics_warnings", "brickname")
+        # Extract first 50 chars of error for grouping
+        failed_grouped = failed.withColumn(
+            "error_prefix", F.substring(F.col("physics_warnings"), 1, 80)
+        ).groupBy("error_prefix").count().orderBy(F.desc("count")).limit(10).collect()
+        failure_reasons = {r["error_prefix"]: r["count"] for r in failed_grouped if r["error_prefix"]}
     
     return {
         "total_rows": total,
@@ -90,6 +102,7 @@ def validate_counts(df) -> Dict:
         "cutout_stats": cutout_stats,
         "success_rate": success_rate,
         "success_rate_valid": success_rate >= 0.95,  # Expect at least 95% success
+        "failure_reasons": failure_reasons,
     }
 
 
@@ -167,10 +180,13 @@ def validate_ranges(df) -> Dict:
     }
 
 
-def validate_controls(df) -> Dict:
+def validate_controls(df, experiment_id: str = "") -> Dict:
     """Validate control samples have theta_e = 0 and low arc_snr."""
-    # Controls should have theta_e = 0
-    controls = df.filter(F.col("theta_e_arcsec") == 0)
+    # Controls should have theta_e = 0 (or is_control = 1 if column exists)
+    if "is_control" in df.columns:
+        controls = df.filter(F.col("is_control") == 1)
+    else:
+        controls = df.filter(F.col("theta_e_arcsec") == 0)
     n_controls = controls.count()
     
     # Controls with non-zero arc_snr (should be low/null)
@@ -196,12 +212,17 @@ def validate_controls(df) -> Dict:
     injections = df.filter(F.col("theta_e_arcsec") > 0)
     n_injections = injections.count()
     
+    # Debug tier is allowed to have 0 controls (control_frac_debug defaults to 0)
+    is_debug = experiment_id.startswith("debug")
+    controls_valid = n_controls > 0 or is_debug
+    
     return {
         "n_controls": n_controls,
         "n_injections": n_injections,
         "control_avg_snr": avg_snr,
         "control_max_snr": max_snr,
-        "controls_valid": n_controls > 0,  # Should have some controls
+        "controls_valid": controls_valid,
+        "is_debug_tier": is_debug,
     }
 
 
@@ -274,10 +295,12 @@ def validate_physics(df) -> Dict:
     """Validate physics metrics."""
     results = {}
     
+    # Only check injections (theta_e > 0)
+    inj = df.filter(F.col("theta_e_arcsec") > 0)
+    n_injections = inj.count()
+    
     # Check magnification
     if "magnification" in df.columns:
-        # Only check injections (theta_e > 0)
-        inj = df.filter(F.col("theta_e_arcsec") > 0)
         stats = inj.filter(F.col("magnification").isNotNull()).agg(
             F.count("*").alias("count"),
             F.avg("magnification").alias("avg"),
@@ -286,6 +309,8 @@ def validate_physics(df) -> Dict:
         ).collect()[0]
         results["magnification"] = {
             "non_null_count": stats["count"],
+            "expected_non_null": n_injections,
+            "coverage_pct": (stats["count"] / n_injections * 100) if n_injections > 0 else 0,
             "avg": float(stats["avg"]) if stats["avg"] is not None else None,
             "min": float(stats["min"]) if stats["min"] is not None else None,
             "max": float(stats["max"]) if stats["max"] is not None else None,
@@ -296,8 +321,216 @@ def validate_physics(df) -> Dict:
         valid_counts = df.groupBy("physics_valid").count().collect()
         results["physics_valid_counts"] = {str(r["physics_valid"]): r["count"] for r in valid_counts}
     
+    # Check expected_arc_radius
+    if "expected_arc_radius" in df.columns:
+        stats = inj.filter(F.col("expected_arc_radius").isNotNull()).agg(
+            F.count("*").alias("count"),
+            F.avg("expected_arc_radius").alias("avg"),
+        ).collect()[0]
+        results["expected_arc_radius"] = {
+            "non_null_count": stats["count"],
+            "avg": float(stats["avg"]) if stats["avg"] is not None else None,
+        }
+    
     return {
         "physics_metrics": results,
+        "n_injections": n_injections,
+    }
+
+
+def validate_injection_params(df) -> Dict:
+    """Validate injection parameter distributions."""
+    inj = df.filter(F.col("theta_e_arcsec") > 0)
+    
+    # theta_e distribution
+    theta_stats = inj.agg(
+        F.min("theta_e_arcsec").alias("min"),
+        F.max("theta_e_arcsec").alias("max"),
+        F.avg("theta_e_arcsec").alias("avg"),
+        F.expr("percentile_approx(theta_e_arcsec, array(0.25, 0.5, 0.75))").alias("quartiles"),
+    ).collect()[0]
+    
+    # src_dmag distribution
+    dmag_stats = inj.agg(
+        F.min("src_dmag").alias("min"),
+        F.max("src_dmag").alias("max"),
+        F.avg("src_dmag").alias("avg"),
+    ).collect()[0]
+    
+    # src_reff_arcsec distribution
+    reff_stats = inj.agg(
+        F.min("src_reff_arcsec").alias("min"),
+        F.max("src_reff_arcsec").alias("max"),
+        F.avg("src_reff_arcsec").alias("avg"),
+    ).collect()[0]
+    
+    # src_e distribution
+    e_stats = inj.agg(
+        F.min("src_e").alias("min"),
+        F.max("src_e").alias("max"),
+        F.avg("src_e").alias("avg"),
+    ).collect()[0]
+    
+    # shear distribution
+    shear_stats = inj.agg(
+        F.min("shear").alias("min"),
+        F.max("shear").alias("max"),
+        F.avg("shear").alias("avg"),
+    ).collect()[0]
+    
+    return {
+        "theta_e": {
+            "min": float(theta_stats["min"]) if theta_stats["min"] is not None else None,
+            "max": float(theta_stats["max"]) if theta_stats["max"] is not None else None,
+            "avg": float(theta_stats["avg"]) if theta_stats["avg"] is not None else None,
+            "quartiles": [float(q) for q in theta_stats["quartiles"]] if theta_stats["quartiles"] else None,
+        },
+        "src_dmag": {
+            "min": float(dmag_stats["min"]) if dmag_stats["min"] is not None else None,
+            "max": float(dmag_stats["max"]) if dmag_stats["max"] is not None else None,
+            "avg": float(dmag_stats["avg"]) if dmag_stats["avg"] is not None else None,
+        },
+        "src_reff_arcsec": {
+            "min": float(reff_stats["min"]) if reff_stats["min"] is not None else None,
+            "max": float(reff_stats["max"]) if reff_stats["max"] is not None else None,
+            "avg": float(reff_stats["avg"]) if reff_stats["avg"] is not None else None,
+        },
+        "src_e": {
+            "min": float(e_stats["min"]) if e_stats["min"] is not None else None,
+            "max": float(e_stats["max"]) if e_stats["max"] is not None else None,
+            "avg": float(e_stats["avg"]) if e_stats["avg"] is not None else None,
+        },
+        "shear": {
+            "min": float(shear_stats["min"]) if shear_stats["min"] is not None else None,
+            "max": float(shear_stats["max"]) if shear_stats["max"] is not None else None,
+            "avg": float(shear_stats["avg"]) if shear_stats["avg"] is not None else None,
+        },
+    }
+
+
+def validate_lens_model_distribution(df) -> Dict:
+    """Validate lens model distribution."""
+    if "lens_model" not in df.columns:
+        return {"error": "lens_model column not found"}
+    
+    dist = df.groupBy("lens_model").count().collect()
+    model_counts = {r["lens_model"] if r["lens_model"] else "NULL": r["count"] for r in dist}
+    
+    return {
+        "lens_model_counts": model_counts,
+        "has_sie": model_counts.get("SIE", 0) > 0,
+        "has_control": model_counts.get("CONTROL", 0) > 0 or model_counts.get("NULL", 0) > 0,
+    }
+
+
+def validate_snr_correlation(df) -> Dict:
+    """Validate SNR behavior with theta_e for injections."""
+    inj = df.filter((F.col("theta_e_arcsec") > 0) & (F.col("arc_snr").isNotNull()))
+    
+    if inj.count() == 0:
+        return {"error": "No valid injections with SNR"}
+    
+    # Bin by theta_e and compute average SNR per bin
+    binned = inj.withColumn(
+        "theta_bin", F.floor(F.col("theta_e_arcsec") * 5) / 5  # 0.2 arcsec bins
+    ).groupBy("theta_bin").agg(
+        F.avg("arc_snr").alias("avg_snr"),
+        F.count("*").alias("count"),
+    ).orderBy("theta_bin").collect()
+    
+    bins = [(float(r["theta_bin"]), float(r["avg_snr"]), r["count"]) for r in binned]
+    
+    # Peak SNR may decrease with theta_e due to arc spreading (physically expected)
+    # This is NOT a bug - larger arcs spread flux over more pixels
+    if len(bins) >= 2:
+        first_half_avg = sum(b[1] for b in bins[:len(bins)//2]) / max(len(bins)//2, 1)
+        second_half_avg = sum(b[1] for b in bins[len(bins)//2:]) / max(len(bins) - len(bins)//2, 1)
+        peak_snr_trend = "increasing" if second_half_avg > first_half_avg else "decreasing"
+    else:
+        peak_snr_trend = "unknown"
+    
+    return {
+        "bins": bins,
+        "n_bins": len(bins),
+        "peak_snr_trend": peak_snr_trend,
+        "note": "Peak SNR may decrease with theta_e due to arc spreading - this is expected physics"
+    }
+
+
+def validate_total_flux_correlation(df) -> Dict:
+    """Validate TOTAL injected flux increases with theta_e (critical physics check)."""
+    # This is the key physics test: magnification should increase with theta_e
+    # for sources placed proportionally inside the Einstein radius
+    
+    if "total_injected_flux_r" not in df.columns:
+        return {"error": "total_injected_flux_r column not found - run Stage 4c with updated code"}
+    
+    inj = df.filter((F.col("theta_e_arcsec") > 0) & (F.col("total_injected_flux_r").isNotNull()))
+    
+    n_with_flux = inj.count()
+    if n_with_flux == 0:
+        return {"error": "No injections have total_injected_flux_r - likely bug in Stage 4c"}
+    
+    # Bin by theta_e and compute average total flux per bin
+    binned = inj.withColumn(
+        "theta_bin", F.floor(F.col("theta_e_arcsec") * 5) / 5
+    ).groupBy("theta_bin").agg(
+        F.avg("total_injected_flux_r").alias("avg_flux"),
+        F.count("*").alias("count"),
+    ).orderBy("theta_bin").collect()
+    
+    bins = [(float(r["theta_bin"]), float(r["avg_flux"]), r["count"]) for r in binned]
+    
+    # CRITICAL: Total flux MUST increase with theta_e (magnification physics)
+    if len(bins) >= 2:
+        first_half_avg = sum(b[1] for b in bins[:len(bins)//2]) / max(len(bins)//2, 1)
+        second_half_avg = sum(b[1] for b in bins[len(bins)//2:]) / max(len(bins) - len(bins)//2, 1)
+        flux_trend_positive = second_half_avg > first_half_avg
+    else:
+        flux_trend_positive = None
+    
+    return {
+        "n_with_flux": n_with_flux,
+        "bins": bins,
+        "flux_trend_positive": flux_trend_positive,
+        "valid": flux_trend_positive == True,
+        "interpretation": "✅ Total flux INCREASES with theta_e (physics correct)" if flux_trend_positive else "❌ Total flux does NOT increase with theta_e - MAGNIFICATION BUG!"
+    }
+
+
+def validate_control_injection_balance(df) -> Dict:
+    """Validate control vs injection balance matches configuration."""
+    if "is_control" not in df.columns:
+        return {"error": "is_control column not found"}
+    
+    total = df.count()
+    n_controls = df.filter(F.col("is_control") == 1).count()
+    n_injections = df.filter(F.col("is_control") == 0).count()
+    
+    actual_frac = n_controls / total if total > 0 else 0
+    
+    # Per-split breakdown
+    by_split = df.groupBy("region_split", "is_control").count().collect()
+    split_breakdown = {}
+    for r in by_split:
+        split = r["region_split"]
+        if split not in split_breakdown:
+            split_breakdown[split] = {"controls": 0, "injections": 0}
+        if r["is_control"] == 1:
+            split_breakdown[split]["controls"] = r["count"]
+        else:
+            split_breakdown[split]["injections"] = r["count"]
+    
+    # Calculate per-split fractions
+    for split in split_breakdown:
+        total_split = split_breakdown[split]["controls"] + split_breakdown[split]["injections"]
+        split_breakdown[split]["control_frac"] = split_breakdown[split]["controls"] / total_split if total_split > 0 else 0
+    
+    return {
+        "total_controls": n_controls,
+        "total_injections": n_injections,
+        "overall_control_frac": actual_frac,
+        "by_split": split_breakdown,
     }
 
 
@@ -366,12 +599,39 @@ def main():
     print(f"\n[1/8] Reading metrics from {args.metrics_s3}...")
     df = spark.read.parquet(args.metrics_s3)
     
-    # Expected columns in metrics
+    # Expected columns in metrics = ALL stamps columns EXCEPT stamp_npz
     required_cols = [
+        # Identifiers
         "task_id", "experiment_id", "selection_set_id", "ranking_mode", "selection_strategy",
         "region_id", "region_split", "brickname",
+        # Galaxy coordinates
+        "ra", "dec",
+        # Stamp configuration
+        "stamp_size", "bandset",
+        # Injection parameters
         "config_id", "theta_e_arcsec", "src_dmag", "src_reff_arcsec", "src_e", "shear", "replicate",
-        "cutout_ok", "arc_snr", "psfsize_r", "psfdepth_r", "ebv",
+        "is_control",
+        # Frozen randomness
+        "task_seed64", "src_x_arcsec", "src_y_arcsec", "src_phi_rad", "shear_phi_rad", "src_gr", "src_rz",
+        # Binning
+        "psf_bin", "depth_bin",
+        # Provenance
+        "ab_zp_nmgy", "pipeline_version",
+        # Observing conditions
+        "psfsize_r", "psfdepth_r", "ebv",
+        # Quality metrics
+        "cutout_ok", "arc_snr", "total_injected_flux_r", "metrics_ok",
+        # Maskbits metrics
+        "bad_pixel_frac", "wise_brightmask_frac",
+        # PSF provenance
+        "psf_fwhm_used_g", "psf_fwhm_used_r", "psf_fwhm_used_z",
+        # Mode tracking
+        "metrics_only",
+        # Lens model provenance
+        "lens_model", "lens_e", "lens_phi_rad",
+        # Physics metrics
+        "magnification", "tangential_stretch", "radial_stretch", "expected_arc_radius",
+        "physics_valid", "physics_warnings",
     ]
     
     # Run validations
@@ -387,7 +647,12 @@ def main():
     results["counts"] = validate_counts(df)
     print(f"  Total rows: {results['counts']['total_rows']:,}")
     print(f"  By split: {results['counts']['by_split']}")
+    print(f"  Cutout stats: {results['counts']['cutout_stats']}")
     print(f"  Success rate: {results['counts']['success_rate']:.2%}")
+    if results['counts'].get('failure_reasons'):
+        print(f"  Top failure reasons:")
+        for reason, count in list(results['counts']['failure_reasons'].items())[:5]:
+            print(f"    - {reason}: {count}")
     
     print("\n[4/8] Validating nulls...")
     results["nulls"] = validate_nulls(df, required_cols)
@@ -402,10 +667,13 @@ def main():
     print(f"  Ranges valid: {results['ranges']['ranges_valid']}")
     
     print("\n[6/8] Validating controls...")
-    results["controls"] = validate_controls(df)
+    experiment_id = config.get("experiment_id", "") if config else ""
+    results["controls"] = validate_controls(df, experiment_id)
     print(f"  Controls: {results['controls']['n_controls']:,}")
     print(f"  Injections: {results['controls']['n_injections']:,}")
     print(f"  Control avg SNR: {results['controls']['control_avg_snr']}")
+    if results['controls'].get('is_debug_tier'):
+        print(f"  (Debug tier - 0 controls is expected)")
     
     print("\n[7/8] Validating PSF provenance...")
     results["psf"] = validate_psf_provenance(df)
@@ -421,16 +689,77 @@ def main():
     print(f"  Config valid: {results['config'].get('config_valid', 'N/A')}")
     
     # Physics metrics
-    print("\n[EXTRA] Validating physics metrics...")
+    print("\n[EXTRA 1/5] Validating physics metrics...")
     results["physics"] = validate_physics(df)
     if "magnification" in results["physics"].get("physics_metrics", {}):
         mag = results["physics"]["physics_metrics"]["magnification"]
-        print(f"  Magnification: count={mag['non_null_count']}, avg={mag['avg']:.2f}" if mag['avg'] else "  Magnification: no data")
+        coverage = mag.get('coverage_pct', 0)
+        print(f"  Magnification: count={mag['non_null_count']}, coverage={coverage:.1f}%")
+        if mag['avg']:
+            print(f"    avg={mag['avg']:.2f}, min={mag['min']:.2f}, max={mag['max']:.2f}")
+        else:
+            print(f"    ⚠️ NO MAGNIFICATION DATA - likely bug in Stage 4c!")
+    
+    # Injection parameter distributions
+    print("\n[EXTRA 2/5] Validating injection parameter distributions...")
+    results["injection_params"] = validate_injection_params(df)
+    inj_p = results["injection_params"]
+    print(f"  theta_e: min={inj_p['theta_e']['min']:.2f}, max={inj_p['theta_e']['max']:.2f}, avg={inj_p['theta_e']['avg']:.2f}")
+    print(f"  src_dmag: min={inj_p['src_dmag']['min']:.1f}, max={inj_p['src_dmag']['max']:.1f}, avg={inj_p['src_dmag']['avg']:.1f}")
+    print(f"  src_reff: min={inj_p['src_reff_arcsec']['min']:.2f}, max={inj_p['src_reff_arcsec']['max']:.2f}")
+    print(f"  src_e: min={inj_p['src_e']['min']:.2f}, max={inj_p['src_e']['max']:.2f}")
+    print(f"  shear: min={inj_p['shear']['min']:.3f}, max={inj_p['shear']['max']:.3f}")
+    
+    # Lens model distribution
+    print("\n[EXTRA 3/5] Validating lens model distribution...")
+    results["lens_model"] = validate_lens_model_distribution(df)
+    if "lens_model_counts" in results["lens_model"]:
+        print(f"  Model distribution: {results['lens_model']['lens_model_counts']}")
+        print(f"  Has SIE: {results['lens_model'].get('has_sie', False)}")
+    
+    # SNR correlation with theta_e (peak SNR may decrease - expected physics)
+    print("\n[EXTRA 4/6] Validating SNR-theta_e correlation...")
+    results["snr_correlation"] = validate_snr_correlation(df)
+    print(f"  Peak SNR trend: {results['snr_correlation'].get('peak_snr_trend', 'unknown')}")
+    print(f"  Note: {results['snr_correlation'].get('note', '')}")
+    if results["snr_correlation"].get("bins"):
+        print(f"  Binned peak SNR:")
+        for bin_val, avg_snr, count in results["snr_correlation"]["bins"][:5]:
+            print(f"    theta={bin_val:.2f}: SNR={avg_snr:.1f} (n={count})")
+    
+    # CRITICAL: Total flux correlation with theta_e (must be positive)
+    print("\n[EXTRA 5/6] Validating TOTAL FLUX-theta_e correlation (CRITICAL)...")
+    results["total_flux_correlation"] = validate_total_flux_correlation(df)
+    if "error" in results["total_flux_correlation"]:
+        print(f"  ❌ {results['total_flux_correlation']['error']}")
+    else:
+        print(f"  {results['total_flux_correlation']['interpretation']}")
+        if results["total_flux_correlation"].get("bins"):
+            print(f"  Binned total flux:")
+            for bin_val, avg_flux, count in results["total_flux_correlation"]["bins"][:5]:
+                print(f"    theta={bin_val:.2f}: flux={avg_flux:.1f} nMgy (n={count})")
+    
+    # Control/injection balance
+    print("\n[EXTRA 6/6] Validating control/injection balance...")
+    results["balance"] = validate_control_injection_balance(df)
+    print(f"  Controls: {results['balance']['total_controls']:,}")
+    print(f"  Injections: {results['balance']['total_injections']:,}")
+    print(f"  Overall control fraction: {results['balance']['overall_control_frac']:.2%}")
+    print(f"  Per-split breakdown:")
+    for split, data in results["balance"]["by_split"].items():
+        print(f"    {split}: controls={data['controls']:,}, injections={data['injections']:,}, frac={data['control_frac']:.2%}")
     
     # Summary
     print("\n" + "=" * 70)
     print("VALIDATION SUMMARY")
     print("=" * 70)
+    
+    # Check magnification coverage (should be >0% for injections)
+    mag_metrics = results["physics"].get("physics_metrics", {}).get("magnification", {})
+    magnification_valid = mag_metrics.get("coverage_pct", 0) > 0
+    
+    # Check total flux trend (MUST be positive - critical physics check)
+    total_flux_valid = results.get("total_flux_correlation", {}).get("valid", False)
     
     all_valid = all([
         results["schema"]["schema_valid"],
@@ -450,6 +779,8 @@ def main():
         ("Has Controls", results["controls"]["controls_valid"]),
         ("PSF Provenance", results["psf"]["psf_provenance_valid"]),
         ("Maskbits Metrics", results["maskbits"]["maskbits_valid"]),
+        ("Magnification Data", magnification_valid),
+        ("Total Flux ↑ with θ_E (CRITICAL)", total_flux_valid),
     ]
     
     for name, valid in checks:
@@ -457,12 +788,26 @@ def main():
         print(f"  {name}: {status}")
     
     print("=" * 70)
-    if all_valid:
+    
+    # Count failures
+    n_failures = sum(1 for _, v in checks if not v)
+    
+    # Critical physics checks
+    physics_ok = magnification_valid and total_flux_valid
+    
+    if n_failures == 0:
         print("OVERALL: ✅ VALIDATION PASSED")
         print("Phase 4c output is ready for Phase 4d / Phase 5")
-    else:
+    elif not all_valid or not physics_ok:
         print("OVERALL: ❌ VALIDATION FAILED")
-        print("Review issues above before proceeding")
+        if not magnification_valid:
+            print("  - MAGNIFICATION DATA MISSING: Run 4c with fixed code")
+        if not total_flux_valid:
+            print("  - TOTAL FLUX DOES NOT INCREASE WITH θ_E: Injection physics broken!")
+        print("DO NOT USE THIS DATA FOR TRAINING")
+    else:
+        print(f"OVERALL: ⚠️ VALIDATION PASSED WITH WARNINGS ({n_failures} checks failed)")
+        print("Phase 4c output may proceed but investigate warnings")
     print("=" * 70)
     
     spark.stop()

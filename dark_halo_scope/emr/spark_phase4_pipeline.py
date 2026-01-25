@@ -561,7 +561,8 @@ def render_unlensed_source(
     unit_flux = sersic_unit_total_flux(reff_arcsec=src_reff_arcsec, q=q_src, n=n)
     amp = float(src_total_flux_nmgy) / max(float(unit_flux), 1e-30)
 
-    img = amp * sersic_profile(dx, dy, src_reff_arcsec, n, src_e, src_phi_rad)
+    # Use sersic_profile_Ie1 with correct parameters
+    img = amp * sersic_profile_Ie1(dx, dy, src_reff_arcsec, q_src, src_phi_rad, n=n)
     img = img * (pixscale_arcsec ** 2)
 
     if psf_apply and psf_sigma_pix > 0:
@@ -1853,8 +1854,9 @@ def _cutout(data: np.ndarray, x: float, y: float, size: int) -> Tuple[np.ndarray
     if data is None:
         return None, False
     half = size // 2
-    x0 = int(round(x)) - half
-    y0 = int(round(y)) - half
+    # Convert numpy 0-d arrays to Python floats before round()
+    x0 = int(round(float(x))) - half
+    y0 = int(round(float(y))) - half
     x1 = x0 + size
     y1 = y0 + size
     ok = True
@@ -1957,6 +1959,7 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
         T.StructField("stamp_npz", T.BinaryType(), True),  # Nullable for metrics-only mode
         T.StructField("cutout_ok", T.IntegerType(), False),
         T.StructField("arc_snr", T.DoubleType(), True),
+        T.StructField("total_injected_flux_r", T.DoubleType(), True),  # Total r-band flux (should increase with theta_e)
         T.StructField("bad_pixel_frac", T.DoubleType(), True),  # Fraction of masked/bad pixels in stamp
         T.StructField("wise_brightmask_frac", T.DoubleType(), True),  # Fraction affected by WISE bright-star mask
         T.StructField("metrics_ok", T.IntegerType(), True),  # 1 if all metrics computed successfully
@@ -2117,6 +2120,7 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
 
                 add_r = None
                 arc_snr = None
+                total_injected_flux_r = None
                 # Track actual PSF FWHM used (for provenance/reproducibility)
                 psf_fwhm_used_g = None
                 psf_fwhm_used_r = None
@@ -2142,7 +2146,8 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                         """Get PSF FWHM at stamp center from psfsize map, or use manifest value."""
                         psfsize_map = cur_dict.get(f"psfsize_{band}")
                         if psfsize_map is not None:
-                            ix, iy = int(round(px)), int(round(py))
+                            # Convert numpy 0-d arrays to Python floats before round()
+                            ix, iy = int(round(float(px))), int(round(float(py)))
                             if 0 <= iy < psfsize_map.shape[0] and 0 <= ix < psfsize_map.shape[1]:
                                 val = float(psfsize_map[iy, ix])
                                 if np.isfinite(val) and val > 0:
@@ -2226,13 +2231,17 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                             snr = np.where((sigma > 0) & good_mask, add_r / (sigma + 1e-12), 0.0)
                             arc_snr = float(np.nanmax(snr))
                     
-                                        # =========================================================================
+                    # Total injected flux in r-band (should increase with theta_e due to magnification)
+                    total_injected_flux_r = float(np.sum(add_r)) if add_r is not None else None
+                    
+                    # =========================================================================
                     # Flux-based magnification proxy (stamp-limited):
                     # Compare total injected flux of the lensed source to the total flux of the unlensed source
                     # rendered on the same stamp with the same PSF. This preserves the "do not renormalize"
                     # requirement and avoids unstable Jacobian evaluation near the critical curve.
                     # =========================================================================
-                    if theta_e > 0:
+                    # NOTE: Only compute if add_r is not None (injection was actually rendered)
+                    if theta_e > 0 and add_r is not None:
                         try:
                             # Compute flux-based magnification proxy
                             # NOTE: Variable names fixed 2026-01-24:
@@ -2315,6 +2324,7 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     stamp_npz=stamp_npz,
                     cutout_ok=int(bool(cut_ok_all)),
                     arc_snr=arc_snr,
+                    total_injected_flux_r=total_injected_flux_r,
                     bad_pixel_frac=bad_pixel_frac,
                     wise_brightmask_frac=wise_brightmask_frac,
                     metrics_ok=int(mask_valid and cut_ok_all and arc_snr is not None) if theta_e > 0 else int(mask_valid and cut_ok_all),
@@ -2335,6 +2345,7 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
 
             except Exception as e:
                 # Emit a row with cutout_ok=0 and an empty stamp to keep accounting consistent
+                # MUST include ALL 53 schema fields to avoid ValueError on Row length mismatch
                 if metrics_only:
                     empty = None  # Don't store stamp in metrics-only mode
                 else:
@@ -2359,12 +2370,25 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     src_e=float(r["src_e"]),
                     shear=float(r["shear"]),
                     replicate=int(r["replicate"]),
+                    is_control=int(r["is_control"]) if r["is_control"] is not None else 0,
+                    task_seed64=int(r["task_seed64"]) if r["task_seed64"] is not None else None,
+                    src_x_arcsec=float(r["src_x_arcsec"]) if r["src_x_arcsec"] is not None else 0.0,
+                    src_y_arcsec=float(r["src_y_arcsec"]) if r["src_y_arcsec"] is not None else 0.0,
+                    src_phi_rad=float(r["src_phi_rad"]) if r["src_phi_rad"] is not None else 0.0,
+                    shear_phi_rad=float(r["shear_phi_rad"]) if r["shear_phi_rad"] is not None else 0.0,
+                    src_gr=float(r["src_gr"]) if r["src_gr"] is not None else 0.0,
+                    src_rz=float(r["src_rz"]) if r["src_rz"] is not None else 0.0,
+                    psf_bin=int(r["psf_bin"]) if r["psf_bin"] is not None else None,
+                    depth_bin=int(r["depth_bin"]) if r["depth_bin"] is not None else None,
+                    ab_zp_nmgy=float(AB_ZP_NMGY),
+                    pipeline_version=str(PIPELINE_VERSION),
                     psfsize_r=float(r["psfsize_r"]) if r["psfsize_r"] is not None else None,
                     psfdepth_r=float(r["psfdepth_r"]) if r["psfdepth_r"] is not None else None,
                     ebv=float(r["ebv"]) if r["ebv"] is not None else None,
                     stamp_npz=empty,
                     cutout_ok=0,
                     arc_snr=None,
+                    total_injected_flux_r=None,
                     bad_pixel_frac=None,
                     wise_brightmask_frac=None,
                     metrics_ok=0,
@@ -2393,12 +2417,9 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
     df_out.write.mode("overwrite").partitionBy("region_split").parquet(out_path)
 
     # Metrics-only table (derived from persisted df_out)
-    metrics = df_out.select(
-        "task_id", "experiment_id", "selection_set_id", "ranking_mode", "selection_strategy",
-        "region_id", "region_split", "brickname",
-        "config_id", "theta_e_arcsec", "src_dmag", "src_reff_arcsec", "src_e", "shear", "replicate",
-        "cutout_ok", "arc_snr", "psfsize_r", "psfdepth_r", "ebv",
-    )
+    # Metrics table: ALL columns EXCEPT stamp_npz (binary image data)
+    # This provides complete metadata for analysis without the heavy binary payload
+    metrics = df_out.drop("stamp_npz")
     met_path = f"{out_root}/metrics/{args.experiment_id}"
     metrics.write.mode("overwrite").partitionBy("region_split").parquet(met_path)
     
