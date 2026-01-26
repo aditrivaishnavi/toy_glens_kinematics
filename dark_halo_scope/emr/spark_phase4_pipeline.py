@@ -240,18 +240,18 @@ PIPELINE_VERSION = "phase4_pipeline_v1"
 #
 # For Phase 4d completeness:
 #   - Report two curves: "all injections" and "clean subset"
-#   - Stratify by theta_e/psfsize_r bins (see RESOLUTION_BINS)
+#   - Stratify by theta_e/psfsize_r bins (see QUALITY_CUT_RESOLUTION_BINS)
 #   - Stratify by psfsize_r, psfdepth_r, bad_pixel_frac, wise_brightmask_frac
 # =========================================================================
 
 QUALITY_CUT_BAD_PIXEL_FRAC = 0.2  # Max allowed bad_pixel_frac for clean subset
 
 # Resolution bins for completeness stratification (theta_e / psfsize_r)
-RESOLUTION_BINS = [0.0, 0.4, 0.6, 0.8, 1.0, float('inf')]
-RESOLUTION_LABELS = ['<0.4', '0.4-0.6', '0.6-0.8', '0.8-1.0', '>=1.0']
+QUALITY_CUT_RESOLUTION_BINS = [0.0, 0.4, 0.6, 0.8, 1.0, float('inf')]
+QUALITY_CUT_RESOLUTION_LABELS = ['<0.4', '0.4-0.6', '0.6-0.8', '0.8-1.0', '>=1.0']
 
 # SNR threshold for "recovered" classification in completeness
-RECOVERY_SNR_THRESHOLD = 5.0
+QUALITY_CUT_RECOVERY_SNR_THRESHOLD = 5.0
 
 # =========================================================================
 # DR10 MASKBITS (for filtering bad pixels in SNR calculation)
@@ -676,7 +676,7 @@ def inject_sis_stamp(
     # where alpha is the SIS deflection and Gamma is the shear matrix:
     #   Gamma = [[gamma1, gamma2], [gamma2, -gamma1]]
     # =========================================================================
-
+    
     # SIS deflection
     eps = 1e-10
     r = np.sqrt(thx**2 + thy**2) + eps
@@ -1059,7 +1059,7 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
     for c in ["brickname", "psfsize_r", "psfdepth_r", "ebv"]:
         if c not in df_bricks.columns:
             raise RuntimeError(f"bricks_with_region missing required column: {c}")
-
+    
     # Per-band PSF columns (g, r, z) for realistic injection
     # psfsize_r is required; psfsize_g and psfsize_z fallback to psfsize_r if missing
     df_bricks = df_bricks.select("brickname", "psfsize_r", "psfdepth_r", "ebv",
@@ -1302,7 +1302,7 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
                     # This is where the n_cfg multiplication happens (correctly).
                     # Final tasks per (selection_set, split) = per_split_target × n_cfg
                     tasks = tmp.crossJoin(F.broadcast(cfg_df))
-
+                    
                     # =========================================================================
                     # CONTROL SAMPLES FOR DEBUG/GRID TIERS
                     # =========================================================================
@@ -1329,7 +1329,7 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
                         tasks = tasks.withColumn("src_reff_arcsec", F.when(F.col("is_control") == 1, F.lit(0.0)).otherwise(F.col("src_reff_arcsec")))
                         tasks = tasks.withColumn("src_e", F.when(F.col("is_control") == 1, F.lit(0.0)).otherwise(F.col("src_e")))
                         tasks = tasks.withColumn("shear", F.when(F.col("is_control") == 1, F.lit(0.0)).otherwise(F.col("shear")))
-                else:
+                    else:
                         # No controls for this tier
                         tasks = tasks.withColumn("is_control", F.lit(0).cast("int"))
 
@@ -1565,7 +1565,7 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
                     print(f"[4a] Train tier: wrote CSV with 20 partitions to avoid bottleneck")
                 else:
                     # Small manifests: single file for convenience
-                tasks_out.coalesce(1).write.mode("overwrite").option("header", True).csv(csv_path)
+                    tasks_out.coalesce(1).write.mode("overwrite").option("header", True).csv(csv_path)
 
                 all_manifest_paths.append(out_path)
                 print(f"[4a] Wrote manifest: {out_path}")
@@ -1622,17 +1622,17 @@ def _download_http(
     last_exception = None
     for attempt in range(max_retries):
         try:
-    with requests.get(url, stream=True, timeout=timeout_s) as r:
+            with requests.get(url, stream=True, timeout=timeout_s) as r:
                 # Don't retry client errors (4xx) except 429 (rate limit)
                 if 400 <= r.status_code < 500 and r.status_code != 429:
                     r.raise_for_status()  # Will raise immediately, no retry
                 
-        r.raise_for_status()
+                r.raise_for_status()
                 
-        with open(out_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=1024 * 1024):
-                if chunk:
-                    f.write(chunk)
+                with open(out_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            f.write(chunk)
                 return  # Success!
                 
         except requests.exceptions.RequestException as e:
@@ -2192,31 +2192,8 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     psf_fwhm_g = _get_psf_fwhm_at_center(cur, "g", x, y, manifest_fwhm_g)
                     psf_fwhm_z = _get_psf_fwhm_at_center(cur, "z", x, y, manifest_fwhm_z)
                     
-                    # =========================================================================
-                    # SECONDARY PSF FALLBACK: Use r-band PSF when g/z unavailable
-                    # =========================================================================
-                    # Scientific Justification (documented 2026-01-26):
-                    #
-                    # Root Cause: 112 bricks in DR10 South have no g-band coverage (or partial
-                    # coverage). For these bricks, both psfsize_g (from map) AND manifest 
-                    # psfsize_g are 0.0, leaving no valid g-band PSF estimate.
-                    #
-                    # Why r-band fallback is defensible:
-                    # 1. PSF size is primarily atmospheric seeing, with weak λ dependence.
-                    #    For Kolmogorov turbulence: FWHM ∝ λ^(-1/5), giving only ~5-8% 
-                    #    variation across g/r/z bands (475nm/622nm/913nm).
-                    #
-                    # 2. Empirical validation from this dataset:
-                    #    - g: mean=1.53", r: mean=1.32", z: mean=1.32" (within ~15%)
-                    #
-                    # 3. The alternative (PSF=0 → no convolution) is far worse: it would
-                    #    produce unrealistically sharp injected sources.
-                    #
-                    # 4. Provenance preserved: psf_fwhm_used_g/r/z columns record actual
-                    #    values used, enabling downstream filtering if needed.
-                    #
-                    # Impact: Affects 0.13% of injections (6,928 rows from 112 bricks).
-                    # =========================================================================
+                    # Secondary fallback: if g or z PSF is still <=0 (no coverage), use r-band
+                    # This handles the edge case where both psfsize map AND manifest are 0
                     if psf_fwhm_g <= 0:
                         psf_fwhm_g = psf_fwhm_r
                     if psf_fwhm_z <= 0:
@@ -2283,12 +2260,12 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     # Only compute if mask is valid; otherwise arc_snr remains None
                     # to prevent biased completeness from missing/corrupt maskbits
                     if add_r is not None and mask_valid and good_mask is not None:
-                    invr = invs.get("r")
-                    if invr is not None:
+                        invr = invs.get("r")
+                        if invr is not None:
                             sigma = np.where((invr > 0) & good_mask, 1.0 / np.sqrt(invr + 1e-12), 0.0)
                             snr = np.where((sigma > 0) & good_mask, add_r / (sigma + 1e-12), 0.0)
-                        arc_snr = float(np.nanmax(snr))
-
+                            arc_snr = float(np.nanmax(snr))
+                    
                     # Total injected flux in r-band (should increase with theta_e due to magnification)
                     total_injected_flux_r = float(np.sum(add_r)) if add_r is not None else None
                     
@@ -2342,7 +2319,7 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                 if metrics_only:
                     stamp_npz = None  # Don't store stamp to save space
                 else:
-                stamp_npz = encode_npz({f"image_{b}": imgs[b] for b in use_bands})
+                    stamp_npz = encode_npz({f"image_{b}": imgs[b] for b in use_bands})
 
                 yield Row(
                     task_id=r["task_id"],
@@ -2407,7 +2384,7 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                 if metrics_only:
                     empty = None  # Don't store stamp in metrics-only mode
                 else:
-                empty = encode_npz({"image_r": np.zeros((int(r["stamp_size"]), int(r["stamp_size"])), dtype=np.float32)})
+                    empty = encode_npz({"image_r": np.zeros((int(r["stamp_size"]), int(r["stamp_size"])), dtype=np.float32)})
                 yield Row(
                     task_id=r["task_id"],
                     experiment_id=r["experiment_id"],

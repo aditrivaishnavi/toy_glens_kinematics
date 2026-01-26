@@ -290,6 +290,71 @@ psf_fwhm_used_z > 0               # Now 100% after fix
 
 ---
 
+## PSF Fallback Analysis (Post-Fix Verification)
+
+### Fallback Usage Quantification
+
+After the PSF fix was applied and the full train tier was re-run, we measured how many injections actually used the r-band fallback:
+
+| Band | Fallback Count | Percentage of Injections |
+|------|----------------|-------------------------|
+| g-band (g == r) | ~3,836 | 0.072% |
+| z-band (z == r) | ~176 | 0.003% |
+
+*Estimated from 5% sample (183,538 injections sampled)*
+
+### PSF Distribution Percentiles (Injections Only)
+
+| Band | P1 | P5 | P10 | P50 (Median) |
+|------|-----|-----|-----|--------------|
+| g | 1.132" | 1.247" | 1.300" | 1.517" |
+| r | 1.049" | 1.118" | 1.148" | 1.299" |
+| z | 0.977" | 1.046" | 1.080" | 1.250" |
+
+### Minimum Values (Sample)
+
+| Band | Min Value |
+|------|-----------|
+| g | 0.904" |
+| r | 0.850" |
+| z | 0.813" |
+
+### Observations
+
+1. The g-band and z-band fallback rates (0.072% and 0.003%) are very low, affecting only ~4,000 injections out of 5.3M.
+
+2. The PSF distributions show expected wavelength dependence: g-band PSF is slightly larger than r and z (due to atmospheric seeing λ-dependence).
+
+3. The minimum PSF values are physically reasonable for good seeing conditions in DECaLS.
+
+4. No spikes at exact r-band values were observed in g/z distributions beyond the expected fallback cases.
+
+### Independent LLM Review (2026-01-26)
+
+**Verdict**: r-band fallback is scientifically defensible. Proceed with current approach.
+
+**Systematic Effects Identified**:
+- Chromatic PSF mismatch: Removes band dependence for affected rows
+- Color morphology bias: Slightly reduces realism for cross-band analysis
+- SNR/peakiness: May slightly sharpen/blur g injection relative to reality
+
+**Recommendations from Review**:
+
+1. **Proceed without filtering** - fallback rate is negligible (~0.07%)
+2. **Add provenance columns** - `psf_source_g/r/z` (0=map, 1=manifest, 2=fallback_r)
+3. **Investigate g-band min 0.508"** - discrepancy with sample min 0.904" needs audit
+4. **Downstream stratification**:
+   - Report completeness as function of `theta_e / psf_fwhm_used_r`
+   - Add "all data" vs "no-psf-fallback" curves for robustness check
+5. **Phase 5 training**: Include `psf_fwhm_used_{b}` as features or stratify batches
+
+**Open Items**:
+- [ ] Add `psf_source_g/r/z` provenance columns to schema
+- [ ] Audit rows with `psf_fwhm_used_g < 0.8"` to verify they are real
+- [ ] Verify per-split PSF distributions show no split-specific artifacts
+
+---
+
 ## Commits
 
 | Commit | Date | Description |
