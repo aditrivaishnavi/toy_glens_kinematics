@@ -1993,6 +1993,9 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
         T.StructField("psf_fwhm_used_g", T.DoubleType(), True),  # Actual PSF FWHM used for g-band injection
         T.StructField("psf_fwhm_used_r", T.DoubleType(), True),  # Actual PSF FWHM used for r-band injection
         T.StructField("psf_fwhm_used_z", T.DoubleType(), True),  # Actual PSF FWHM used for z-band injection
+        T.StructField("psf_source_g", T.IntegerType(), True),  # PSF source: 0=map, 1=manifest, 2=fallback_r
+        T.StructField("psf_source_r", T.IntegerType(), True),  # PSF source: 0=map, 1=manifest, 2=fallback_r
+        T.StructField("psf_source_z", T.IntegerType(), True),  # PSF source: 0=map, 1=manifest, 2=fallback_r
         T.StructField("metrics_only", T.IntegerType(), False),  # Track if stamp was skipped
         # Lens model provenance (for dataset consistency checks)
         T.StructField("lens_model", T.StringType(), True),  # "SIE", "SIS", or "CONTROL"
@@ -2152,6 +2155,10 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                 psf_fwhm_used_g = None
                 psf_fwhm_used_r = None
                 psf_fwhm_used_z = None
+                # Track PSF source: 0=map, 1=manifest, 2=fallback_r
+                psf_source_g = None
+                psf_source_r = None
+                psf_source_z = None
                 physics_metrics = {
                     "magnification": None,
                     "tangential_stretch": None,
@@ -2169,8 +2176,17 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     # PSF FWHM at the stamp center. Otherwise fall back to manifest brick-average.
                     # =========================================================================
                     
+                    # PSF source encoding: 0=map, 1=manifest, 2=fallback_r
+                    PSF_SOURCE_MAP = 0
+                    PSF_SOURCE_MANIFEST = 1
+                    PSF_SOURCE_FALLBACK_R = 2
+                    
                     def _get_psf_fwhm_at_center(cur_dict, band, px, py, manifest_fwhm):
-                        """Get PSF FWHM at stamp center from psfsize map, or use manifest value."""
+                        """Get PSF FWHM at stamp center from psfsize map, or use manifest value.
+                        Returns (fwhm_value, source_code) where source_code is:
+                          0 = from psfsize map at pixel
+                          1 = from manifest brick-average
+                        """
                         psfsize_map = cur_dict.get(f"psfsize_{band}")
                         if psfsize_map is not None:
                             # Convert numpy 0-d arrays to Python floats before round()
@@ -2178,8 +2194,8 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                             if 0 <= iy < psfsize_map.shape[0] and 0 <= ix < psfsize_map.shape[1]:
                                 val = float(psfsize_map[iy, ix])
                                 if np.isfinite(val) and val > 0:
-                                    return val
-                        return manifest_fwhm
+                                    return val, PSF_SOURCE_MAP
+                        return manifest_fwhm, PSF_SOURCE_MANIFEST
                     
                     # Get per-band PSF sizes using center-evaluated psfsize maps
                     # Fall back to manifest brick-average if maps not available
@@ -2188,16 +2204,18 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     manifest_fwhm_g = float(r["psfsize_g"]) if (r["psfsize_g"] is not None and r["psfsize_g"] > 0) else manifest_fwhm_r
                     manifest_fwhm_z = float(r["psfsize_z"]) if (r["psfsize_z"] is not None and r["psfsize_z"] > 0) else manifest_fwhm_r
                     
-                    psf_fwhm_r = _get_psf_fwhm_at_center(cur, "r", x, y, manifest_fwhm_r)
-                    psf_fwhm_g = _get_psf_fwhm_at_center(cur, "g", x, y, manifest_fwhm_g)
-                    psf_fwhm_z = _get_psf_fwhm_at_center(cur, "z", x, y, manifest_fwhm_z)
+                    psf_fwhm_r, psf_source_r = _get_psf_fwhm_at_center(cur, "r", x, y, manifest_fwhm_r)
+                    psf_fwhm_g, psf_source_g = _get_psf_fwhm_at_center(cur, "g", x, y, manifest_fwhm_g)
+                    psf_fwhm_z, psf_source_z = _get_psf_fwhm_at_center(cur, "z", x, y, manifest_fwhm_z)
                     
                     # Secondary fallback: if g or z PSF is still <=0 (no coverage), use r-band
                     # This handles the edge case where both psfsize map AND manifest are 0
                     if psf_fwhm_g <= 0:
                         psf_fwhm_g = psf_fwhm_r
+                        psf_source_g = PSF_SOURCE_FALLBACK_R
                     if psf_fwhm_z <= 0:
                         psf_fwhm_z = psf_fwhm_r
+                        psf_source_z = PSF_SOURCE_FALLBACK_R
                     
                     # Store for output provenance
                     psf_fwhm_used_g = psf_fwhm_g
@@ -2366,6 +2384,9 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     psf_fwhm_used_g=psf_fwhm_used_g,
                     psf_fwhm_used_r=psf_fwhm_used_r,
                     psf_fwhm_used_z=psf_fwhm_used_z,
+                    psf_source_g=psf_source_g,
+                    psf_source_r=psf_source_r,
+                    psf_source_z=psf_source_z,
                     metrics_only=int(metrics_only),
                     lens_model=lens_model_str,
                     lens_e=lens_e_val,
@@ -2430,6 +2451,9 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     psf_fwhm_used_g=None,
                     psf_fwhm_used_r=None,
                     psf_fwhm_used_z=None,
+                    psf_source_g=None,
+                    psf_source_r=None,
+                    psf_source_z=None,
                     metrics_only=int(metrics_only),
                     lens_model=str(r["lens_model"]) if r["lens_model"] is not None else "CONTROL",
                     lens_e=float(r["lens_e"]) if r["lens_e"] is not None else None,
