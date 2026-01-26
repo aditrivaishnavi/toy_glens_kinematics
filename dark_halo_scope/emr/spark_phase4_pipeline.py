@@ -2156,13 +2156,21 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     
                     # Get per-band PSF sizes using center-evaluated psfsize maps
                     # Fall back to manifest brick-average if maps not available
-                    manifest_fwhm_r = float(r["psfsize_r"]) if r["psfsize_r"] is not None else 1.4
-                    manifest_fwhm_g = float(r["psfsize_g"]) if r["psfsize_g"] is not None else manifest_fwhm_r
-                    manifest_fwhm_z = float(r["psfsize_z"]) if r["psfsize_z"] is not None else manifest_fwhm_r
+                    # NOTE: Some bricks have psfsize_g=0 (no g-band coverage), so check for >0 as well
+                    manifest_fwhm_r = float(r["psfsize_r"]) if (r["psfsize_r"] is not None and r["psfsize_r"] > 0) else 1.4
+                    manifest_fwhm_g = float(r["psfsize_g"]) if (r["psfsize_g"] is not None and r["psfsize_g"] > 0) else manifest_fwhm_r
+                    manifest_fwhm_z = float(r["psfsize_z"]) if (r["psfsize_z"] is not None and r["psfsize_z"] > 0) else manifest_fwhm_r
                     
                     psf_fwhm_r = _get_psf_fwhm_at_center(cur, "r", x, y, manifest_fwhm_r)
                     psf_fwhm_g = _get_psf_fwhm_at_center(cur, "g", x, y, manifest_fwhm_g)
                     psf_fwhm_z = _get_psf_fwhm_at_center(cur, "z", x, y, manifest_fwhm_z)
+                    
+                    # Secondary fallback: if g or z PSF is still <=0 (no coverage), use r-band
+                    # This handles the edge case where both psfsize map AND manifest are 0
+                    if psf_fwhm_g <= 0:
+                        psf_fwhm_g = psf_fwhm_r
+                    if psf_fwhm_z <= 0:
+                        psf_fwhm_z = psf_fwhm_r
                     
                     # Store for output provenance
                     psf_fwhm_used_g = psf_fwhm_g
