@@ -303,10 +303,10 @@ def main():
     report.append("")
 
     # =========================================================================
-    # 11. PSF PROVENANCE
+    # 11. PSF PROVENANCE (FWHM VALUES)
     # =========================================================================
     report.append("=" * 80)
-    report.append("11. PSF PROVENANCE")
+    report.append("11. PSF PROVENANCE - FWHM VALUES")
     report.append("=" * 80)
     
     for col in ["psf_fwhm_used_g", "psf_fwhm_used_r", "psf_fwhm_used_z"]:
@@ -321,16 +321,108 @@ def main():
             
             report.append(f"{col}: injections={inj_pct:.0f}%, controls={ctrl_pct:.0f}%")
             
-            # Stats for injections
+            # Full stats including percentiles for injections
             if inj_cov > 0:
                 psf_stats = injections.filter(F.col(col).isNotNull()).agg(
                     F.min(col).alias("min"),
                     F.max(col).alias("max"),
-                    F.avg(col).alias("avg")
+                    F.avg(col).alias("avg"),
+                    F.expr(f"percentile_approx({col}, 0.01)").alias("p01"),
+                    F.expr(f"percentile_approx({col}, 0.05)").alias("p05"),
+                    F.expr(f"percentile_approx({col}, 0.10)").alias("p10"),
+                    F.expr(f"percentile_approx({col}, 0.50)").alias("p50")
                 ).collect()[0]
                 report.append(f"  Stats: min={psf_stats['min']:.3f}, max={psf_stats['max']:.3f}, avg={psf_stats['avg']:.3f}")
+                report.append(f"  Percentiles: p1={psf_stats['p01']:.3f}, p5={psf_stats['p05']:.3f}, p10={psf_stats['p10']:.3f}, p50={psf_stats['p50']:.3f}")
+                
+                # Count zeros (invalid PSF values)
+                zero_count = injections.filter(F.col(col) <= 0).count()
+                if zero_count > 0:
+                    report.append(f"  WARNING: {zero_count} rows with {col} <= 0 ({100*zero_count/n_inj:.4f}%)")
+    report.append("")
+    
+    # =========================================================================
+    # 11b. PSF SOURCE PROVENANCE (NEW COLUMNS)
+    # =========================================================================
+    report.append("=" * 80)
+    report.append("11b. PSF SOURCE PROVENANCE (0=map, 1=manifest, 2=fallback_r)")
+    report.append("=" * 80)
+    
+    psf_source_cols = ["psf_source_g", "psf_source_r", "psf_source_z"]
+    has_psf_source = all(col in df.columns for col in psf_source_cols)
+    
+    if has_psf_source:
+        for col in psf_source_cols:
+            # Source distribution for injections
+            src_dist = injections.groupBy(col).count().orderBy(col).collect()
+            report.append(f"\n{col} distribution (injections):")
+            for r in src_dist:
+                src_val = r[col]
+                src_count = r["count"]
+                src_pct = 100 * src_count / n_inj if n_inj > 0 else 0
+                src_label = {0: "map", 1: "manifest", 2: "fallback_r", None: "NULL"}.get(src_val, f"unknown({src_val})")
+                report.append(f"  {src_label}: {src_count:,} ({src_pct:.3f}%)")
+        
+        # Summary: fallback rate
+        report.append("\nFallback summary:")
+        g_fallback = injections.filter(F.col("psf_source_g") == 2).count()
+        z_fallback = injections.filter(F.col("psf_source_z") == 2).count()
+        report.append(f"  g-band using r-band fallback: {g_fallback:,} ({100*g_fallback/n_inj:.4f}%)")
+        report.append(f"  z-band using r-band fallback: {z_fallback:,} ({100*z_fallback/n_inj:.4f}%)")
+    else:
+        report.append("PSF source columns (psf_source_g/r/z) NOT FOUND in dataset")
+        report.append("This indicates the data was generated before provenance tracking was added")
     report.append("")
 
+    # =========================================================================
+    # 11c. RESOLUTION DISTRIBUTION (theta_e / psfsize_r)
+    # =========================================================================
+    report.append("=" * 80)
+    report.append("11c. RESOLUTION DISTRIBUTION (theta_e / psfsize_r)")
+    report.append("=" * 80)
+    
+    # Calculate resolution for injections only
+    inj_with_res = injections.filter(
+        (F.col("theta_e_arcsec") > 0) & 
+        (F.col("psfsize_r").isNotNull()) & 
+        (F.col("psfsize_r") > 0)
+    ).withColumn("resolution", F.col("theta_e_arcsec") / F.col("psfsize_r"))
+    
+    res_stats = inj_with_res.agg(
+        F.min("resolution").alias("min"),
+        F.max("resolution").alias("max"),
+        F.avg("resolution").alias("avg"),
+        F.expr("percentile_approx(resolution, 0.5)").alias("median")
+    ).collect()[0]
+    report.append(f"Resolution (theta_e/psfsize_r): min={res_stats['min']:.3f}, median={res_stats['median']:.3f}, avg={res_stats['avg']:.3f}, max={res_stats['max']:.3f}")
+    
+    # Resolution bins
+    report.append("\nResolution bin distribution:")
+    res_bins = inj_with_res.withColumn("res_bin",
+        F.when(F.col("resolution") < 0.4, F.lit("<0.4"))
+        .when(F.col("resolution") < 0.6, F.lit("0.4-0.6"))
+        .when(F.col("resolution") < 0.8, F.lit("0.6-0.8"))
+        .when(F.col("resolution") < 1.0, F.lit("0.8-1.0"))
+        .otherwise(F.lit(">=1.0"))
+    ).groupBy("res_bin").agg(
+        F.count("*").alias("count"),
+        F.avg("arc_snr").alias("avg_snr")
+    ).orderBy("res_bin").collect()
+    
+    n_inj_with_res = inj_with_res.count()
+    report.append("res_bin | count | pct | avg_snr")
+    report.append("-" * 50)
+    for r in res_bins:
+        pct = 100 * r["count"] / n_inj_with_res if n_inj_with_res > 0 else 0
+        avg_snr = r["avg_snr"] if r["avg_snr"] is not None else 0
+        report.append(f"{r['res_bin']} | {r['count']:,} | {pct:.1f}% | {avg_snr:.2f}")
+    
+    # Count well-resolved (>= 0.8)
+    well_resolved = inj_with_res.filter(F.col("resolution") >= 0.8).count()
+    well_res_pct = 100 * well_resolved / n_inj_with_res if n_inj_with_res > 0 else 0
+    report.append(f"\nWell-resolved (theta_e/PSF >= 0.8): {well_resolved:,} ({well_res_pct:.1f}%)")
+    report.append("")
+    
     # =========================================================================
     # 12. MASKBITS METRICS
     # =========================================================================
@@ -410,6 +502,15 @@ def main():
     report.append("15. VALIDATION SUMMARY")
     report.append("=" * 80)
     
+    # Calculate PSF zero counts for summary
+    psf_zeros_g = injections.filter(F.col("psf_fwhm_used_g") <= 0).count() if "psf_fwhm_used_g" in injections.columns else 0
+    psf_zeros_r = injections.filter(F.col("psf_fwhm_used_r") <= 0).count() if "psf_fwhm_used_r" in injections.columns else 0
+    psf_zeros_z = injections.filter(F.col("psf_fwhm_used_z") <= 0).count() if "psf_fwhm_used_z" in injections.columns else 0
+    psf_no_zeros = (psf_zeros_g == 0) and (psf_zeros_r == 0) and (psf_zeros_z == 0)
+    
+    # Check PSF source columns exist
+    psf_source_exists = all(col in df.columns for col in ["psf_source_g", "psf_source_r", "psf_source_z"])
+    
     checks = [
         ("Success rate >= 95%", success_rate >= 95),
         ("Control fraction 45-55%", 45 <= control_pct <= 55),
@@ -420,6 +521,8 @@ def main():
         ("Injection magnification coverage >= 99%", mag_pct >= 99),
         ("Injection flux coverage >= 99%", flux_pct >= 99),
         ("PSF provenance for injections >= 99%", inj_pct >= 99),
+        ("No PSF FWHM zeros in injections", psf_no_zeros),
+        ("PSF source columns present", psf_source_exists),
         ("Total flux increases with theta_e", flux_increasing if 'flux_increasing' in dir() else False),
     ]
     
