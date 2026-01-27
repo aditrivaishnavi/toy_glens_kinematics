@@ -19,12 +19,15 @@ This document tracks exploration tasks and follow-up work identified during Phas
 
 ### High Priority (Before Publication)
 
+Per LLM review, these are required for MNRAS/ApJ-level publication:
+
 | Task | When to Do | Description |
 |------|------------|-------------|
-| **Threshold sensitivity sweep** | Phase 6 analysis | Test θ/PSF thresholds: 0.6, 0.7, 0.8, 0.9. Report completeness curves for each. |
-| **Known lens recovery validation** | Phase 6 | Recover known strong lenses in DR10 South as external sanity check. |
-| **Model-based completeness** | Phase 5/6 | Define recovery using model score at fixed FPR, not proxy thresholds. |
-| **Region-bootstrap uncertainty** | Publication prep | Proper hierarchical/weighted estimate of cosmic variance. |
+| **Model-based completeness** | After Phase 5 | Define recovery using model score at fixed FPR threshold, not proxy θ/PSF cuts. This is the "true lens-finder completeness." |
+| **Threshold sensitivity plots** | After Phase 5 | Test multiple θ/PSF thresholds (0.6, 0.7, 0.8, 0.9) and show completeness curves for each. Demonstrates sensitivity of selection function. |
+| **Stratified reporting** | After Phase 5 | Report completeness stratified by PSF size, depth, and resolution bins. Include both "all" and "clean" subset curves. |
+| **Known lens recovery validation** | Phase 6 | Recover known strong lenses in DR10 South as external sanity check. Critical for referee confidence. |
+| **Region-bootstrap uncertainty** | Publication prep | Proper hierarchical/weighted estimate of cosmic variance (current region variance may be dominated by small-N bins). |
 
 ### Medium Priority (After Baseline Works)
 
@@ -128,6 +131,15 @@ torchrun --standalone --nproc_per_node=4 phase5_train_lensfinder.py \
 1. **Phase 4d is proxy resolvability**, not lens-finder completeness
 2. **Phase 5/6 will produce model-based completeness** using score thresholds
 3. **Both are publishable** if framed correctly
+
+### LLM's Publication Readiness Assessment
+
+> "Phase 4d becomes defensible as a baseline and Phase 6 becomes publishable" once you:
+> 1. Complete Phase 5 training
+> 2. Define completeness based on model score (not proxy cuts)
+> 3. Report both proxy and model-based completeness
+
+**Current Phase 4d limitation:** θ_E ≤ 0.6" is guaranteed undetectable under current thresholds. This is expected physics (not a bug) but must be framed correctly in publication.
 
 ### Key Publications Points
 
