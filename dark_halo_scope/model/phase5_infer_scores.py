@@ -56,10 +56,21 @@ except Exception as e:
     raise RuntimeError("Missing dependency torchvision. Install: pip install torchvision") from e
 
 try:
-    from data_cache import DataCache
+    # Try relative import first (when running as module)
+    from .data_cache import DataCache
     HAS_CACHE = True
 except ImportError:
-    HAS_CACHE = False
+    try:
+        # Try absolute import (when running directly)
+        from dark_halo_scope.model.data_cache import DataCache
+        HAS_CACHE = True
+    except ImportError:
+        try:
+            # Try same-directory import (when running from model dir)
+            from data_cache import DataCache
+            HAS_CACHE = True
+        except ImportError:
+            HAS_CACHE = False
 
 
 KEY_COLS_DEFAULT = ["experiment_id", "task_id"]
