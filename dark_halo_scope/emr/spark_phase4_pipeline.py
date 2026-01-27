@@ -2518,63 +2518,339 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
 
 
 # --------------------------
-# Stage 4d: Completeness summaries
+# Stage 4d: Publication-Grade Completeness Estimation
+# --------------------------
+# Key improvements over initial implementation:
+# 1. Filters to INJECTIONS ONLY (controls excluded from completeness)
+# 2. Explicit accounting: attempted → valid → recovered
+# 3. Wilson confidence intervals for completeness estimates
+# 4. Two subsets: "all" and "clean" (quality-cut based)
+# 5. Region-level variance output for cosmic variance proxy
+# 6. PSF provenance summary for methods documentation
 # --------------------------
 
+def _wilson_ci(k: int, n: int, z: float = 1.96) -> Tuple[float, float]:
+    """
+    Wilson score confidence interval for binomial proportion.
+    
+    Args:
+        k: Number of successes
+        n: Number of trials
+        z: Z-score (1.96 for 95% CI, 2.576 for 99%)
+    
+    Returns:
+        (lower_bound, upper_bound) tuple
+    """
+    import math
+    if n == 0:
+        return (0.0, 0.0)
+    p = k / n
+    denom = 1 + z**2 / n
+    center = (p + z**2 / (2 * n)) / denom
+    margin = z * math.sqrt(p * (1 - p) / n + z**2 / (4 * n**2)) / denom
+    return (max(0.0, center - margin), min(1.0, center + margin))
+
+
 def stage_4d_completeness(spark: SparkSession, args: argparse.Namespace) -> None:
+    """
+    Publication-grade completeness estimation with uncertainty quantification.
+    
+    Outputs:
+    - completeness_surfaces/{exp_id}/: Detailed completeness per bin with CI
+    - completeness_surfaces_region_agg/{exp_id}/: Mean/std across regions
+    - psf_provenance/{exp_id}/: PSF source count tables
+    """
     out_root = f"{args.output_s3.rstrip('/')}/phase4d/{args.variant}"
-    # NOTE: Per-experiment checks happen via --experiment-id.
-    # Do NOT skip entire stage based on output dir existing.
 
     if not args.experiment_id:
         raise ValueError("--experiment-id is required for stage 4d")
 
+    # =========================================================================
+    # CONFIGURATION
+    # =========================================================================
     met_path = f"{args.output_s3.rstrip('/')}/phase4c/{args.variant}/metrics/{args.experiment_id}"
-    df = read_parquet_safe(spark, met_path)
-
-    # Recovery proxy
     snr_th = float(args.recovery_snr_thresh)
     sep_th = float(args.recovery_theta_over_psf)
-
-    df = df.withColumn("theta_over_psf", F.when(F.col("psfsize_r").isNotNull() & (F.col("psfsize_r") > 0), F.col("theta_e_arcsec") / F.col("psfsize_r")).otherwise(F.lit(None)))
-    df = df.withColumn(
-        "recovered",
-        ((F.col("cutout_ok") == 1) & (F.col("theta_e_arcsec") > 0) & (F.col("arc_snr") >= F.lit(snr_th)) & (F.col("theta_over_psf") >= F.lit(sep_th))).cast("int"),
+    bad_pixel_max = float(args.quality_bad_pixel_max)
+    wise_max = float(args.quality_wise_max)
+    psf_bin_width = float(args.psfsize_bin_width)
+    depth_bin_width = float(args.psfdepth_bin_width)
+    ci_z = float(args.ci_z)
+    
+    print(f"[4d] Reading metrics from: {met_path}")
+    print(f"[4d] Recovery thresholds: SNR >= {snr_th}, theta/PSF >= {sep_th}")
+    print(f"[4d] Clean subset: bad_pixel_frac <= {bad_pixel_max}, wise_brightmask_frac <= {wise_max}")
+    
+    df_raw = read_parquet_safe(spark, met_path)
+    
+    # =========================================================================
+    # STEP 1: FILTER TO INJECTIONS ONLY
+    # =========================================================================
+    # Controls (theta_e=0, lens_model=CONTROL) should NOT be in completeness
+    # denominator. They would artificially deflate completeness since they
+    # can never be "recovered" by definition.
+    # =========================================================================
+    df = df_raw.filter(
+        (F.col("lens_model") != "CONTROL") & 
+        (F.col("theta_e_arcsec") > 0)
     )
-
-    # Bin observing conditions (coarse)
-    df = df.withColumn("psf_bin", F.floor(F.col("psfsize_r") * 10).cast("int"))
-    df = df.withColumn("depth_bin", F.floor(F.col("psfdepth_r") * 2).cast("int"))
-
-    grp = df.groupBy(
-        "region_split", "selection_set_id", "ranking_mode",
-        "theta_e_arcsec", "src_dmag", "src_reff_arcsec", "src_e", "shear",
-        "psf_bin", "depth_bin",
-    ).agg(
-        F.count(F.lit(1)).alias("n"),
-        F.sum("recovered").alias("n_recovered"),
+    
+    n_total_raw = df_raw.count()
+    n_injections = df.count()
+    print(f"[4d] Total rows in metrics: {n_total_raw:,}")
+    print(f"[4d] Injections (after filtering controls): {n_injections:,}")
+    
+    # =========================================================================
+    # STEP 2: ADD DERIVED COLUMNS
+    # =========================================================================
+    # Resolution: theta_e / psfsize_r
+    df = df.withColumn(
+        "theta_over_psf", 
+        F.when(
+            F.col("psfsize_r").isNotNull() & (F.col("psfsize_r") > 0), 
+            F.col("theta_e_arcsec") / F.col("psfsize_r")
+        ).otherwise(F.lit(None))
+    )
+    
+    # Resolution bins using quality cut constants
+    df = df.withColumn("resolution_bin",
+        F.when(F.col("theta_over_psf") < 0.4, F.lit("<0.4"))
+        .when(F.col("theta_over_psf") < 0.6, F.lit("0.4-0.6"))
+        .when(F.col("theta_over_psf") < 0.8, F.lit("0.6-0.8"))
+        .when(F.col("theta_over_psf") < 1.0, F.lit("0.8-1.0"))
+        .otherwise(F.lit(">=1.0"))
+    )
+    
+    # Observing condition bins
+    df = df.withColumn("psf_bin", F.floor(F.col("psfsize_r") / F.lit(psf_bin_width)).cast("int"))
+    df = df.withColumn("depth_bin", F.floor(F.col("psfdepth_r") / F.lit(depth_bin_width)).cast("int"))
+    
+    # =========================================================================
+    # STEP 3: ADD VALIDITY AND RECOVERY FLAGS
+    # =========================================================================
+    # Valid: cutout_ok=1 and arc_snr is not null
+    df = df.withColumn("valid_all", 
+        ((F.col("cutout_ok") == 1) & F.col("arc_snr").isNotNull()).cast("int")
+    )
+    
+    # Clean: valid + passes quality cuts
+    df = df.withColumn("valid_clean",
+        ((F.col("valid_all") == 1) & 
+         (F.col("bad_pixel_frac") <= F.lit(bad_pixel_max)) &
+         (F.col("wise_brightmask_frac") <= F.lit(wise_max))).cast("int")
+    )
+    
+    # Recovered: valid + passes SNR and resolution thresholds
+    df = df.withColumn("recovered_all",
+        ((F.col("valid_all") == 1) & 
+         (F.col("arc_snr") >= F.lit(snr_th)) & 
+         (F.col("theta_over_psf") >= F.lit(sep_th))).cast("int")
+    )
+    
+    # Recovered clean: clean + passes thresholds
+    df = df.withColumn("recovered_clean",
+        ((F.col("valid_clean") == 1) & 
+         (F.col("arc_snr") >= F.lit(snr_th)) & 
+         (F.col("theta_over_psf") >= F.lit(sep_th))).cast("int")
+    )
+    
+    # =========================================================================
+    # PERSIST BEFORE MULTIPLE AGGREGATIONS
+    # =========================================================================
+    df.persist(StorageLevel.MEMORY_AND_DISK)
+    
+    # =========================================================================
+    # STEP 4: COMPLETENESS SURFACE (with region_id for variance)
+    # =========================================================================
+    grp_cols = [
+        "region_split", "region_id", "selection_set_id", "ranking_mode",
+        "theta_e_arcsec", "src_dmag", "src_reff_arcsec",
+        "psf_bin", "depth_bin", "resolution_bin",
+    ]
+    
+    grp = df.groupBy(*grp_cols).agg(
+        F.count(F.lit(1)).alias("n_attempt"),
+        F.sum("valid_all").alias("n_valid_all"),
+        F.sum("valid_clean").alias("n_valid_clean"),
+        F.sum("recovered_all").alias("n_recovered_all"),
+        F.sum("recovered_clean").alias("n_recovered_clean"),
         F.avg("arc_snr").alias("arc_snr_mean"),
         F.expr("percentile_approx(arc_snr, 0.5)").alias("arc_snr_p50"),
+        F.avg("theta_over_psf").alias("theta_over_psf_mean"),
     )
-
-    grp = grp.withColumn("completeness", F.col("n_recovered") / F.col("n"))
-
-    out_path = f"{out_root}/completeness/{args.experiment_id}"
-    grp.write.mode("overwrite").partitionBy("region_split").parquet(out_path)
-
+    
+    # Completeness ratios
+    grp = grp.withColumn("completeness_valid_all", 
+        F.when(F.col("n_valid_all") > 0, F.col("n_recovered_all") / F.col("n_valid_all")).otherwise(F.lit(None))
+    )
+    grp = grp.withColumn("completeness_valid_clean",
+        F.when(F.col("n_valid_clean") > 0, F.col("n_recovered_clean") / F.col("n_valid_clean")).otherwise(F.lit(None))
+    )
+    grp = grp.withColumn("completeness_overall_all",
+        F.when(F.col("n_attempt") > 0, F.col("n_recovered_all") / F.col("n_attempt")).otherwise(F.lit(None))
+    )
+    grp = grp.withColumn("completeness_overall_clean",
+        F.when(F.col("n_attempt") > 0, F.col("n_recovered_clean") / F.col("n_attempt")).otherwise(F.lit(None))
+    )
+    
+    # Valid fraction (data quality metric)
+    grp = grp.withColumn("valid_frac_all",
+        F.when(F.col("n_attempt") > 0, F.col("n_valid_all") / F.col("n_attempt")).otherwise(F.lit(None))
+    )
+    grp = grp.withColumn("valid_frac_clean",
+        F.when(F.col("n_attempt") > 0, F.col("n_valid_clean") / F.col("n_attempt")).otherwise(F.lit(None))
+    )
+    
+    # =========================================================================
+    # STEP 5: WILSON CONFIDENCE INTERVALS (via pandas UDF)
+    # =========================================================================
+    # For efficiency, compute CI after aggregation using a Python UDF
+    @F.udf(T.StructType([
+        T.StructField("ci_low", T.DoubleType(), True),
+        T.StructField("ci_high", T.DoubleType(), True),
+    ]))
+    def wilson_ci_udf(k, n):
+        import math
+        if n is None or n == 0 or k is None:
+            return (None, None)
+        k, n = int(k), int(n)
+        z = ci_z
+        p = k / n
+        denom = 1 + z**2 / n
+        center = (p + z**2 / (2 * n)) / denom
+        margin = z * math.sqrt(p * (1 - p) / n + z**2 / (4 * n**2)) / denom
+        return (max(0.0, center - margin), min(1.0, center + margin))
+    
+    # Apply CI to valid_all completeness
+    grp = grp.withColumn("_ci_valid_all", wilson_ci_udf(F.col("n_recovered_all"), F.col("n_valid_all")))
+    grp = grp.withColumn("ci_low_valid_all", F.col("_ci_valid_all.ci_low"))
+    grp = grp.withColumn("ci_high_valid_all", F.col("_ci_valid_all.ci_high"))
+    grp = grp.drop("_ci_valid_all")
+    
+    # Apply CI to valid_clean completeness
+    grp = grp.withColumn("_ci_valid_clean", wilson_ci_udf(F.col("n_recovered_clean"), F.col("n_valid_clean")))
+    grp = grp.withColumn("ci_low_valid_clean", F.col("_ci_valid_clean.ci_low"))
+    grp = grp.withColumn("ci_high_valid_clean", F.col("_ci_valid_clean.ci_high"))
+    grp = grp.drop("_ci_valid_clean")
+    
+    # Write detailed completeness surface (with region_id)
+    surface_path = f"{out_root}/completeness_surfaces/{args.experiment_id}"
+    grp.write.mode("overwrite").partitionBy("region_split").parquet(surface_path)
+    print(f"[4d] Wrote completeness surface: {surface_path}")
+    
+    # =========================================================================
+    # STEP 6: REGION-AGGREGATED SURFACE (mean/std across regions)
+    # =========================================================================
+    # Remove region_id from grouping to aggregate across regions
+    agg_cols = [c for c in grp_cols if c != "region_id"]
+    
+    region_agg = grp.groupBy(*agg_cols).agg(
+        F.count(F.lit(1)).alias("n_regions"),
+        F.sum("n_attempt").alias("n_attempt_total"),
+        F.sum("n_valid_all").alias("n_valid_all_total"),
+        F.sum("n_valid_clean").alias("n_valid_clean_total"),
+        F.sum("n_recovered_all").alias("n_recovered_all_total"),
+        F.sum("n_recovered_clean").alias("n_recovered_clean_total"),
+        F.avg("completeness_valid_all").alias("completeness_valid_all_mean"),
+        F.stddev("completeness_valid_all").alias("completeness_valid_all_std"),
+        F.avg("completeness_valid_clean").alias("completeness_valid_clean_mean"),
+        F.stddev("completeness_valid_clean").alias("completeness_valid_clean_std"),
+        F.avg("arc_snr_mean").alias("arc_snr_mean"),
+        F.avg("arc_snr_p50").alias("arc_snr_p50"),
+    )
+    
+    # Overall completeness from totals
+    region_agg = region_agg.withColumn("completeness_valid_all_pooled",
+        F.when(F.col("n_valid_all_total") > 0, 
+               F.col("n_recovered_all_total") / F.col("n_valid_all_total")).otherwise(F.lit(None))
+    )
+    region_agg = region_agg.withColumn("completeness_valid_clean_pooled",
+        F.when(F.col("n_valid_clean_total") > 0, 
+               F.col("n_recovered_clean_total") / F.col("n_valid_clean_total")).otherwise(F.lit(None))
+    )
+    
+    # Wilson CI on pooled totals
+    region_agg = region_agg.withColumn("_ci_pooled_all", 
+        wilson_ci_udf(F.col("n_recovered_all_total"), F.col("n_valid_all_total")))
+    region_agg = region_agg.withColumn("ci_low_pooled_all", F.col("_ci_pooled_all.ci_low"))
+    region_agg = region_agg.withColumn("ci_high_pooled_all", F.col("_ci_pooled_all.ci_high"))
+    region_agg = region_agg.drop("_ci_pooled_all")
+    
+    region_agg = region_agg.withColumn("_ci_pooled_clean", 
+        wilson_ci_udf(F.col("n_recovered_clean_total"), F.col("n_valid_clean_total")))
+    region_agg = region_agg.withColumn("ci_low_pooled_clean", F.col("_ci_pooled_clean.ci_low"))
+    region_agg = region_agg.withColumn("ci_high_pooled_clean", F.col("_ci_pooled_clean.ci_high"))
+    region_agg = region_agg.drop("_ci_pooled_clean")
+    
+    region_agg_path = f"{out_root}/completeness_surfaces_region_agg/{args.experiment_id}"
+    region_agg.write.mode("overwrite").partitionBy("region_split").parquet(region_agg_path)
+    print(f"[4d] Wrote region-aggregated surface: {region_agg_path}")
+    
+    # =========================================================================
+    # STEP 7: PSF PROVENANCE SUMMARY
+    # =========================================================================
+    if args.write_psf_provenance:
+        psf_prov_root = f"{out_root}/psf_provenance/{args.experiment_id}"
+        
+        for band in ["g", "r", "z"]:
+            col = f"psf_source_{band}"
+            if col in df.columns:
+                psf_summary = df.groupBy(col).agg(
+                    F.count(F.lit(1)).alias("count"),
+                ).withColumn("band", F.lit(band))
+                
+                psf_path = f"{psf_prov_root}/psf_source_{band}"
+                psf_summary.coalesce(1).write.mode("overwrite").parquet(psf_path)
+                print(f"[4d] Wrote PSF provenance ({band}): {psf_path}")
+    
+    # =========================================================================
+    # CLEANUP
+    # =========================================================================
+    df.unpersist()
+    
+    # =========================================================================
+    # STAGE CONFIG
+    # =========================================================================
     cfg = {
         "stage": "4d",
+        "pipeline_version": PIPELINE_VERSION,
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "variant": args.variant,
         "output_s3": args.output_s3,
         "experiment_id": args.experiment_id,
         "inputs": {"metrics": met_path},
-        "recovery": {"snr_thresh": snr_th, "theta_over_psf": sep_th},
+        "recovery": {
+            "snr_thresh": snr_th, 
+            "theta_over_psf": sep_th,
+        },
+        "quality_cuts": {
+            "bad_pixel_frac_max": bad_pixel_max,
+            "wise_brightmask_frac_max": wise_max,
+        },
+        "binning": {
+            "psfsize_bin_width": psf_bin_width,
+            "psfdepth_bin_width": depth_bin_width,
+        },
+        "confidence_interval": {
+            "method": "wilson",
+            "z_score": ci_z,
+            "coverage": "95%" if ci_z == 1.96 else ("99%" if ci_z == 2.576 else f"z={ci_z}"),
+        },
+        "counts": {
+            "total_raw": n_total_raw,
+            "injections": n_injections,
+        },
+        "outputs": {
+            "completeness_surfaces": surface_path,
+            "completeness_surfaces_region_agg": region_agg_path,
+            "psf_provenance": f"{psf_prov_root}/" if args.write_psf_provenance else None,
+        },
         "idempotency": {"skip_if_exists": int(args.skip_if_exists), "force": int(args.force)},
     }
     write_text_to_s3(f"{out_root}/_stage_config_{args.experiment_id}.json", json.dumps(cfg, indent=2))
-
-    print(f"[4d] Done. Output: {out_path}")
+    
+    print(f"[4d] Done. Completeness surfaces written to: {surface_path}")
+    print(f"[4d] Region-aggregated surfaces: {region_agg_path}")
 
 
 # --------------------------
@@ -2705,9 +2981,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--use-sie", type=int, default=1,
                    help="DEPRECATED: Lens model is now read from manifest. Kept for backward compatibility.")
 
-    # Stage 4d
-    p.add_argument("--recovery-snr-thresh", type=float, default=5.0)
-    p.add_argument("--recovery-theta-over-psf", type=float, default=0.8)
+    # Stage 4d - Publication-grade completeness estimation
+    p.add_argument("--recovery-snr-thresh", type=float, default=5.0,
+                   help="SNR threshold for recovery classification")
+    p.add_argument("--recovery-theta-over-psf", type=float, default=0.8,
+                   help="Resolution threshold (theta_e/psfsize_r) for recovery")
+    p.add_argument("--quality-bad-pixel-max", type=float, default=0.2,
+                   help="Max bad_pixel_frac for 'clean' subset")
+    p.add_argument("--quality-wise-max", type=float, default=0.2,
+                   help="Max wise_brightmask_frac for 'clean' subset")
+    p.add_argument("--psfsize-bin-width", type=float, default=0.1,
+                   help="PSF bin width in arcsec (e.g., 0.1 -> bins at 1.0, 1.1, 1.2...)")
+    p.add_argument("--psfdepth-bin-width", type=float, default=0.25,
+                   help="Depth bin width in mag (e.g., 0.25 -> bins at 24.0, 24.25, 24.5...)")
+    p.add_argument("--ci-z", type=float, default=1.96,
+                   help="Z-score for Wilson confidence intervals (1.96 = 95%)")
+    p.add_argument("--write-psf-provenance", type=int, default=1,
+                   help="If 1, write PSF source provenance summary tables")
 
     # Stage 4p5
     p.add_argument("--compact-input-s3", default="")
