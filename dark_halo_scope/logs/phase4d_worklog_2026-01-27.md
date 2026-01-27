@@ -2,17 +2,153 @@
 
 ## Executive Summary
 
-Phase 4d completeness estimation was upgraded to publication-grade standards and successfully executed on EMR.
+Phase 4d completeness estimation was upgraded to publication-grade standards and successfully executed on EMR. Post-fix run improved completeness from 9.91% to **10.25%**.
 
-## Run Details
+---
+
+## Post-Fix Run (Final Version)
+
+### Changes Applied Based on LLM Review
+
+| Recommendation | Implementation |
+|----------------|----------------|
+| Use `psf_fwhm_used_r` instead of `psfsize_r` | Resolution now uses per-stamp PSF with fallback |
+| Fix NULL leakage via `.cast("int")` | All flags use `F.when().otherwise(0)` |
+| Add diagnostic counters | Added `n_recovered_snr_only`, `n_recovered_res_only` |
+| Stricter validity definition | `valid_all` requires `theta_over_psf IS NOT NULL` |
+
+### Run Details (Post-Fix)
 
 | Parameter | Value |
 |-----------|-------|
-| Cluster ID | j-7IRCKYCZP0WY |
+| Cluster ID | j-XXXXX (post-fix run) |
 | Core Instances | 5 x m5.xlarge |
 | Runtime | ~5 minutes |
 | Experiment ID | train_stamp64_bandsgrz_gridgrid_small |
-| Timestamp | 2026-01-27 03:13:33 UTC |
+| Timestamp | 2026-01-27 16:41:17 UTC |
+
+---
+
+## Key Metrics (Post-Fix)
+
+### 1. Dataset Structure
+
+| Metric | Value |
+|--------|-------|
+| Total raw rows (4c) | 10,627,158 |
+| Injections (controls excluded) | 5,327,834 |
+| Completeness surface rows | 129,192 |
+| Region-aggregated rows | 41,170 |
+| Unique regions | 782 |
+
+### 2. Global Completeness (IMPROVED)
+
+| Metric | Before | After | Change |
+|--------|--------|-------|--------|
+| Total attempted | 5,327,834 | 5,327,834 | - |
+| Valid (all) | 5,327,834 | 5,327,834 | - |
+| Valid (clean) | 4,679,202 | 4,679,202 | - |
+| Recovered (all) | 527,968 | **545,838** | +17,870 |
+| Recovered (clean) | 489,694 | **507,037** | +17,343 |
+| Completeness (all) | 9.91% | **10.25%** | +0.34pp |
+| Completeness (clean) | 10.47% | **10.84%** | +0.37pp |
+
+**Key Finding:** Using per-stamp PSF increased recovery by ~17k injections (+3.4%).
+
+### 3. Completeness by Einstein Radius (θ_E)
+
+| θ_E (arcsec) | n_attempt | n_recovered | Completeness | arc_snr_mean |
+|--------------|-----------|-------------|--------------|--------------|
+| 0.30 | 1,782,906 | 0 | 0.00% | 47.54 |
+| 0.60 | 1,764,898 | 0 | 0.00% | 41.42 |
+| 1.00 | 1,780,030 | 545,838 | **30.66%** | 40.56 |
+
+**θ_E=1.0" completeness improved from 29.66% to 30.66% (+1.0pp)**
+
+### 4. Completeness by Resolution Bin (θ_E / psf_fwhm_used_r)
+
+| Resolution Bin | n_attempt | n_recovered | Comp (all) | Comp (clean) | θ/PSF mean |
+|----------------|-----------|-------------|------------|--------------|------------|
+| <0.4 | 2,008,012 | 0 | 0.00% | 0.00% | 0.253 |
+| 0.4-0.6 | 1,557,876 | 0 | 0.00% | 0.00% | 0.480 |
+| 0.6-0.8 | 1,157,472 | 0 | 0.00% | 0.00% | 0.703 |
+| 0.8-1.0 | 596,342 | 538,930 | **90.37%** | **94.61%** | 0.859 |
+| ≥1.0 | 8,132 | 6,908 | **84.95%** | **92.47%** | 1.051 |
+
+**≥1.0 bin increased from 5,540 to 8,132 injections due to per-stamp PSF variation**
+
+### 5. Completeness by Source Magnitude
+
+| src_dmag | n_attempt | n_recovered | Completeness | arc_snr_mean |
+|----------|-----------|-------------|--------------|--------------|
+| 1.0 | 2,661,074 | 286,544 | 10.77% | 61.31 |
+| 2.0 | 2,666,760 | 259,294 | 9.72% | 24.71 |
+
+### 6. Completeness by PSF Size
+
+| PSF (arcsec) | n_attempt | n_recovered | Completeness |
+|--------------|-----------|-------------|--------------|
+| 0.8" | 1,660 | 486 | 29.28% |
+| 0.9" | 22,684 | 6,422 | 28.31% |
+| 1.0" | 170,888 | 49,872 | 29.18% |
+| 1.1" | 887,444 | 268,795 | 30.29% |
+| 1.2" | 1,481,568 | 220,263 | 14.87% |
+| ≥1.3" | 2,763,590 | 0 | 0.00% |
+
+### 7. Data Quality Impact
+
+| Subset | Valid | Recovered | Completeness |
+|--------|-------|-----------|--------------|
+| All | 5,327,834 | 545,838 | 10.25% |
+| Clean (bad_pixel≤0.2, wise≤0.2) | 4,679,202 | 507,037 | 10.84% |
+
+**Clean fraction:** 87.83%
+**Completeness boost from clean:** +0.59pp
+
+### 8. Region Variance
+
+| Metric | Value |
+|--------|-------|
+| Mean completeness (across region means) | 0.1004 |
+| Mean region-to-region std | 0.0148 |
+| Max region-to-region std | 0.7071 |
+| Avg regions per bin | 3.1 |
+
+### 9. Wilson CI Statistics
+
+| Metric | Value |
+|--------|-------|
+| Average CI width | 0.4271 |
+| Min CI width | 0.0021 |
+| Max CI width | 0.8109 |
+
+### 10. PSF Provenance
+
+| Band | Map | Manifest |
+|------|-----|----------|
+| g | 99.08% | 0.92% |
+| r | 99.93% | 0.07% |
+| z | 99.95% | 0.05% |
+
+---
+
+## LLM Review Feedback Integration
+
+### Issues Identified by LLM
+
+1. **NULL leakage via `.cast("int")`** - FIXED with `F.when().otherwise(0)`
+2. **Resolution using brick-level PSF** - FIXED with `psf_fwhm_used_r`
+3. **Missing diagnostic counters** - ADDED `n_recovered_snr_only`, `n_recovered_res_only`
+4. **Wilson CI not in pipeline** - CONFIRMED already present (LLM was incorrect)
+
+### LLM's Buggy Patch File
+
+The LLM provided `spark_phase4_pipeline_v2_phase4d_patch2.py` with critical bugs:
+- Undefined attributes: `args.res_bins`, `args.snr_th`, `args.sep_th`
+- Incorrect argument names not matching CLI parser
+- **Action:** Deleted buggy file, integrated valid improvements manually
+
+---
 
 ## Configuration
 
@@ -21,144 +157,37 @@ Phase 4d completeness estimation was upgraded to publication-grade standards and
   "recovery": {"snr_thresh": 5.0, "theta_over_psf": 0.8},
   "quality_cuts": {"bad_pixel_frac_max": 0.2, "wise_brightmask_frac_max": 0.2},
   "binning": {"psfsize_bin_width": 0.1, "psfdepth_bin_width": 0.25},
-  "confidence_interval": {"method": "wilson", "z_score": 1.96, "coverage": "95%"}
+  "confidence_interval": {"method": "wilson", "z_score": 1.96, "coverage": "95%"},
+  "resolution_source": "psf_fwhm_used_r with fallback to psfsize_r"
 }
 ```
 
-## Input/Output
-
-**Input:**
-- s3://darkhaloscope/phase4_pipeline/phase4c/v3_color_relaxed/metrics/train_stamp64_bandsgrz_gridgrid_small
-
-**Outputs:**
-- s3://darkhaloscope/phase4_pipeline/phase4d/v3_color_relaxed/completeness_surfaces/train_stamp64_bandsgrz_gridgrid_small
-- s3://darkhaloscope/phase4_pipeline/phase4d/v3_color_relaxed/completeness_surfaces_region_agg/train_stamp64_bandsgrz_gridgrid_small
-- s3://darkhaloscope/phase4_pipeline/phase4d/v3_color_relaxed/psf_provenance/train_stamp64_bandsgrz_gridgrid_small
-
 ---
 
-## Key Metrics Collected
+## Observations for Phase 5
 
-### 1. Dataset Structure
+### Training Implications
 
-| Metric | Value |
-|--------|-------|
-| Total raw rows (4c) | 10,627,158 |
-| Injections (controls excluded) | 5,327,834 |
-| Completeness surface rows | 92,312 |
-| Region-aggregated rows | 26,952 |
-| Unique regions | 782 |
+1. **Resolution dominates**: 90%+ completeness for θ/PSF ≥ 0.8, 0% below
+2. **SNR is not limiting**: Median SNR ~40 far exceeds threshold of 5
+3. **Per-stamp PSF matters**: 3.4% more recoveries with stamp-level PSF
+4. **Clean subset recommended**: 87.8% pass quality cuts
 
-### 2. Global Completeness
+### Model Strategy
 
-| Metric | Value | Percentage |
-|--------|-------|------------|
-| Total attempted | 5,327,834 | - |
-| Valid (all) | 5,327,834 | 100.0% |
-| Valid (clean) | 4,679,202 | 87.8% |
-| Recovered (all) | 527,968 | 9.91% |
-| Recovered (clean) | 489,694 | 10.47% |
-
-**Key Finding:** ~10% overall completeness at recovery thresholds SNR≥5 and θ/PSF≥0.8.
-
-### 3. Completeness by Einstein Radius (θ_E)
-
-| θ_E (arcsec) | n_attempt | n_recovered | Completeness | SNR |
-|--------------|-----------|-------------|--------------|-----|
-| 0.30 | 1,782,906 | 0 | 0.00% | 51.5 |
-| 0.60 | 1,764,898 | 0 | 0.00% | 45.3 |
-| 1.00 | 1,780,030 | 527,968 | 29.66% | 43.9 |
-
-**Key Finding:** Only θ_E=1.0" injections are recovered because they meet the θ/PSF≥0.8 threshold.
-
-### 4. Completeness by Resolution Bin (θ_E/psfsize_r)
-
-| Resolution Bin | n_attempt | n_recovered | Completeness (all) | Completeness (clean) |
-|----------------|-----------|-------------|-------------------|---------------------|
-| <0.4 | 1,968,454 | 0 | 0.00% | 0.00% |
-| 0.4-0.6 | 1,574,030 | 0 | 0.00% | 0.00% |
-| 0.6-0.8 | 1,200,782 | 0 | 0.00% | 0.00% |
-| 0.8-1.0 | 579,028 | 523,248 | 90.37% | 94.64% |
-| ≥1.0 | 5,540 | 4,720 | 85.20% | 92.33% |
-
-**Key Finding:** The θ/PSF≥0.8 threshold is the dominant factor. Below 0.8, completeness is 0%. Above 0.8, completeness is 85-95%.
-
-### 5. Completeness by Source Magnitude
-
-| src_dmag | n_attempt | n_recovered | Completeness | Mean SNR |
-|----------|-----------|-------------|--------------|----------|
-| 1.0 | 2,661,074 | 276,565 | 10.39% | 66.5 |
-| 2.0 | 2,666,760 | 251,403 | 9.43% | 26.9 |
-
-### 6. Completeness by PSF Size
-
-| PSF (arcsec) | n_attempt | n_recovered | Completeness |
-|--------------|-----------|-------------|--------------|
-| 0.7-1.2" | 2,586,186 | 527,968 | 20.4% |
-| 1.3-1.5" | 2,741,648 | 0 | 0.0% |
-
-**Key Finding:** Larger PSF (worse seeing) eliminates recovery because θ/PSF falls below threshold.
-
-### 7. Data Quality Impact
-
-| Subset | Valid | Recovered | Completeness |
-|--------|-------|-----------|--------------|
-| All | 5,327,834 | 527,968 | 9.91% |
-| Clean (bad_pixel≤0.2, wise≤0.2) | 4,679,202 | 489,694 | 10.47% |
-
-**Clean fraction:** 87.8% of injections pass quality cuts.
-**Completeness boost:** Clean subset has +0.6pp higher completeness.
-
-### 8. Region Variance
-
-| Metric | Value |
-|--------|-------|
-| Mean completeness (across region means) | 0.1383 |
-| Mean region-to-region std | 0.0174 |
-| Max region-to-region std | 0.7071 |
-| Avg regions per bin | 3.4 |
-
-### 9. PSF Provenance
-
-| Band | Map | Manifest | Fallback |
-|------|-----|----------|----------|
-| g | 99.08% | 0.92% | 0% |
-| r | 99.93% | 0.07% | 0% |
-| z | 99.95% | 0.05% | 0% |
-
-**Key Finding:** No fallback to r-band was needed (all g/z had valid PSF).
-
-### 10. Selection Set Comparison
-
-All selection sets show similar completeness (~9-10%) except `topk_density_k100` (3.6%).
-
----
-
-## Observations for Downstream Phases
-
-### Phase 5 (Training) Implications
-
-1. **Resolution dominates**: Training data will be heavily skewed toward the recoverable regime (θ/PSF≥0.8).
-
-2. **Small θ_E is undetectable**: 0.3" and 0.6" lenses cannot be recovered under current criteria.
-
-3. **Clean subset recommended**: 87.8% pass quality cuts, with slightly higher completeness.
-
-4. **Split balance**: train=26%, val=40%, test=34% - unusual but acceptable.
-
-### Phase 6 (Science) Implications
-
-1. **Selection function is sharp**: The θ/PSF≥0.8 threshold creates a near-binary selection.
-
-2. **Cosmic variance**: ~1.7% region-to-region variation is modest.
-
-3. **Publication metrics**: Wilson CIs are computed for uncertainty quantification.
+Per LLM recommendation:
+- Train on **all** injections vs controls (not just "recovered")
+- Report metrics stratified by θ/PSF and PSF bins
+- Model-based completeness (Phase 5/6) will replace proxy-based
 
 ---
 
 ## Files and Outputs
 
-- Analysis script: `dark_halo_scope/emr/spark_analyze_phase4d.py`
-- Analysis report: `s3://darkhaloscope/phase4_pipeline/phase4d/v3_color_relaxed/analysis/train_stamp64_bandsgrz_gridgrid_small/phase4d_analysis_report.txt`
-- Config: `s3://darkhaloscope/phase4_pipeline/phase4d/v3_color_relaxed/_stage_config_train_stamp64_bandsgrz_gridgrid_small.json`
-
+| Output | Path |
+|--------|------|
+| Completeness surfaces | s3://darkhaloscope/phase4_pipeline/phase4d/v3_color_relaxed/completeness_surfaces/train_stamp64_bandsgrz_gridgrid_small |
+| Region-aggregated | s3://darkhaloscope/phase4_pipeline/phase4d/v3_color_relaxed/completeness_surfaces_region_agg/train_stamp64_bandsgrz_gridgrid_small |
+| PSF provenance | s3://darkhaloscope/phase4_pipeline/phase4d/v3_color_relaxed/psf_provenance/train_stamp64_bandsgrz_gridgrid_small |
+| Analysis report (v2) | s3://darkhaloscope/phase4_pipeline/phase4d/v3_color_relaxed/analysis/train_stamp64_bandsgrz_gridgrid_small_v2 |
+| Stage config | s3://darkhaloscope/phase4_pipeline/phase4d/v3_color_relaxed/_stage_config_train_stamp64_bandsgrz_gridgrid_small.json |
