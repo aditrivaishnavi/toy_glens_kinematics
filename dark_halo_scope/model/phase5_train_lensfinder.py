@@ -63,6 +63,12 @@ try:
 except Exception:
     SummaryWriter = None  # type: ignore
 
+try:
+    from data_cache import DataCache
+    HAS_CACHE = True
+except ImportError:
+    HAS_CACHE = False
+
 
 KEY_COLS_DEFAULT = ["experiment_id", "task_id"]
 
@@ -393,7 +399,7 @@ def _torch_save_to_bytes(obj: Dict) -> bytes:
 
 def main():
     ap = argparse.ArgumentParser(description="Phase 5: Train lens-finder CNN on Phase 4c stamps")
-    ap.add_argument("--data", required=True, help="Root path to Phase 4c unified parquet (stamps + metrics)")
+    ap.add_argument("--data", required=True, help="Root path to Phase 4c unified parquet (local path or s3://...)")
     ap.add_argument("--contract_json", required=True, help="phase5_required_columns_contract.json path")
     ap.add_argument("--split", choices=["train", "val", "test"], default="train")
     ap.add_argument("--arch", default="resnet18", help="resnet18|resnet34|efficientnet_b0|convnext_tiny|small_cnn")
@@ -408,6 +414,8 @@ def main():
     ap.add_argument("--out_dir", required=True, help="Output directory for checkpoints and logs")
     ap.add_argument("--log_every", type=int, default=50)
     ap.add_argument("--stamp_size", type=int, default=64, help="Stamp size (64 or 96)")
+    ap.add_argument("--cache_root", default="/data/cache", help="Local cache directory for S3 data")
+    ap.add_argument("--force_cache_refresh", action="store_true", help="Force re-download from S3")
     args = ap.parse_args()
 
     rank, world, local_rank = setup_ddp()
@@ -422,8 +430,23 @@ def main():
     if is_main_process(rank):
         print(f"[INFO] Loaded {len(required_cols)} required columns from contract")
 
+    # Resolve data path: use cache if S3 URI
+    data_path = args.data
+    if data_path.startswith("s3://"):
+        if HAS_CACHE:
+            if is_main_process(rank):
+                print(f"[INFO] Data is S3 URI, using cache...")
+            cache = DataCache(cache_root=args.cache_root)
+            data_path = cache.get(data_path, force_refresh=args.force_cache_refresh)
+        else:
+            if is_main_process(rank):
+                print(f"[WARN] S3 URI provided but data_cache module not available. Streaming from S3 (slow).")
+    
+    if is_main_process(rank):
+        print(f"[INFO] Data path: {data_path}")
+
     # List parquet files
-    parquet_files = _list_parquet_files(args.data)
+    parquet_files = _list_parquet_files(data_path)
     if not parquet_files:
         raise RuntimeError(f"No parquet files found at {args.data}")
     if is_main_process(rank):
