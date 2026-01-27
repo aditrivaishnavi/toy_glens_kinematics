@@ -29,7 +29,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import glob
 
 
@@ -41,6 +41,7 @@ class CacheEntry:
     file_count: int
     size_bytes: int
     cached_at: str
+    last_accessed: str = ""
     verified: bool = False
 
 
@@ -78,19 +79,38 @@ class CacheManifest:
 
 class DataCache:
     """
-    Transparent caching layer for S3 data.
+    Transparent caching layer for S3 data with disk safety.
     
     Args:
         cache_root: Local directory for cached data (e.g., /data/cache)
         manifest_file: Path to cache manifest JSON (default: {cache_root}/manifest.json)
+        max_cache_gb: Maximum cache size in GB (default: 900 for 1TB disk)
+        min_free_gb: Minimum free disk space to maintain (default: 50 GB)
+        warn_threshold: Warn when disk usage exceeds this fraction (default: 0.8)
     """
     
-    def __init__(self, cache_root: str = "/data/cache", manifest_file: Optional[str] = None):
+    # Default limits for 1TB disk
+    DEFAULT_MAX_CACHE_GB = 900  # Leave 100GB headroom
+    DEFAULT_MIN_FREE_GB = 50   # Always keep 50GB free
+    
+    def __init__(
+        self, 
+        cache_root: str = "/data/cache", 
+        manifest_file: Optional[str] = None,
+        max_cache_gb: float = DEFAULT_MAX_CACHE_GB,
+        min_free_gb: float = DEFAULT_MIN_FREE_GB,
+        warn_threshold: float = 0.8,
+    ):
         self.cache_root = Path(cache_root)
         self.cache_root.mkdir(parents=True, exist_ok=True)
         
         self.manifest_file = manifest_file or str(self.cache_root / "manifest.json")
         self.manifest = CacheManifest.load(self.manifest_file)
+        
+        # Disk safety limits
+        self.max_cache_bytes = int(max_cache_gb * 1e9)
+        self.min_free_bytes = int(min_free_gb * 1e9)
+        self.warn_threshold = warn_threshold
     
     def _s3_to_local_path(self, s3_uri: str) -> str:
         """Convert S3 URI to local cache path."""
@@ -111,6 +131,108 @@ class DataCache:
         """Count parquet files in a directory."""
         files = glob.glob(os.path.join(local_path, "**", "*.parquet"), recursive=True)
         return len(files)
+    
+    def _get_disk_usage(self) -> Dict[str, int]:
+        """Get disk usage statistics for cache root."""
+        import shutil
+        total, used, free = shutil.disk_usage(self.cache_root)
+        return {"total": total, "used": used, "free": free}
+    
+    def _get_cache_size(self) -> int:
+        """Get total size of all cached data."""
+        return sum(e.size_bytes for e in self.manifest.entries.values())
+    
+    def _check_disk_space(self, required_bytes: int) -> Tuple[bool, str]:
+        """
+        Check if we have enough disk space for a download.
+        
+        Returns:
+            (ok, message) - ok is True if safe to proceed
+        """
+        disk = self._get_disk_usage()
+        cache_size = self._get_cache_size()
+        
+        # Check 1: Would exceed max cache size?
+        if cache_size + required_bytes > self.max_cache_bytes:
+            return False, (
+                f"Download would exceed max cache size.\n"
+                f"  Current cache: {cache_size / 1e9:.1f} GB\n"
+                f"  Required: {required_bytes / 1e9:.1f} GB\n"
+                f"  Max allowed: {self.max_cache_bytes / 1e9:.1f} GB\n"
+                f"  Suggestion: Clear old cache with `python data_cache.py clear`"
+            )
+        
+        # Check 2: Would leave too little free space?
+        if disk["free"] - required_bytes < self.min_free_bytes:
+            return False, (
+                f"Download would leave insufficient free space.\n"
+                f"  Current free: {disk['free'] / 1e9:.1f} GB\n"
+                f"  Required: {required_bytes / 1e9:.1f} GB\n"
+                f"  Min free required: {self.min_free_bytes / 1e9:.1f} GB\n"
+                f"  Suggestion: Clear old cache or increase disk size"
+            )
+        
+        # Check 3: Warn if approaching threshold
+        usage_after = (disk["used"] + required_bytes) / disk["total"]
+        if usage_after > self.warn_threshold:
+            print(f"[DataCache] WARNING: Disk usage will be {usage_after*100:.1f}% after download")
+        
+        return True, "OK"
+    
+    def _estimate_s3_size(self, s3_uri: str) -> int:
+        """Estimate size of S3 dataset (uses aws s3 ls --summarize)."""
+        import subprocess
+        
+        try:
+            cmd = ["aws", "s3", "ls", "--recursive", "--summarize", s3_uri]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            
+            if result.returncode != 0:
+                print(f"[DataCache] Warning: Could not estimate S3 size, using default estimate")
+                return 500 * 1024 * 1024 * 1024  # 500 GB default
+            
+            # Parse "Total Size: 123456789" from output
+            for line in result.stdout.split("\n"):
+                if "Total Size:" in line:
+                    size_str = line.split(":")[-1].strip()
+                    return int(size_str)
+            
+            return 500 * 1024 * 1024 * 1024  # 500 GB default
+        except Exception as e:
+            print(f"[DataCache] Warning: Error estimating S3 size: {e}")
+            return 500 * 1024 * 1024 * 1024  # 500 GB default
+    
+    def _evict_lru(self, required_bytes: int) -> bool:
+        """
+        Evict least-recently-used cache entries to free space.
+        
+        Returns True if enough space was freed.
+        """
+        import shutil
+        
+        if not self.manifest.entries:
+            return False
+        
+        # Sort by last_accessed (oldest first)
+        entries = sorted(
+            self.manifest.entries.items(),
+            key=lambda x: x[1].last_accessed or x[1].cached_at
+        )
+        
+        freed = 0
+        for key, entry in entries:
+            if freed >= required_bytes:
+                break
+            
+            print(f"[DataCache] Evicting LRU entry: {entry.s3_uri[:60]}...")
+            if os.path.exists(entry.local_path):
+                shutil.rmtree(entry.local_path)
+                freed += entry.size_bytes
+            del self.manifest.entries[key]
+        
+        self.manifest.save(self.manifest_file)
+        print(f"[DataCache] Freed {freed / 1e9:.1f} GB")
+        return freed >= required_bytes
     
     def _get_dir_size(self, local_path: str) -> int:
         """Get total size of directory in bytes."""
@@ -170,16 +292,20 @@ class DataCache:
         
         return True
     
-    def get(self, s3_uri: str, force_refresh: bool = False) -> str:
+    def get(self, s3_uri: str, force_refresh: bool = False, auto_evict: bool = True) -> str:
         """
         Get local path for data, downloading from S3 if necessary.
         
         Args:
             s3_uri: S3 URI (e.g., s3://bucket/path/to/data)
             force_refresh: If True, re-download even if cached
+            auto_evict: If True, automatically evict LRU entries if disk full
             
         Returns:
             Local path to cached data
+            
+        Raises:
+            RuntimeError: If disk is full and cannot evict enough space
         """
         s3_uri = s3_uri.rstrip("/")
         key = self._cache_key(s3_uri)
@@ -188,6 +314,10 @@ class DataCache:
         # Check cache
         if not force_refresh and self.is_cached(s3_uri):
             entry = self.manifest.entries[key]
+            # Update last_accessed
+            entry.last_accessed = datetime.now().isoformat()
+            self.manifest.save(self.manifest_file)
+            
             print(f"[DataCache] Using cached data:")
             print(f"  S3: {s3_uri}")
             print(f"  Local: {local_path}")
@@ -195,8 +325,33 @@ class DataCache:
             print(f"  Cached at: {entry.cached_at}")
             return local_path
         
+        # Estimate download size
+        print(f"[DataCache] Estimating S3 dataset size...")
+        estimated_size = self._estimate_s3_size(s3_uri)
+        print(f"[DataCache] Estimated size: {estimated_size / 1e9:.1f} GB")
+        
+        # Check disk space
+        ok, message = self._check_disk_space(estimated_size)
+        if not ok:
+            if auto_evict:
+                print(f"[DataCache] Disk space insufficient, attempting LRU eviction...")
+                evicted = self._evict_lru(estimated_size)
+                if evicted:
+                    ok, message = self._check_disk_space(estimated_size)
+            
+            if not ok:
+                raise RuntimeError(f"[DataCache] DISK FULL - Cannot download.\n{message}")
+        
+        # Show disk status before download
+        disk = self._get_disk_usage()
+        print(f"[DataCache] Disk status before download:")
+        print(f"  Total: {disk['total'] / 1e9:.1f} GB")
+        print(f"  Used: {disk['used'] / 1e9:.1f} GB ({disk['used']/disk['total']*100:.1f}%)")
+        print(f"  Free: {disk['free'] / 1e9:.1f} GB")
+        print(f"  Cache size: {self._get_cache_size() / 1e9:.1f} GB")
+        
         # Download from S3
-        print(f"[DataCache] Data not cached, downloading from S3...")
+        print(f"[DataCache] Downloading from S3...")
         success = self._sync_from_s3(s3_uri, local_path)
         
         if not success:
@@ -212,12 +367,17 @@ class DataCache:
             file_count=file_count,
             size_bytes=size_bytes,
             cached_at=datetime.now().isoformat(),
+            last_accessed=datetime.now().isoformat(),
             verified=True,
         )
         self.manifest.entries[key] = entry
         self.manifest.save(self.manifest_file)
         
+        # Show disk status after download
+        disk = self._get_disk_usage()
         print(f"[DataCache] Cached {file_count} files ({size_bytes / 1e9:.1f} GB)")
+        print(f"[DataCache] Disk after download: {disk['free'] / 1e9:.1f} GB free ({disk['used']/disk['total']*100:.1f}% used)")
+        
         return local_path
     
     def get_or_local(self, path: str, force_refresh: bool = False) -> str:
@@ -269,18 +429,34 @@ class DataCache:
             self.manifest.save(self.manifest_file)
     
     def status(self) -> Dict:
-        """Get cache status summary."""
+        """Get cache status summary with disk usage."""
         total_files = 0
         total_bytes = 0
         for entry in self.manifest.entries.values():
             total_files += entry.file_count
             total_bytes += entry.size_bytes
         
+        disk = self._get_disk_usage()
+        
         return {
             "cache_root": str(self.cache_root),
-            "num_datasets": len(self.manifest.entries),
-            "total_files": total_files,
-            "total_size_gb": total_bytes / 1e9,
+            "disk": {
+                "total_gb": disk["total"] / 1e9,
+                "used_gb": disk["used"] / 1e9,
+                "free_gb": disk["free"] / 1e9,
+                "used_pct": disk["used"] / disk["total"] * 100,
+            },
+            "limits": {
+                "max_cache_gb": self.max_cache_bytes / 1e9,
+                "min_free_gb": self.min_free_bytes / 1e9,
+                "warn_threshold_pct": self.warn_threshold * 100,
+            },
+            "cache": {
+                "num_datasets": len(self.manifest.entries),
+                "total_files": total_files,
+                "total_size_gb": total_bytes / 1e9,
+                "headroom_gb": (self.max_cache_bytes - total_bytes) / 1e9,
+            },
             "datasets": [
                 {
                     "s3_uri": e.s3_uri,
@@ -288,6 +464,7 @@ class DataCache:
                     "file_count": e.file_count,
                     "size_gb": e.size_bytes / 1e9,
                     "cached_at": e.cached_at,
+                    "last_accessed": e.last_accessed or e.cached_at,
                 }
                 for e in self.manifest.entries.values()
             ]
