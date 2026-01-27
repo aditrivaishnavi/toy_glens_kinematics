@@ -2603,18 +2603,25 @@ def stage_4d_completeness(spark: SparkSession, args: argparse.Namespace) -> None
     # =========================================================================
     # STEP 2: ADD DERIVED COLUMNS
     # =========================================================================
-    # Resolution: theta_e / psfsize_r
+    # Resolution: theta_e / PSF
+    # Use per-stamp PSF from injection (psf_fwhm_used_r) when present,
+    # fall back to manifest-level psfsize_r for compatibility.
+    # This ensures consistency: theta_over_psf uses the same PSF that was
+    # used to convolve the injected arc in Phase 4c.
+    psf_for_resolution = F.coalesce(F.col("psf_fwhm_used_r"), F.col("psfsize_r"))
+    
     df = df.withColumn(
         "theta_over_psf", 
         F.when(
-            F.col("psfsize_r").isNotNull() & (F.col("psfsize_r") > 0), 
-            F.col("theta_e_arcsec") / F.col("psfsize_r")
-        ).otherwise(F.lit(None))
+            (psf_for_resolution.isNotNull()) & (psf_for_resolution > 0), 
+            F.col("theta_e_arcsec") / psf_for_resolution
+        ).otherwise(F.lit(None).cast("double"))
     )
     
     # Resolution bins using quality cut constants
     df = df.withColumn("resolution_bin",
-        F.when(F.col("theta_over_psf") < 0.4, F.lit("<0.4"))
+        F.when(F.col("theta_over_psf").isNull(), F.lit(None).cast("string"))
+        .when(F.col("theta_over_psf") < 0.4, F.lit("<0.4"))
         .when(F.col("theta_over_psf") < 0.6, F.lit("0.4-0.6"))
         .when(F.col("theta_over_psf") < 0.8, F.lit("0.6-0.8"))
         .when(F.col("theta_over_psf") < 1.0, F.lit("0.8-1.0"))
@@ -2622,36 +2629,86 @@ def stage_4d_completeness(spark: SparkSession, args: argparse.Namespace) -> None
     )
     
     # Observing condition bins
-    df = df.withColumn("psf_bin", F.floor(F.col("psfsize_r") / F.lit(psf_bin_width)).cast("int"))
-    df = df.withColumn("depth_bin", F.floor(F.col("psfdepth_r") / F.lit(depth_bin_width)).cast("int"))
+    # PSF bin uses same PSF variable as theta_over_psf for consistency
+    df = df.withColumn("psf_bin", 
+        F.when((psf_for_resolution.isNotNull()) & (psf_for_resolution > 0),
+               F.floor(psf_for_resolution / F.lit(psf_bin_width)).cast("int"))
+        .otherwise(F.lit(None).cast("int"))
+    )
+    # Depth bin remains based on manifest psfdepth_r (no per-pixel depth maps in 4c)
+    df = df.withColumn("depth_bin", 
+        F.when((F.col("psfdepth_r").isNotNull()) & (F.col("psfdepth_r") > 0),
+               F.floor(F.col("psfdepth_r") / F.lit(depth_bin_width)).cast("int"))
+        .otherwise(F.lit(None).cast("int"))
+    )
     
     # =========================================================================
     # STEP 3: ADD VALIDITY AND RECOVERY FLAGS
     # =========================================================================
-    # Valid: cutout_ok=1 and arc_snr is not null
+    # IMPORTANT: Use when().otherwise(0) instead of .cast("int") to prevent
+    # NULL leakage. If any term in a boolean expression is NULL, the result
+    # is NULL, and .cast("int") stays NULL. Spark's sum() ignores NULLs,
+    # which can cause undercounting. Using otherwise(0) forces explicit 0/1.
+    # =========================================================================
+    
+    # Valid: cutout_ok=1 and arc_snr is not null and theta_over_psf is not null
+    valid_all_expr = (
+        (F.col("cutout_ok") == 1) & 
+        F.col("arc_snr").isNotNull() &
+        F.col("theta_over_psf").isNotNull()
+    )
     df = df.withColumn("valid_all", 
-        ((F.col("cutout_ok") == 1) & F.col("arc_snr").isNotNull()).cast("int")
+        F.when(valid_all_expr, F.lit(1)).otherwise(F.lit(0))
     )
     
-    # Clean: valid + passes quality cuts
+    # Clean: valid + passes quality cuts (with explicit NULL checks)
+    valid_clean_expr = (
+        valid_all_expr &
+        F.col("bad_pixel_frac").isNotNull() &
+        F.col("wise_brightmask_frac").isNotNull() &
+        (F.col("bad_pixel_frac") <= F.lit(bad_pixel_max)) &
+        (F.col("wise_brightmask_frac") <= F.lit(wise_max))
+    )
     df = df.withColumn("valid_clean",
-        ((F.col("valid_all") == 1) & 
-         (F.col("bad_pixel_frac") <= F.lit(bad_pixel_max)) &
-         (F.col("wise_brightmask_frac") <= F.lit(wise_max))).cast("int")
+        F.when(valid_clean_expr, F.lit(1)).otherwise(F.lit(0))
     )
     
-    # Recovered: valid + passes SNR and resolution thresholds
+    # Diagnostic: recovered by SNR criterion only (valid + SNR >= threshold)
+    recovered_snr_only_expr = (
+        valid_all_expr &
+        (F.col("arc_snr") >= F.lit(snr_th))
+    )
+    df = df.withColumn("recovered_snr_only",
+        F.when(recovered_snr_only_expr, F.lit(1)).otherwise(F.lit(0))
+    )
+    
+    # Diagnostic: recovered by resolution criterion only (valid + theta/PSF >= threshold)
+    recovered_res_only_expr = (
+        valid_all_expr &
+        (F.col("theta_over_psf") >= F.lit(sep_th))
+    )
+    df = df.withColumn("recovered_res_only",
+        F.when(recovered_res_only_expr, F.lit(1)).otherwise(F.lit(0))
+    )
+    
+    # Recovered: valid + passes BOTH SNR and resolution thresholds
+    recovered_all_expr = (
+        valid_all_expr & 
+        (F.col("arc_snr") >= F.lit(snr_th)) & 
+        (F.col("theta_over_psf") >= F.lit(sep_th))
+    )
     df = df.withColumn("recovered_all",
-        ((F.col("valid_all") == 1) & 
-         (F.col("arc_snr") >= F.lit(snr_th)) & 
-         (F.col("theta_over_psf") >= F.lit(sep_th))).cast("int")
+        F.when(recovered_all_expr, F.lit(1)).otherwise(F.lit(0))
     )
     
     # Recovered clean: clean + passes thresholds
+    recovered_clean_expr = (
+        valid_clean_expr & 
+        (F.col("arc_snr") >= F.lit(snr_th)) & 
+        (F.col("theta_over_psf") >= F.lit(sep_th))
+    )
     df = df.withColumn("recovered_clean",
-        ((F.col("valid_clean") == 1) & 
-         (F.col("arc_snr") >= F.lit(snr_th)) & 
-         (F.col("theta_over_psf") >= F.lit(sep_th))).cast("int")
+        F.when(recovered_clean_expr, F.lit(1)).otherwise(F.lit(0))
     )
     
     # =========================================================================
@@ -2674,6 +2731,9 @@ def stage_4d_completeness(spark: SparkSession, args: argparse.Namespace) -> None
         F.sum("valid_clean").alias("n_valid_clean"),
         F.sum("recovered_all").alias("n_recovered_all"),
         F.sum("recovered_clean").alias("n_recovered_clean"),
+        # Diagnostic: which criterion is limiting recovery?
+        F.sum("recovered_snr_only").alias("n_recovered_snr_only"),
+        F.sum("recovered_res_only").alias("n_recovered_res_only"),
         F.avg("arc_snr").alias("arc_snr_mean"),
         F.expr("percentile_approx(arc_snr, 0.5)").alias("arc_snr_p50"),
         F.avg("theta_over_psf").alias("theta_over_psf_mean"),
