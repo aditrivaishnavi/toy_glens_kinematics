@@ -81,6 +81,12 @@ class DataCache:
     """
     Transparent caching layer for S3 data with disk safety.
     
+    Strategy:
+    - Cache up to max_cache_gb (default 900GB for 1TB disk)
+    - If cache is full, DON'T evict - just return S3 path for streaming
+    - This guarantees cached data stays cached (no LRU thrashing)
+    - Subsequent epochs always benefit from cached data
+    
     Args:
         cache_root: Local directory for cached data (e.g., /data/cache)
         manifest_file: Path to cache manifest JSON (default: {cache_root}/manifest.json)
@@ -202,16 +208,24 @@ class DataCache:
             print(f"[DataCache] Warning: Error estimating S3 size: {e}")
             return 500 * 1024 * 1024 * 1024  # 500 GB default
     
-    def _evict_lru(self, required_bytes: int) -> bool:
+    def evict_oldest(self, count: int = 1) -> int:
         """
-        Evict least-recently-used cache entries to free space.
+        Manually evict oldest cache entries by access time.
         
-        Returns True if enough space was freed.
+        Use this when you want to make room for a different dataset.
+        The cache does NOT auto-evict (to prevent thrashing).
+        
+        Args:
+            count: Number of oldest entries to evict
+            
+        Returns:
+            Bytes freed
         """
         import shutil
         
         if not self.manifest.entries:
-            return False
+            print("[DataCache] No entries to evict")
+            return 0
         
         # Sort by last_accessed (oldest first)
         entries = sorted(
@@ -220,19 +234,22 @@ class DataCache:
         )
         
         freed = 0
-        for key, entry in entries:
-            if freed >= required_bytes:
+        for i, (key, entry) in enumerate(entries):
+            if i >= count:
                 break
             
-            print(f"[DataCache] Evicting LRU entry: {entry.s3_uri[:60]}...")
+            print(f"[DataCache] Evicting: {entry.s3_uri}")
+            print(f"  Last accessed: {entry.last_accessed or entry.cached_at}")
+            print(f"  Size: {entry.size_bytes / 1e9:.1f} GB")
+            
             if os.path.exists(entry.local_path):
                 shutil.rmtree(entry.local_path)
                 freed += entry.size_bytes
             del self.manifest.entries[key]
         
         self.manifest.save(self.manifest_file)
-        print(f"[DataCache] Freed {freed / 1e9:.1f} GB")
-        return freed >= required_bytes
+        print(f"[DataCache] Freed {freed / 1e9:.1f} GB total")
+        return freed
     
     def _get_dir_size(self, local_path: str) -> int:
         """Get total size of directory in bytes."""
@@ -292,70 +309,72 @@ class DataCache:
         
         return True
     
-    def get(self, s3_uri: str, force_refresh: bool = False, auto_evict: bool = True) -> str:
+    def get(self, s3_uri: str, force_refresh: bool = False) -> str:
         """
-        Get local path for data, downloading from S3 if necessary.
+        Get path for data - local if cached, S3 if cache is full.
+        
+        Strategy:
+        - If cached locally: return local path (fast)
+        - If not cached but space available: download and cache, return local path
+        - If cache is full: return S3 URI (will stream, slower but works)
+        
+        This guarantees:
+        - Cached data stays cached (no eviction thrashing)
+        - Up to 900GB of data gets speedup from local cache
+        - Overflow just streams from S3
         
         Args:
             s3_uri: S3 URI (e.g., s3://bucket/path/to/data)
             force_refresh: If True, re-download even if cached
-            auto_evict: If True, automatically evict LRU entries if disk full
             
         Returns:
-            Local path to cached data
-            
-        Raises:
-            RuntimeError: If disk is full and cannot evict enough space
+            Local path (if cached) or S3 URI (if cache full)
         """
         s3_uri = s3_uri.rstrip("/")
         key = self._cache_key(s3_uri)
         local_path = self._s3_to_local_path(s3_uri)
         
-        # Check cache
+        # Check cache first
         if not force_refresh and self.is_cached(s3_uri):
             entry = self.manifest.entries[key]
             # Update last_accessed
             entry.last_accessed = datetime.now().isoformat()
             self.manifest.save(self.manifest_file)
             
-            print(f"[DataCache] Using cached data:")
+            print(f"[DataCache] HIT - Using cached data:")
             print(f"  S3: {s3_uri}")
             print(f"  Local: {local_path}")
             print(f"  Files: {entry.file_count}, Size: {entry.size_bytes / 1e9:.1f} GB")
-            print(f"  Cached at: {entry.cached_at}")
             return local_path
         
         # Estimate download size
-        print(f"[DataCache] Estimating S3 dataset size...")
+        print(f"[DataCache] MISS - Checking if we can cache...")
         estimated_size = self._estimate_s3_size(s3_uri)
         print(f"[DataCache] Estimated size: {estimated_size / 1e9:.1f} GB")
         
         # Check disk space
         ok, message = self._check_disk_space(estimated_size)
         if not ok:
-            if auto_evict:
-                print(f"[DataCache] Disk space insufficient, attempting LRU eviction...")
-                evicted = self._evict_lru(estimated_size)
-                if evicted:
-                    ok, message = self._check_disk_space(estimated_size)
-            
-            if not ok:
-                raise RuntimeError(f"[DataCache] DISK FULL - Cannot download.\n{message}")
+            # Cache is full - return S3 URI for streaming (no eviction!)
+            print(f"[DataCache] OVERFLOW - Cache full, will stream from S3:")
+            print(f"  {message}")
+            print(f"[DataCache] Returning S3 URI for streaming (slower but works)")
+            print(f"  Tip: Cached data still gets speedup. Only overflow streams from S3.")
+            return s3_uri  # Return S3 URI - training code will stream it
         
         # Show disk status before download
         disk = self._get_disk_usage()
-        print(f"[DataCache] Disk status before download:")
-        print(f"  Total: {disk['total'] / 1e9:.1f} GB")
-        print(f"  Used: {disk['used'] / 1e9:.1f} GB ({disk['used']/disk['total']*100:.1f}%)")
-        print(f"  Free: {disk['free'] / 1e9:.1f} GB")
-        print(f"  Cache size: {self._get_cache_size() / 1e9:.1f} GB")
+        cache_size = self._get_cache_size()
+        print(f"[DataCache] Space available, downloading to cache...")
+        print(f"  Cache: {cache_size / 1e9:.1f} GB / {self.max_cache_bytes / 1e9:.1f} GB")
+        print(f"  Disk free: {disk['free'] / 1e9:.1f} GB")
         
         # Download from S3
-        print(f"[DataCache] Downloading from S3...")
         success = self._sync_from_s3(s3_uri, local_path)
         
         if not success:
-            raise RuntimeError(f"Failed to sync data from {s3_uri}")
+            print(f"[DataCache] Download failed, falling back to S3 streaming")
+            return s3_uri
         
         # Update manifest
         file_count = self._count_parquet_files(local_path)
@@ -373,10 +392,12 @@ class DataCache:
         self.manifest.entries[key] = entry
         self.manifest.save(self.manifest_file)
         
-        # Show disk status after download
+        # Show final status
         disk = self._get_disk_usage()
-        print(f"[DataCache] Cached {file_count} files ({size_bytes / 1e9:.1f} GB)")
-        print(f"[DataCache] Disk after download: {disk['free'] / 1e9:.1f} GB free ({disk['used']/disk['total']*100:.1f}% used)")
+        cache_size = self._get_cache_size()
+        print(f"[DataCache] CACHED - {file_count} files ({size_bytes / 1e9:.1f} GB)")
+        print(f"  Cache now: {cache_size / 1e9:.1f} GB / {self.max_cache_bytes / 1e9:.1f} GB")
+        print(f"  Headroom: {(self.max_cache_bytes - cache_size) / 1e9:.1f} GB")
         
         return local_path
     
@@ -508,6 +529,10 @@ if __name__ == "__main__":
     clear_parser = subparsers.add_parser("clear", help="Clear cache")
     clear_parser.add_argument("--s3-uri", help="Clear specific S3 URI (default: clear all)")
     
+    # evict command (manual eviction of oldest entries)
+    evict_parser = subparsers.add_parser("evict", help="Evict oldest N entries to make room")
+    evict_parser.add_argument("-n", type=int, default=1, help="Number of oldest entries to evict (default: 1)")
+    
     args = parser.parse_args()
     
     cache = DataCache(cache_root=args.cache_root)
@@ -518,11 +543,19 @@ if __name__ == "__main__":
     
     elif args.command == "get":
         local_path = cache.get(args.s3_uri, force_refresh=args.force)
-        print(f"Local path: {local_path}")
+        print(f"Data path: {local_path}")
+        if local_path.startswith("s3://"):
+            print("(Cache full - streaming from S3)")
+        else:
+            print("(Cached locally)")
     
     elif args.command == "clear":
         cache.clear(s3_uri=args.s3_uri)
         print("Cache cleared.")
+    
+    elif args.command == "evict":
+        freed = cache.evict_oldest(count=args.n)
+        print(f"Evicted {args.n} entries, freed {freed / 1e9:.1f} GB")
     
     else:
         parser.print_help()
