@@ -55,6 +55,12 @@ try:
 except Exception as e:
     raise RuntimeError("Missing dependency torchvision. Install: pip install torchvision") from e
 
+try:
+    from data_cache import DataCache
+    HAS_CACHE = True
+except ImportError:
+    HAS_CACHE = False
+
 
 KEY_COLS_DEFAULT = ["experiment_id", "task_id"]
 
@@ -184,7 +190,7 @@ def _write_parquet(out_path: str, table: pa.Table):
 
 def main():
     ap = argparse.ArgumentParser(description="Phase 5: Run inference and write scores")
-    ap.add_argument("--data", required=True, help="Root path to Phase 4c unified parquet")
+    ap.add_argument("--data", required=True, help="Root path to Phase 4c unified parquet (local or s3://...)")
     ap.add_argument("--contract_json", required=True)
     ap.add_argument("--checkpoint", required=True)
     ap.add_argument("--arch", default="resnet18")
@@ -194,10 +200,23 @@ def main():
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--max_row_groups", type=int, default=0, help="Dev mode cap; 0 means no cap")
     ap.add_argument("--stamp_size", type=int, default=64)
+    ap.add_argument("--cache_root", default="/data/cache", help="Local cache directory for S3 data")
+    ap.add_argument("--force_cache_refresh", action="store_true", help="Force re-download from S3")
     args = ap.parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() and args.device.startswith("cuda") else "cpu")
     print(f"[INFO] Using device: {device}")
+
+    # Resolve data path: use cache if S3 URI
+    data_path = args.data
+    if data_path.startswith("s3://"):
+        if HAS_CACHE:
+            print(f"[INFO] Data is S3 URI, using cache...")
+            cache = DataCache(cache_root=args.cache_root)
+            data_path = cache.get(data_path, force_refresh=args.force_cache_refresh)
+        else:
+            print(f"[WARN] S3 URI provided but data_cache module not available. Streaming from S3.")
+    print(f"[INFO] Data path: {data_path}")
 
     required_cols = _load_contract_cols(args.contract_json)
 
@@ -215,7 +234,7 @@ def main():
     model.eval()
     print(f"[INFO] Loaded checkpoint from {ckpt_path}")
 
-    parquet_files = _list_parquet_files(args.data)
+    parquet_files = _list_parquet_files(data_path)
     print(f"[INFO] Found {len(parquet_files)} parquet files")
 
     out_root = args.out.rstrip("/")
