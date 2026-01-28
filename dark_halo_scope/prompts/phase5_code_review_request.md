@@ -286,9 +286,8 @@ Please attach the following Python files for review:
 2. `dark_halo_scope/model/phase5_hyperparam_sweep.py` - Hyperparameter sweep
 3. `dark_halo_scope/model/phase5_monitor.py` - Training monitor
 4. `dark_halo_scope/model/data_cache.py` - Data caching layer
-5. `dark_halo_scope/model/phase5_train_lensfinder.py` - Original training script (for reference)
-6. `dark_halo_scope/model/phase5_infer_scores.py` - Inference script
-7. `dark_halo_scope/model/phase5_required_columns_contract.py` - Schema contract
+5. `dark_halo_scope/model/phase5_infer_scores.py` - Inference script
+6. `dark_halo_scope/model/phase5_required_columns_contract.py` - Schema contract
 
 ---
 
