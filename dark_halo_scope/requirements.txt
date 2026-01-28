@@ -63,6 +63,7 @@ scipy==1.13.1
 six==1.17.0
 sympy==1.14.0
 tensorboard>=2.15.0
+optuna>=3.5.0
 threadpoolctl==3.6.0
 tifffile==2024.8.30
 tomli==2.3.0
