@@ -26,11 +26,49 @@ import json
 import os
 import subprocess
 import time
+import fcntl
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import glob
+
+
+@contextmanager
+def _file_lock(lock_path: str, timeout: int = 600):
+    """
+    File-based lock for inter-process synchronization.
+    
+    This prevents multiple DDP ranks from:
+    - Running aws s3 sync concurrently
+    - Writing to manifest.json concurrently
+    
+    Args:
+        lock_path: Path to lock file
+        timeout: Maximum wait time in seconds (default 10 min)
+    """
+    lock_file = open(lock_path, "w")
+    start = time.time()
+    acquired = False
+    
+    while time.time() - start < timeout:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+            break
+        except BlockingIOError:
+            time.sleep(1)  # Wait and retry
+    
+    if not acquired:
+        lock_file.close()
+        raise TimeoutError(f"Could not acquire lock {lock_path} within {timeout}s")
+    
+    try:
+        yield
+    finally:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        lock_file.close()
 
 
 @dataclass
@@ -111,6 +149,7 @@ class DataCache:
         self.cache_root.mkdir(parents=True, exist_ok=True)
         
         self.manifest_file = manifest_file or str(self.cache_root / "manifest.json")
+        self.lock_file = str(self.cache_root / ".cache.lock")
         self.manifest = CacheManifest.load(self.manifest_file)
         
         # Disk safety limits
@@ -334,72 +373,74 @@ class DataCache:
         key = self._cache_key(s3_uri)
         local_path = self._s3_to_local_path(s3_uri)
         
-        # Check cache first
-        if not force_refresh and self.is_cached(s3_uri):
-            entry = self.manifest.entries[key]
-            # Update last_accessed
-            entry.last_accessed = datetime.now().isoformat()
+        # Use file lock to prevent concurrent downloads/manifest writes
+        # This is critical for DDP where multiple ranks may call get() simultaneously
+        with _file_lock(self.lock_file):
+            # Re-check cache after acquiring lock (another process may have cached it)
+            if not force_refresh and self.is_cached(s3_uri):
+                entry = self.manifest.entries[key]
+                entry.last_accessed = datetime.now().isoformat()
+                self.manifest.save(self.manifest_file)
+                
+                print(f"[DataCache] HIT - Using cached data:")
+                print(f"  S3: {s3_uri}")
+                print(f"  Local: {local_path}")
+                print(f"  Files: {entry.file_count}, Size: {entry.size_bytes / 1e9:.1f} GB")
+                return local_path
+            
+            # Estimate download size
+            print(f"[DataCache] MISS - Checking if we can cache...")
+            estimated_size = self._estimate_s3_size(s3_uri)
+            print(f"[DataCache] Estimated size: {estimated_size / 1e9:.1f} GB")
+            
+            # Check disk space
+            ok, message = self._check_disk_space(estimated_size)
+            if not ok:
+                # Cache is full - return S3 URI for streaming (no eviction!)
+                print(f"[DataCache] OVERFLOW - Cache full, will stream from S3:")
+                print(f"  {message}")
+                print(f"[DataCache] Returning S3 URI for streaming (slower but works)")
+                print(f"  Tip: Cached data still gets speedup. Only overflow streams from S3.")
+                return s3_uri  # Return S3 URI - training code will stream it
+            
+            # Show disk status before download
+            disk = self._get_disk_usage()
+            cache_size = self._get_cache_size()
+            print(f"[DataCache] Space available, downloading to cache...")
+            print(f"  Cache: {cache_size / 1e9:.1f} GB / {self.max_cache_bytes / 1e9:.1f} GB")
+            print(f"  Disk free: {disk['free'] / 1e9:.1f} GB")
+            
+            # Download from S3 (within lock to prevent concurrent downloads)
+            success = self._sync_from_s3(s3_uri, local_path)
+            
+            if not success:
+                print(f"[DataCache] Download failed, falling back to S3 streaming")
+                return s3_uri
+            
+            # Update manifest (within lock to prevent concurrent writes)
+            file_count = self._count_parquet_files(local_path)
+            size_bytes = self._get_dir_size(local_path)
+            
+            entry = CacheEntry(
+                s3_uri=s3_uri,
+                local_path=local_path,
+                file_count=file_count,
+                size_bytes=size_bytes,
+                cached_at=datetime.now().isoformat(),
+                last_accessed=datetime.now().isoformat(),
+                verified=True,
+            )
+            self.manifest.entries[key] = entry
             self.manifest.save(self.manifest_file)
             
-            print(f"[DataCache] HIT - Using cached data:")
-            print(f"  S3: {s3_uri}")
-            print(f"  Local: {local_path}")
-            print(f"  Files: {entry.file_count}, Size: {entry.size_bytes / 1e9:.1f} GB")
+            # Show final status
+            disk = self._get_disk_usage()
+            cache_size = self._get_cache_size()
+            print(f"[DataCache] CACHED - {file_count} files ({size_bytes / 1e9:.1f} GB)")
+            print(f"  Cache now: {cache_size / 1e9:.1f} GB / {self.max_cache_bytes / 1e9:.1f} GB")
+            print(f"  Headroom: {(self.max_cache_bytes - cache_size) / 1e9:.1f} GB")
+            
             return local_path
-        
-        # Estimate download size
-        print(f"[DataCache] MISS - Checking if we can cache...")
-        estimated_size = self._estimate_s3_size(s3_uri)
-        print(f"[DataCache] Estimated size: {estimated_size / 1e9:.1f} GB")
-        
-        # Check disk space
-        ok, message = self._check_disk_space(estimated_size)
-        if not ok:
-            # Cache is full - return S3 URI for streaming (no eviction!)
-            print(f"[DataCache] OVERFLOW - Cache full, will stream from S3:")
-            print(f"  {message}")
-            print(f"[DataCache] Returning S3 URI for streaming (slower but works)")
-            print(f"  Tip: Cached data still gets speedup. Only overflow streams from S3.")
-            return s3_uri  # Return S3 URI - training code will stream it
-        
-        # Show disk status before download
-        disk = self._get_disk_usage()
-        cache_size = self._get_cache_size()
-        print(f"[DataCache] Space available, downloading to cache...")
-        print(f"  Cache: {cache_size / 1e9:.1f} GB / {self.max_cache_bytes / 1e9:.1f} GB")
-        print(f"  Disk free: {disk['free'] / 1e9:.1f} GB")
-        
-        # Download from S3
-        success = self._sync_from_s3(s3_uri, local_path)
-        
-        if not success:
-            print(f"[DataCache] Download failed, falling back to S3 streaming")
-            return s3_uri
-        
-        # Update manifest
-        file_count = self._count_parquet_files(local_path)
-        size_bytes = self._get_dir_size(local_path)
-        
-        entry = CacheEntry(
-            s3_uri=s3_uri,
-            local_path=local_path,
-            file_count=file_count,
-            size_bytes=size_bytes,
-            cached_at=datetime.now().isoformat(),
-            last_accessed=datetime.now().isoformat(),
-            verified=True,
-        )
-        self.manifest.entries[key] = entry
-        self.manifest.save(self.manifest_file)
-        
-        # Show final status
-        disk = self._get_disk_usage()
-        cache_size = self._get_cache_size()
-        print(f"[DataCache] CACHED - {file_count} files ({size_bytes / 1e9:.1f} GB)")
-        print(f"  Cache now: {cache_size / 1e9:.1f} GB / {self.max_cache_bytes / 1e9:.1f} GB")
-        print(f"  Headroom: {(self.max_cache_bytes - cache_size) / 1e9:.1f} GB")
-        
-        return local_path
     
     def get_or_local(self, path: str, force_refresh: bool = False) -> str:
         """

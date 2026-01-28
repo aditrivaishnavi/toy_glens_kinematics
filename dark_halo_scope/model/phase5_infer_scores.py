@@ -230,6 +230,23 @@ def main():
     print(f"[INFO] Data path: {data_path}")
 
     required_cols = _load_contract_cols(args.contract_json)
+    print(f"[INFO] Contract requires {len(required_cols)} columns")
+    
+    # Validate contract columns exist in first parquet file (fail-fast)
+    parquet_files = _list_parquet_files(data_path)
+    if not parquet_files:
+        raise RuntimeError(f"No parquet files found at {data_path}")
+    
+    first_pf = _open_parquet(parquet_files[0])
+    schema_names = set(first_pf.schema.names)
+    missing_contract = [c for c in required_cols if c not in schema_names]
+    if missing_contract:
+        raise RuntimeError(
+            f"CONTRACT VIOLATION: Missing {len(missing_contract)} required columns in data.\n"
+            f"Missing: {missing_contract[:10]}{'...' if len(missing_contract) > 10 else ''}\n"
+            f"Available: {sorted(schema_names)[:20]}..."
+        )
+    print(f"[INFO] Contract validation passed - all {len(required_cols)} columns present")
 
     # Load model
     model = build_model(args.arch).to(device)
@@ -244,8 +261,6 @@ def main():
     model.load_state_dict(ckpt["state_dict"])
     model.eval()
     print(f"[INFO] Loaded checkpoint from {ckpt_path}")
-
-    parquet_files = _list_parquet_files(data_path)
     print(f"[INFO] Found {len(parquet_files)} parquet files")
 
     out_root = args.out.rstrip("/")
@@ -253,6 +268,7 @@ def main():
 
     h, w = args.stamp_size, args.stamp_size
     total_rows = 0
+    skipped_counts = {"cutout_ok_0": 0, "stamp_npz_null": 0, "decode_error": 0}
 
     for shard_idx, parquet_file in enumerate(parquet_files):
         pf = _open_parquet(parquet_file)
@@ -299,7 +315,12 @@ def main():
             for j, i in enumerate(keep):
                 lens = lens_model_col[i]
                 label_keep.append(0 if lens == "CONTROL" else 1)
-                valid_mask.append(cutout_ok_col[i] == 1 and stamp_npz_col[i] is not None)
+                is_valid = cutout_ok_col[i] == 1 and stamp_npz_col[i] is not None
+                valid_mask.append(is_valid)
+                if cutout_ok_col[i] != 1:
+                    skipped_counts["cutout_ok_0"] += 1
+                elif stamp_npz_col[i] is None:
+                    skipped_counts["stamp_npz_null"] += 1
 
             # Batch inference
             def flush_batch(batch_x: List[np.ndarray], batch_pos: List[int]):
@@ -332,6 +353,7 @@ def main():
                         flush_batch(batch_x, batch_pos)
                         batch_x, batch_pos = [], []
                 except Exception:
+                    skipped_counts["decode_error"] += 1
                     continue
             flush_batch(batch_x, batch_pos)
 
@@ -362,6 +384,7 @@ def main():
             print(f"[INFO] processed shard={shard_idx}/{len(parquet_files)} total_rows_written={total_rows}")
 
     print(f"[DONE] total_rows_written={total_rows} out={args.out}")
+    print(f"[INFO] Skipped rows: {skipped_counts}")
 
 
 if __name__ == "__main__":
