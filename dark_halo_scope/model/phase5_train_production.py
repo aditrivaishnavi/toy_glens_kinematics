@@ -55,6 +55,7 @@ except ImportError:
     raise RuntimeError("pip install fsspec s3fs")
 
 try:
+    import pyarrow as pa
     import pyarrow.parquet as pq
 except ImportError:
     raise RuntimeError("pip install pyarrow")
@@ -219,6 +220,16 @@ def _list_parquet_files(path: str) -> List[str]:
     else:
         import glob
         return sorted(glob.glob(os.path.join(path, "**", "*.parquet"), recursive=True))
+
+
+def _load_contract_cols(contract_json_path: str) -> List[str]:
+    """Load required columns from contract JSON file."""
+    if contract_json_path.startswith("sandbox:"):
+        contract_json_path = contract_json_path.replace("sandbox:", "")
+    with open(contract_json_path, "r") as f:
+        doc = json.load(f)
+    cols = doc.get("phase5_required_columns", doc.get("required_columns", []))
+    return list(cols)
 
 
 class Phase4cDataset(IterableDataset):
@@ -608,7 +619,8 @@ def train_one_epoch(
     model.train()
     metrics = Metrics()
     
-    bce = nn.BCEWithLogitsLoss(label_smoothing=cfg.label_smoothing) if cfg.label_smoothing > 0 else nn.BCEWithLogitsLoss()
+    bce = nn.BCEWithLogitsLoss()
+    label_smooth_eps = cfg.label_smoothing
     
     it = iter(loader)
     step_times = []
@@ -625,11 +637,17 @@ def train_one_epoch(
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
         
+        # Apply label smoothing: y' = y*(1-ε) + 0.5*ε
+        if label_smooth_eps > 0:
+            y_smooth = y * (1 - label_smooth_eps) + 0.5 * label_smooth_eps
+        else:
+            y_smooth = y
+        
         optimizer.zero_grad(set_to_none=True)
         
         with autocast(enabled=cfg.use_amp):
             logit = model(x)
-            loss = bce(logit, y)
+            loss = bce(logit, y_smooth)
         
         scaler.scale(loss).backward()
         
@@ -833,6 +851,11 @@ def main():
     cfg.augment = bool(args.augment)
     cfg.use_amp = bool(args.use_amp)
     
+    # Load contract columns
+    required_cols = _load_contract_cols(args.contract_json)
+    if rank == 0:
+        print(f"[INFO] Loaded {len(required_cols)} required columns from contract")
+    
     # Seed
     torch.manual_seed(cfg.seed + rank)
     np.random.seed(cfg.seed + rank)
@@ -858,6 +881,25 @@ def main():
         raise RuntimeError(f"No parquet files found at {data_path}")
     if rank == 0:
         print(f"[INFO] Found {len(parquet_files)} parquet files")
+    
+    # Validate contract columns exist (fail-fast)
+    if rank == 0:
+        first_pf = pq.ParquetFile(parquet_files[0])
+        schema_names = set(first_pf.schema.names)
+        
+        # Required columns for training
+        required_for_training = ["stamp_npz", "lens_model", "region_split", "cutout_ok"]
+        missing = [c for c in required_for_training if c not in schema_names]
+        if missing:
+            raise RuntimeError(f"CONTRACT VIOLATION: Missing required columns: {missing}")
+        
+        # Validate contract columns exist for downstream completeness
+        missing_contract = [c for c in required_cols if c not in schema_names]
+        if missing_contract:
+            print(f"[WARN] Missing {len(missing_contract)} contract columns (may affect Phase 5 completeness):")
+            print(f"  {missing_contract[:10]}{'...' if len(missing_contract) > 10 else ''}")
+        else:
+            print(f"[INFO] Contract validation passed - all {len(required_cols)} columns present")
     
     max_rows = args.max_rows_per_file if args.max_rows_per_file > 0 else None
     
@@ -930,7 +972,9 @@ def main():
             device, cfg, epoch, global_step, writer, rank
         )
         
-        # Evaluate
+        # Evaluate (only rank 0, but sync stop signal to all ranks)
+        should_stop = torch.tensor([0], dtype=torch.int32, device=device)
+        
         if rank == 0:
             val_metrics = evaluate(model, val_loader, device, cfg)
             
@@ -957,15 +1001,21 @@ def main():
                                epoch, global_step, best_auroc, cfg)
                 print(f"[INFO] New best AUROC: {best_auroc:.4f}")
             
-            # Early stopping
+            # Early stopping check
             if early_stop(val_metrics["auroc"]):
                 print(f"[INFO] Early stopping at epoch {epoch} (patience={cfg.early_stopping_patience})")
-                break
+                should_stop[0] = 1
             
             print()
         
+        # Broadcast stop signal to all ranks (prevents DDP deadlock)
         if world > 1:
+            dist.broadcast(should_stop, src=0)
             dist.barrier()
+        
+        # All ranks check stop signal and break together
+        if should_stop[0].item() == 1:
+            break
     
     # Cleanup
     if world > 1:
