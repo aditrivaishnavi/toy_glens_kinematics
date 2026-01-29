@@ -378,11 +378,12 @@ class Phase4cDataset(IterableDataset):
                     y = 0.0 if lens_col[i] == "CONTROL" else 1.0
                     y_t = torch.tensor([y], dtype=torch.float32)
                     
+                    # Convert None to NaN for numeric metadata (required for collation)
                     meta = {
-                        "theta_e": theta_col[i],
-                        "psf_fwhm": psf_col[i],
-                        "arc_snr": snr_col[i],
-                        "lens_model": lens_col[i],
+                        "theta_e": float(theta_col[i]) if theta_col[i] is not None else float('nan'),
+                        "psf_fwhm": float(psf_col[i]) if psf_col[i] is not None else float('nan'),
+                        "arc_snr": float(snr_col[i]) if snr_col[i] is not None else float('nan'),
+                        "lens_model": lens_col[i] if lens_col[i] is not None else "UNKNOWN",
                     }
                     
                     yield x, y_t, meta
