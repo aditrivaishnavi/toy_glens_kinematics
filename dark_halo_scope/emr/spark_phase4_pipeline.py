@@ -1555,7 +1555,7 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
                 tasks_out = tasks.select(*keep)
 
                 # Write parquet + CSV for convenience
-                tasks_out.write.mode("overwrite").parquet(out_path)
+                tasks_out.write.mode("overwrite").option("compression", "gzip").parquet(out_path)
 
                 csv_path = f"{out_path}_csv"
                 # For train tier (large manifests), avoid coalesce(1) bottleneck
@@ -1577,7 +1577,7 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
         df_all = dfm if df_all is None else df_all.unionByName(dfm)
 
     bricks_out = f"{out_root}/bricks_manifest"
-    df_all.write.mode("overwrite").parquet(bricks_out)
+    df_all.write.mode("overwrite").option("compression", "gzip").parquet(bricks_out)
     df_all.coalesce(1).write.mode("overwrite").option("header", True).csv(f"{bricks_out}_csv")
 
     print(f"[4a] Done. Output root: {out_root}")
@@ -1822,7 +1822,7 @@ def stage_4b_cache_coadds(spark: SparkSession, args: argparse.Namespace) -> None
     df_out.persist(StorageLevel.MEMORY_AND_DISK)
 
     out_path = f"{out_root}/assets_manifest"
-    df_out.write.mode("overwrite").parquet(out_path)
+    df_out.write.mode("overwrite").option("compression", "gzip").parquet(out_path)
     df_out.coalesce(1).write.mode("overwrite").option("header", True).csv(f"{out_path}_csv")
     
     # Release persisted DataFrame
@@ -2473,14 +2473,14 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
     df_out.persist(StorageLevel.MEMORY_AND_DISK)
 
     out_path = f"{out_root}/stamps/{args.experiment_id}"
-    df_out.write.mode("overwrite").partitionBy("region_split").parquet(out_path)
+    df_out.write.mode("overwrite").option("compression", "gzip").partitionBy("region_split").parquet(out_path)
 
     # Metrics-only table (derived from persisted df_out)
     # Metrics table: ALL columns EXCEPT stamp_npz (binary image data)
     # This provides complete metadata for analysis without the heavy binary payload
     metrics = df_out.drop("stamp_npz")
     met_path = f"{out_root}/metrics/{args.experiment_id}"
-    metrics.write.mode("overwrite").partitionBy("region_split").parquet(met_path)
+    metrics.write.mode("overwrite").option("compression", "gzip").partitionBy("region_split").parquet(met_path)
     
     # Release persisted DataFrame
     df_out.unpersist()
@@ -2795,7 +2795,7 @@ def stage_4d_completeness(spark: SparkSession, args: argparse.Namespace) -> None
     
     # Write detailed completeness surface (with region_id)
     surface_path = f"{out_root}/completeness_surfaces/{args.experiment_id}"
-    grp.write.mode("overwrite").partitionBy("region_split").parquet(surface_path)
+    grp.write.mode("overwrite").option("compression", "gzip").partitionBy("region_split").parquet(surface_path)
     print(f"[4d] Wrote completeness surface: {surface_path}")
     
     # =========================================================================
@@ -2843,7 +2843,7 @@ def stage_4d_completeness(spark: SparkSession, args: argparse.Namespace) -> None
     region_agg = region_agg.drop("_ci_pooled_clean")
     
     region_agg_path = f"{out_root}/completeness_surfaces_region_agg/{args.experiment_id}"
-    region_agg.write.mode("overwrite").partitionBy("region_split").parquet(region_agg_path)
+    region_agg.write.mode("overwrite").option("compression", "gzip").partitionBy("region_split").parquet(region_agg_path)
     print(f"[4d] Wrote region-aggregated surface: {region_agg_path}")
     
     # =========================================================================
@@ -2860,7 +2860,7 @@ def stage_4d_completeness(spark: SparkSession, args: argparse.Namespace) -> None
                 ).withColumn("band", F.lit(band))
                 
                 psf_path = f"{psf_prov_root}/psf_source_{band}"
-                psf_summary.coalesce(1).write.mode("overwrite").parquet(psf_path)
+                psf_summary.coalesce(1).write.mode("overwrite").option("compression", "gzip").parquet(psf_path)
                 print(f"[4d] Wrote PSF provenance ({band}): {psf_path}")
     
     # =========================================================================
@@ -2937,7 +2937,7 @@ def stage_4p5_compact(spark: SparkSession, args: argparse.Namespace) -> None:
     if n > 0:
         df = df.repartition(n)
 
-    df.write.mode("overwrite").parquet(args.compact_output_s3)
+    df.write.mode("overwrite").option("compression", "gzip").parquet(args.compact_output_s3)
 
     cfg = {
         "stage": "4p5",
