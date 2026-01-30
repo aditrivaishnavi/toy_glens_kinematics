@@ -1,7 +1,7 @@
 {
   "contract_name": "dark_halo_scope_phase5_required_columns",
   "contract_version": "1.0.0",
-  "source_pipeline_file": "spark_phase4_pipeline.py",
+  "source_pipeline_file": "spark_phase4_pipeline_v3.py",
   "stage4c_metrics_schema_columns": [
     "task_id",
     "experiment_id",

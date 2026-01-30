@@ -3,7 +3,8 @@
 Phase 5: Run GPU inference for a trained lens-finder and write per-row scores to parquet.
 
 Inputs:
-- Phase 4c unified parquet (stamps + metrics in same rows)
+- Phase 4c stamps parquet (pixels)
+- Phase 4c metrics parquet (metadata + provenance)
 - Trained checkpoint (checkpoint_best.pt or checkpoint_last.pt)
 
 Outputs:
@@ -15,21 +16,22 @@ Outputs:
 
 Typical run:
   python phase5_infer_scores.py \
-    --data "/local/phase4c/stamps/train_stamp64_bandsgrz_gridgrid_small" \
-    --contract_json "dark_halo_scope/model/phase5_required_columns_contract.json" \
-    --checkpoint "/local/phase5/models/resnet18_v1/checkpoint_best.pt" \
+    --stamps "s3://.../phase4c/.../stamps/train_stamp64_bandsgrz_gridgrid_small" \
+    --metrics "s3://.../phase4c/.../metrics/train_stamp64_bandsgrz_gridgrid_small" \
+    --contract_json "sandbox:/mnt/data/phase5_required_columns_contract.json" \
+    --checkpoint "s3://.../phase5/models/resnet18_v1/checkpoint_best.pt" \
     --arch resnet18 \
     --split test \
-    --out "/local/phase5/scores/resnet18_v1/test_scores"
+    --out "s3://.../phase5/scores/resnet18_v1/test_scores"
 
 Notes:
-- Phase 4c stores images in stamp_npz as compressed NPZ with keys image_g, image_r, image_z
+- This script assumes stamps and metrics parquet shards are row-aligned as produced by Phase 4c.
+- If experiment_id/task_id exist in both tables, alignment is verified for a small sample.
 """
 
 from __future__ import annotations
 
 import argparse
-import io
 import json
 import os
 import random
@@ -55,24 +57,13 @@ try:
 except Exception as e:
     raise RuntimeError("Missing dependency torchvision. Install: pip install torchvision") from e
 
-try:
-    # Try relative import first (when running as module)
-    from .data_cache import DataCache
-    HAS_CACHE = True
-except ImportError:
-    try:
-        # Try absolute import (when running directly)
-        from dark_halo_scope.model.data_cache import DataCache
-        HAS_CACHE = True
-    except ImportError:
-        try:
-            # Try same-directory import (when running from model dir)
-            from data_cache import DataCache
-            HAS_CACHE = True
-        except ImportError:
-            HAS_CACHE = False
 
-
+IMAGE_COL_CANDIDATES: List[Tuple[str, str, str]] = [
+    ("image_g", "image_r", "image_z"),
+    ("stamp_g", "stamp_r", "stamp_z"),
+    ("img_g", "img_r", "img_z"),
+    ("g", "r", "z"),
+]
 KEY_COLS_DEFAULT = ["experiment_id", "task_id"]
 
 
@@ -110,24 +101,40 @@ def _load_contract_cols(contract_json_path: str) -> List[str]:
         p = p.replace("sandbox:", "")
     with open(p, "r") as f:
         doc = json.load(f)
-    cols = doc.get("phase5_required_columns", doc.get("required_columns", []))
-    return list(cols)
+    return list(doc.get("required_columns", []))
 
 
-def _decode_stamp_npz(npz_bytes: bytes, bands: Tuple[str, str, str] = ("g", "r", "z")) -> Dict[str, np.ndarray]:
-    """Decode compressed NPZ from stamp_npz column into per-band image arrays."""
-    if npz_bytes is None:
-        raise ValueError("stamp_npz is None")
-    bio = io.BytesIO(npz_bytes)
-    with np.load(bio) as npz:
-        result = {}
-        for band in bands:
-            key = f"image_{band}"
-            if key in npz.files:
-                result[band] = npz[key]
-            else:
-                raise ValueError(f"Missing {key} in stamp_npz")
-        return result
+def _detect_image_cols(schema_names: Sequence[str]) -> Tuple[str, str, str]:
+    s = set(schema_names)
+    for cg, cr, cz in IMAGE_COL_CANDIDATES:
+        if cg in s and cr in s and cz in s:
+            return cg, cr, cz
+    raise ValueError(f"Could not find image columns for g/r/z. Tried: {IMAGE_COL_CANDIDATES}")
+
+
+def _to_2d_array(x, h: int, w: int) -> np.ndarray:
+    if x is None:
+        raise ValueError("Image cell is None")
+    if isinstance(x, (bytes, bytearray, memoryview)):
+        arr = np.frombuffer(x, dtype=np.float32)
+        if arr.size != h * w:
+            arr = np.frombuffer(x, dtype=np.float64).astype(np.float32)
+        if arr.size != h * w:
+            raise ValueError(f"Bytes image has {arr.size} elements, expected {h*w}")
+        return arr.reshape(h, w)
+    arr = np.asarray(x)
+    if arr.ndim == 2 and arr.shape == (h, w):
+        return arr.astype(np.float32, copy=False)
+    if arr.ndim == 1 and arr.size == h * w:
+        return arr.astype(np.float32, copy=False).reshape(h, w)
+    if arr.ndim == 1 and arr.size == h:
+        try:
+            arr2 = np.stack([np.asarray(r, dtype=np.float32) for r in arr], axis=0)
+            if arr2.shape == (h, w):
+                return arr2
+        except Exception:
+            pass
+    raise ValueError(f"Unsupported image cell shape {arr.shape}")
 
 
 def _robust_normalize(img: np.ndarray) -> np.ndarray:
@@ -140,6 +147,30 @@ def _robust_normalize(img: np.ndarray) -> np.ndarray:
         scale = float(np.std(x) + 1e-6)
     y = (x - med) / scale
     return np.clip(y, -10.0, 10.0)
+
+
+def _pair_shards(stamps_root: str, metrics_root: str) -> List[Tuple[str, str]]:
+    stamps = _list_parquet_files(stamps_root)
+    metrics = _list_parquet_files(metrics_root)
+
+    def rel(p: str, root: str) -> str:
+        rp = p[5:] if p.startswith("s3://") else p
+        rr = root[5:] if root.startswith("s3://") else root
+        rr = rr.rstrip("/") + "/"
+        if rp.startswith(rr):
+            return rp[len(rr):]
+        return os.path.basename(rp)
+
+    m_map = {rel(p, metrics_root): p for p in metrics}
+    pairs: List[Tuple[str, str]] = []
+    for s in stamps:
+        r = rel(s, stamps_root)
+        m = m_map.get(r) or m_map.get(os.path.basename(r))
+        if m:
+            pairs.append((s, m))
+    if not pairs:
+        raise RuntimeError("Failed to pair stamps and metrics shards. Check inputs.")
+    return pairs
 
 
 def build_model(arch: str, in_ch: int = 3) -> nn.Module:
@@ -189,8 +220,13 @@ def build_model(arch: str, in_ch: int = 3) -> nn.Module:
     raise ValueError(f"Unknown arch: {arch}")
 
 
+def _read_table(pf: pq.ParquetFile, row_group: int, columns: List[str]) -> pa.Table:
+    return pf.read_row_group(row_group, columns=columns)
+
+
 def _write_parquet(out_path: str, table: pa.Table):
     if _is_s3(out_path):
+        # write to a single file on S3; for large runs prefer partitioned output
         fs = _fs_for(out_path)
         with fs.open(out_path, "wb") as f:
             pq.write_table(table, f, compression="zstd")
@@ -200,53 +236,22 @@ def _write_parquet(out_path: str, table: pa.Table):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Phase 5: Run inference and write scores")
-    ap.add_argument("--data", required=True, help="Root path to Phase 4c unified parquet (local or s3://...)")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--stamps", required=True)
+    ap.add_argument("--metrics", required=True)
     ap.add_argument("--contract_json", required=True)
     ap.add_argument("--checkpoint", required=True)
     ap.add_argument("--arch", default="resnet18")
     ap.add_argument("--split", choices=["train", "val", "test", "all"], default="test")
-    ap.add_argument("--out", required=True, help="Output directory for score parquet files")
+    ap.add_argument("--out", required=True, help="Output directory (dataset) or a .parquet file path")
     ap.add_argument("--batch_size", type=int, default=512)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--max_row_groups", type=int, default=0, help="Dev mode cap; 0 means no cap")
-    ap.add_argument("--stamp_size", type=int, default=64)
-    ap.add_argument("--cache_root", default="/data/cache", help="Local cache directory for S3 data")
-    ap.add_argument("--force_cache_refresh", action="store_true", help="Force re-download from S3")
     args = ap.parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() and args.device.startswith("cuda") else "cpu")
-    print(f"[INFO] Using device: {device}")
-
-    # Resolve data path: use cache if S3 URI
-    data_path = args.data
-    if data_path.startswith("s3://"):
-        if HAS_CACHE:
-            print(f"[INFO] Data is S3 URI, using cache...")
-            cache = DataCache(cache_root=args.cache_root)
-            data_path = cache.get(data_path, force_refresh=args.force_cache_refresh)
-        else:
-            print(f"[WARN] S3 URI provided but data_cache module not available. Streaming from S3.")
-    print(f"[INFO] Data path: {data_path}")
 
     required_cols = _load_contract_cols(args.contract_json)
-    print(f"[INFO] Contract requires {len(required_cols)} columns")
-    
-    # Validate contract columns exist in first parquet file (fail-fast)
-    parquet_files = _list_parquet_files(data_path)
-    if not parquet_files:
-        raise RuntimeError(f"No parquet files found at {data_path}")
-    
-    first_pf = _open_parquet(parquet_files[0])
-    schema_names = set(first_pf.schema.names)
-    missing_contract = [c for c in required_cols if c not in schema_names]
-    if missing_contract:
-        raise RuntimeError(
-            f"CONTRACT VIOLATION: Missing {len(missing_contract)} required columns in data.\n"
-            f"Missing: {missing_contract[:10]}{'...' if len(missing_contract) > 10 else ''}\n"
-            f"Available: {sorted(schema_names)[:20]}..."
-        )
-    print(f"[INFO] Contract validation passed - all {len(required_cols)} columns present")
 
     # Load model
     model = build_model(args.arch).to(device)
@@ -255,74 +260,77 @@ def main():
         ckpt_path = ckpt_path.replace("sandbox:", "")
     if _is_s3(ckpt_path):
         with fsspec.open(ckpt_path, "rb") as f:
-            ckpt = torch.load(f, map_location="cpu")
+            ckpt = torch.load(f, map_location="cpu", weights_only=False)
     else:
-        ckpt = torch.load(ckpt_path, map_location="cpu")
-    model.load_state_dict(ckpt["state_dict"])
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    # Handle different checkpoint key formats (state_dict, model, model_state_dict)
+    state_dict = ckpt.get("state_dict") or ckpt.get("model") or ckpt.get("model_state_dict")
+    if state_dict is None:
+        raise ValueError(f"Checkpoint missing model weights. Keys found: {list(ckpt.keys())}")
+    model.load_state_dict(state_dict)
     model.eval()
-    print(f"[INFO] Loaded checkpoint from {ckpt_path}")
-    print(f"[INFO] Found {len(parquet_files)} parquet files")
+
+    pairs = _pair_shards(args.stamps, args.metrics)
 
     out_root = args.out.rstrip("/")
-    os.makedirs(out_root, exist_ok=True) if not _is_s3(out_root) else None
+    write_as_dataset = not out_root.endswith(".parquet")
 
-    h, w = args.stamp_size, args.stamp_size
+    h, w = 64, 64
     total_rows = 0
-    skipped_counts = {"cutout_ok_0": 0, "stamp_npz_null": 0, "decode_error": 0}
 
-    for shard_idx, parquet_file in enumerate(parquet_files):
-        pf = _open_parquet(parquet_file)
-        schema_names = pf.schema.names
+    for shard_idx, (stamp_file, metric_file) in enumerate(pairs):
+        pf_s = _open_parquet(stamp_file)
+        pf_m = _open_parquet(metric_file)
 
-        # Columns to read: contract columns + stamp_npz + metadata
-        cols_to_read = ["stamp_npz", "lens_model", "region_split", "cutout_ok"]
-        cols_to_read += [c for c in required_cols if c in schema_names]
-        cols_to_read = list(set(cols_to_read))
+        schema_s = pf_s.schema.names
+        schema_m = pf_m.schema.names
 
-        n_row_groups = pf.num_row_groups
+        cg, cr, cz = _detect_image_cols(schema_s)
+
+        missing = [c for c in required_cols if c not in schema_m]
+        if missing:
+            raise RuntimeError(f"Metrics shard missing required columns: {missing}\nFile: {metric_file}")
+
+        # columns to read from metrics, including split filter and label
+        m_cols = list(set(required_cols + ["lens_model", "region_split"]))
+        s_cols = [cg, cr, cz] + [c for c in KEY_COLS_DEFAULT if c in schema_s]
+
+        n_row_groups = pf_m.num_row_groups
         if args.max_row_groups and args.max_row_groups > 0:
             n_row_groups = min(n_row_groups, args.max_row_groups)
 
         for rg in range(n_row_groups):
-            table = pf.read_row_group(rg, columns=cols_to_read)
-
-            # Filter split
-            if args.split != "all" and "region_split" in table.column_names:
-                split_arr = table["region_split"].to_pylist()
+            tm = _read_table(pf_m, rg, m_cols)
+            if args.split != "all" and "region_split" in tm.column_names:
+                split_arr = tm["region_split"].to_pylist()
                 keep = [i for i, s in enumerate(split_arr) if s == args.split]
             else:
-                keep = list(range(table.num_rows))
+                keep = list(range(tm.num_rows))
             if not keep:
                 continue
 
-            # Get columns
-            stamp_npz_col = table["stamp_npz"].to_pylist()
-            lens_model_col = table["lens_model"].to_pylist() if "lens_model" in table.column_names else [None] * table.num_rows
-            cutout_ok_col = table["cutout_ok"].to_pylist() if "cutout_ok" in table.column_names else [1] * table.num_rows
+            ts = _read_table(pf_s, rg, s_cols)
 
-            # Read all contract columns for output
-            meta_cols = {}
-            for c in required_cols:
-                if c in table.column_names:
-                    meta_cols[c] = table[c].to_pylist()
+            # Verify key alignment if possible
+            verify_keys = all(k in ts.column_names for k in KEY_COLS_DEFAULT)
+            if verify_keys:
+                km = {k: tm[k].to_pylist() for k in KEY_COLS_DEFAULT}
+                ks = {k: ts[k].to_pylist() for k in KEY_COLS_DEFAULT}
+                for i in keep[:5]:
+                    for k in KEY_COLS_DEFAULT:
+                        if km[k][i] != ks[k][i]:
+                            raise RuntimeError("Key mismatch between stamps and metrics; row alignment violated.")
 
-            # Prepare output lists
+            # Build inference batches
+            # y_true is computed directly for kept rows to avoid alignment bugs
+            meta_rows: Dict[str, List] = {c: tm[c].to_pylist() for c in required_cols if c in tm.column_names}
+            lens_model = tm["lens_model"].to_pylist()
+            # y_true is computed directly for kept rows to avoid alignment bugs
+            label_keep = [0 if lens_model[i] == "CONTROL" else 1 for i in keep]
+
             logit_out = [float('nan')] * len(keep)
             score_out = [float('nan')] * len(keep)
-            label_keep = []
-            valid_mask = []
-
-            for j, i in enumerate(keep):
-                lens = lens_model_col[i]
-                label_keep.append(0 if lens == "CONTROL" else 1)
-                is_valid = cutout_ok_col[i] == 1 and stamp_npz_col[i] is not None
-                valid_mask.append(is_valid)
-                if cutout_ok_col[i] != 1:
-                    skipped_counts["cutout_ok_0"] += 1
-                elif stamp_npz_col[i] is None:
-                    skipped_counts["stamp_npz_null"] += 1
-
-            # Batch inference
+            
             def flush_batch(batch_x: List[np.ndarray], batch_pos: List[int]):
                 if not batch_x:
                     return
@@ -333,58 +341,62 @@ def main():
                 for pos, l, s in zip(batch_pos, logit.tolist(), prob.tolist()):
                     logit_out[pos] = float(l)
                     score_out[pos] = float(s)
-
+            
             batch_x: List[np.ndarray] = []
             batch_pos: List[int] = []
-            
             for j, i in enumerate(keep):
-                if not valid_mask[j]:
-                    continue
                 try:
-                    npz_bytes = stamp_npz_col[i]
-                    imgs = _decode_stamp_npz(npz_bytes)
-                    ig = _robust_normalize(imgs["g"])
-                    ir = _robust_normalize(imgs["r"])
-                    iz = _robust_normalize(imgs["z"])
-                    x = np.stack([ig, ir, iz], axis=0)
+                    ig = _to_2d_array(ts[cg][i].as_py() if hasattr(ts[cg][i], 'as_py') else ts[cg][i], h, w)
+                    ir = _to_2d_array(ts[cr][i].as_py() if hasattr(ts[cr][i], 'as_py') else ts[cr][i], h, w)
+                    iz = _to_2d_array(ts[cz][i].as_py() if hasattr(ts[cz][i], 'as_py') else ts[cz][i], h, w)
+                    x = np.stack([_robust_normalize(ig), _robust_normalize(ir), _robust_normalize(iz)], axis=0)
                     batch_x.append(x)
                     batch_pos.append(j)
                     if len(batch_x) >= args.batch_size:
                         flush_batch(batch_x, batch_pos)
                         batch_x, batch_pos = [], []
                 except Exception:
-                    skipped_counts["decode_error"] += 1
+                    # keep NaNs in outputs for this row
                     continue
             flush_batch(batch_x, batch_pos)
 
-            # Build output table
+            # Build output table for kept rows
             out_cols = {}
+
+            # Required contract cols
             for c in required_cols:
-                if c in meta_cols:
-                    out_cols[c] = pa.array([meta_cols[c][i] for i in keep])
+                if c in tm.column_names:
+                    vals = meta_rows[c]
+                    out_cols[c] = pa.array([vals[i] for i in keep])
                 else:
                     out_cols[c] = pa.nulls(len(keep))
 
-            out_cols["lens_model"] = pa.array([lens_model_col[i] for i in keep])
-            if "region_split" in table.column_names:
-                out_cols["region_split"] = pa.array([table["region_split"].to_pylist()[i] for i in keep])
+            out_cols["lens_model"] = pa.array([lens_model[i] for i in keep])
+            if "region_split" in tm.column_names:
+                out_cols["region_split"] = pa.array([tm["region_split"].to_pylist()[i] for i in keep])
             out_cols["y_true"] = pa.array(label_keep, type=pa.int8())
             out_cols["model_logit"] = pa.array(logit_out, type=pa.float32())
             out_cols["model_score"] = pa.array(score_out, type=pa.float32())
 
-            out_table = pa.table(out_cols)
+            table = pa.table(out_cols)
 
-            # Write output
-            part = f"part-shard{shard_idx:05d}-rg{rg:03d}.parquet"
-            out_path = out_root + "/" + part
-            _write_parquet(out_path, out_table)
-            total_rows += out_table.num_rows
+            # Write one file per shard-rowgroup to avoid huge single file
+            if write_as_dataset:
+                part = f"part-shard{shard_idx:05d}-rg{rg:03d}.parquet"
+                out_path = out_root + "/" + part
+            else:
+                # If user requested a single file, append shard/rg suffix to avoid overwriting
+                root_dir = os.path.dirname(out_root)
+                base = os.path.basename(out_root).replace(".parquet", "")
+                out_path = os.path.join(root_dir, f"{base}-shard{shard_idx:05d}-rg{rg:03d}.parquet")
+
+            _write_parquet(out_path, table)
+            total_rows += table.num_rows
 
         if shard_idx % 50 == 0:
-            print(f"[INFO] processed shard={shard_idx}/{len(parquet_files)} total_rows_written={total_rows}")
+            print(f"[INFO] processed shard={shard_idx}/{len(pairs)} total_rows_written={total_rows}")
 
     print(f"[DONE] total_rows_written={total_rows} out={args.out}")
-    print(f"[INFO] Skipped rows: {skipped_counts}")
 
 
 if __name__ == "__main__":
