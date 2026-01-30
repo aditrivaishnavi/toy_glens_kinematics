@@ -54,7 +54,6 @@ from pyspark.sql import SparkSession, Row
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
 from pyspark.sql.window import Window
-from pyspark import StorageLevel
 
 # Optional runtime deps installed by bootstrap
 try:
@@ -195,6 +194,15 @@ def build_grid(name: str) -> List[InjectionConfig]:
         reff = [0.04, 0.06, 0.08, 0.12, 0.18, 0.25]
         e = [0.0, 0.2, 0.4]
         shear = [0.0, 0.02, 0.04]
+    elif name == "grid_sota":
+        # Extended theta_e grid for SOTA performance
+        # Focus on resolvable lenses: theta_e >= 0.5 arcsec (typical PSF FWHM ~ 1 arcsec)
+        # This ensures theta_e/PSF >= 0.5, making lenses morphologically detectable
+        theta = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5]
+        dmag = [0.5, 1.0, 1.5, 2.0]  # Source brightness relative to lens
+        reff = [0.06, 0.10, 0.15, 0.20]  # Source effective radius in arcsec
+        e = [0.0, 0.2, 0.4]  # Source ellipticity
+        shear = [0.0, 0.02, 0.04]  # External shear
     else:
         raise ValueError(f"Unknown grid name: {name}")
 
@@ -225,33 +233,6 @@ PIX_SCALE_ARCSEC = 0.262
 # =========================================================================
 AB_ZP_NMGY = 22.5  # AB zero-point for nanomaggies
 PIPELINE_VERSION = "phase4_pipeline_v1"
-
-# =========================================================================
-# QUALITY CUT CONSTANTS FOR PHASE 4d AND PHASE 5
-# =========================================================================
-# These define the "clean subset" used for baseline training and completeness.
-# Based on independent LLM review recommendations (2026-01-26).
-#
-# For Phase 5 training (baseline "clean subset"):
-#   - cutout_ok == 1 (already 100% after blacklist filtering)
-#   - arc_snr IS NOT NULL (for injections)
-#   - bad_pixel_frac <= QUALITY_CUT_BAD_PIXEL_FRAC
-#   - psf_fwhm_used_g > 0 AND psf_fwhm_used_r > 0 AND psf_fwhm_used_z > 0
-#
-# For Phase 4d completeness:
-#   - Report two curves: "all injections" and "clean subset"
-#   - Stratify by theta_e/psfsize_r bins (see QUALITY_CUT_RESOLUTION_BINS)
-#   - Stratify by psfsize_r, psfdepth_r, bad_pixel_frac, wise_brightmask_frac
-# =========================================================================
-
-QUALITY_CUT_BAD_PIXEL_FRAC = 0.2  # Max allowed bad_pixel_frac for clean subset
-
-# Resolution bins for completeness stratification (theta_e / psfsize_r)
-QUALITY_CUT_RESOLUTION_BINS = [0.0, 0.4, 0.6, 0.8, 1.0, float('inf')]
-QUALITY_CUT_RESOLUTION_LABELS = ['<0.4', '0.4-0.6', '0.6-0.8', '0.8-1.0', '>=1.0']
-
-# SNR threshold for "recovered" classification in completeness
-QUALITY_CUT_RECOVERY_SNR_THRESHOLD = 5.0
 
 # =========================================================================
 # DR10 MASKBITS (for filtering bad pixels in SNR calculation)
@@ -588,8 +569,7 @@ def render_unlensed_source(
     unit_flux = sersic_unit_total_flux(reff_arcsec=src_reff_arcsec, q=q_src, n=n)
     amp = float(src_total_flux_nmgy) / max(float(unit_flux), 1e-30)
 
-    # Use sersic_profile_Ie1 with correct parameters
-    img = amp * sersic_profile_Ie1(dx, dy, src_reff_arcsec, q_src, src_phi_rad, n=n)
+    img = amp * sersic_profile(dx, dy, src_reff_arcsec, n, src_e, src_phi_rad)
     img = img * (pixscale_arcsec ** 2)
 
     if psf_apply and psf_sigma_pix > 0:
@@ -1368,26 +1348,68 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
                     wtot = Window.partitionBy("selection_set_id", "region_split").orderBy(F.xxhash64(F.col("row_id"), F.lit(int(args.split_seed) + 1)))
                     tmp = tmp.withColumn("rn_tot", F.row_number().over(wtot)).filter(F.col("rn_tot") <= F.lit(per_split_target))
 
-                    # Control assignment: randomly mark control_frac of samples as controls
-                    # Controls have theta_e=0 (no injection) and serve as negative examples
+                    # =========================================================================
+                    # CONTROL SAMPLE STRATEGY
+                    # =========================================================================
+                    # --unpaired-controls 0 (default): Same galaxy, no lens injection
+                    #   - Controls use the SAME galaxy position as positives, just with theta_e=0
+                    #   - Easy for model: just needs to detect added flux/structure
+                    #
+                    # --unpaired-controls 1: Different galaxy positions (harder negatives)
+                    #   - Split galaxies into two disjoint pools: positives get injections,
+                    #     controls get cutouts from DIFFERENT positions
+                    #   - Controls matched by PSF/depth bin to ensure similar observing conditions
+                    #   - Much harder: model must learn lens morphology, not just "added flux"
+                    # =========================================================================
+                    use_unpaired = int(getattr(args, 'unpaired_controls', 0)) == 1
+                    
+                    # Deterministic hash to split galaxies into positive vs control pools
                     ctrl_hash = F.xxhash64(F.col("row_id"), F.col("brickname"), F.col("region_split"), F.lit("train"), F.lit(int(args.split_seed) + 7003))
                     ctrl_u = (F.pmod(F.abs(ctrl_hash), F.lit(1_000_000)) / F.lit(1_000_000.0))
                     tmp = tmp.withColumn("is_control", (ctrl_u < F.lit(control_frac)).cast("int"))
                     
-                    # Assign each galaxy ONE config (via modulo hash) - NOT crossJoin!
-                    # This gives variety without the O(n×m) explosion of debug/grid tiers
-                    tmp = tmp.withColumn("cfg_idx", (F.pmod(F.abs(F.col("row_id")), F.lit(n_cfg))).cast("int"))
-
-                    cfg_df2 = cfg_df.withColumn("cfg_idx", F.row_number().over(Window.orderBy("config_id")) - 1)
-                    tasks = tmp.join(F.broadcast(cfg_df2), on="cfg_idx", how="left")
-
-                    # For control samples, zero out all injection parameters
-                    # theta_e=0 means no lensing arc will be injected
-                    tasks = tasks.withColumn("theta_e_arcsec", F.when(F.col("is_control") == 1, F.lit(0.0)).otherwise(F.col("theta_e_arcsec")))
-                    tasks = tasks.withColumn("src_dmag", F.when(F.col("is_control") == 1, F.lit(0.0)).otherwise(F.col("src_dmag")))
-                    tasks = tasks.withColumn("src_reff_arcsec", F.when(F.col("is_control") == 1, F.lit(0.0)).otherwise(F.col("src_reff_arcsec")))
-                    tasks = tasks.withColumn("src_e", F.when(F.col("is_control") == 1, F.lit(0.0)).otherwise(F.col("src_e")))
-                    tasks = tasks.withColumn("shear", F.when(F.col("is_control") == 1, F.lit(0.0)).otherwise(F.col("shear")))
+                    if use_unpaired:
+                        # =====================================================================
+                        # UNPAIRED CONTROLS: Use different galaxies for positives vs controls
+                        # =====================================================================
+                        # Split into positives (with injection) and controls (no injection, diff galaxy)
+                        positives = tmp.filter(F.col("is_control") == 0)
+                        controls = tmp.filter(F.col("is_control") == 1)
+                        
+                        # Assign each positive galaxy ONE config
+                        positives = positives.withColumn("cfg_idx", (F.pmod(F.abs(F.col("row_id")), F.lit(n_cfg))).cast("int"))
+                        cfg_df2 = cfg_df.withColumn("cfg_idx", F.row_number().over(Window.orderBy("config_id")) - 1)
+                        positives = positives.join(F.broadcast(cfg_df2), on="cfg_idx", how="left")
+                        
+                        # Controls: no injection params needed, just the cutout
+                        # Add placeholder config columns for schema compatibility
+                        controls = controls.withColumn("config_id", F.lit("CONTROL"))
+                        controls = controls.withColumn("theta_e_arcsec", F.lit(0.0))
+                        controls = controls.withColumn("src_dmag", F.lit(0.0))
+                        controls = controls.withColumn("src_reff_arcsec", F.lit(0.0))
+                        controls = controls.withColumn("src_e", F.lit(0.0))
+                        controls = controls.withColumn("shear", F.lit(0.0))
+                        controls = controls.withColumn("cfg_idx", F.lit(-1))
+                        
+                        # Union positives and controls
+                        tasks = positives.unionByName(controls, allowMissingColumns=True)
+                    else:
+                        # =====================================================================
+                        # PAIRED CONTROLS (default): Same galaxy, just no injection
+                        # =====================================================================
+                        # Assign each galaxy ONE config (via modulo hash) - NOT crossJoin!
+                        # This gives variety without the O(n×m) explosion of debug/grid tiers
+                        tmp = tmp.withColumn("cfg_idx", (F.pmod(F.abs(F.col("row_id")), F.lit(n_cfg))).cast("int"))
+                        cfg_df2 = cfg_df.withColumn("cfg_idx", F.row_number().over(Window.orderBy("config_id")) - 1)
+                        tasks = tmp.join(F.broadcast(cfg_df2), on="cfg_idx", how="left")
+                        
+                        # For control samples, zero out all injection parameters
+                        # theta_e=0 means no lensing arc will be injected
+                        tasks = tasks.withColumn("theta_e_arcsec", F.when(F.col("is_control") == 1, F.lit(0.0)).otherwise(F.col("theta_e_arcsec")))
+                        tasks = tasks.withColumn("src_dmag", F.when(F.col("is_control") == 1, F.lit(0.0)).otherwise(F.col("src_dmag")))
+                        tasks = tasks.withColumn("src_reff_arcsec", F.when(F.col("is_control") == 1, F.lit(0.0)).otherwise(F.col("src_reff_arcsec")))
+                        tasks = tasks.withColumn("src_e", F.when(F.col("is_control") == 1, F.lit(0.0)).otherwise(F.col("src_e")))
+                        tasks = tasks.withColumn("shear", F.when(F.col("is_control") == 1, F.lit(0.0)).otherwise(F.col("shear")))
 
                 # Replicates
                 reps = int(max(1, args.replicates))
@@ -1555,7 +1577,7 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
                 tasks_out = tasks.select(*keep)
 
                 # Write parquet + CSV for convenience
-                tasks_out.write.mode("overwrite").option("compression", "gzip").parquet(out_path)
+                tasks_out.write.mode("overwrite").parquet(out_path)
 
                 csv_path = f"{out_path}_csv"
                 # For train tier (large manifests), avoid coalesce(1) bottleneck
@@ -1577,7 +1599,7 @@ def stage_4a_build_manifests(spark: SparkSession, args: argparse.Namespace) -> N
         df_all = dfm if df_all is None else df_all.unionByName(dfm)
 
     bricks_out = f"{out_root}/bricks_manifest"
-    df_all.write.mode("overwrite").option("compression", "gzip").parquet(bricks_out)
+    df_all.write.mode("overwrite").parquet(bricks_out)
     df_all.coalesce(1).write.mode("overwrite").option("header", True).csv(f"{bricks_out}_csv")
 
     print(f"[4a] Done. Output root: {out_root}")
@@ -1817,16 +1839,10 @@ def stage_4b_cache_coadds(spark: SparkSession, args: argparse.Namespace) -> None
 
     rdd = df_bricks.repartition(int(args.cache_partitions)).rdd.mapPartitions(_proc_partition)
     df_out = spark.createDataFrame(rdd, schema=schema)
-    
-    # Persist to avoid recomputing mapPartitions for both parquet and CSV writes
-    df_out.persist(StorageLevel.MEMORY_AND_DISK)
 
     out_path = f"{out_root}/assets_manifest"
-    df_out.write.mode("overwrite").option("compression", "gzip").parquet(out_path)
+    df_out.write.mode("overwrite").parquet(out_path)
     df_out.coalesce(1).write.mode("overwrite").option("header", True).csv(f"{out_path}_csv")
-    
-    # Release persisted DataFrame
-    df_out.unpersist()
 
     # Stage config
     cfg = {
@@ -1877,13 +1893,9 @@ def _read_fits_from_s3(s3_uri: str) -> Tuple[np.ndarray, object]:
 
 
 def _cutout(data: np.ndarray, x: float, y: float, size: int) -> Tuple[np.ndarray, bool]:
-    # Guard against None data (e.g., failed coadd load)
-    if data is None:
-        return None, False
     half = size // 2
-    # Convert numpy 0-d arrays to Python floats before round()
-    x0 = int(round(float(x))) - half
-    y0 = int(round(float(y))) - half
+    x0 = int(round(x)) - half
+    y0 = int(round(y)) - half
     x1 = x0 + size
     y1 = y0 + size
     ok = True
@@ -1986,16 +1998,12 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
         T.StructField("stamp_npz", T.BinaryType(), True),  # Nullable for metrics-only mode
         T.StructField("cutout_ok", T.IntegerType(), False),
         T.StructField("arc_snr", T.DoubleType(), True),
-        T.StructField("total_injected_flux_r", T.DoubleType(), True),  # Total r-band flux (should increase with theta_e)
         T.StructField("bad_pixel_frac", T.DoubleType(), True),  # Fraction of masked/bad pixels in stamp
         T.StructField("wise_brightmask_frac", T.DoubleType(), True),  # Fraction affected by WISE bright-star mask
         T.StructField("metrics_ok", T.IntegerType(), True),  # 1 if all metrics computed successfully
         T.StructField("psf_fwhm_used_g", T.DoubleType(), True),  # Actual PSF FWHM used for g-band injection
         T.StructField("psf_fwhm_used_r", T.DoubleType(), True),  # Actual PSF FWHM used for r-band injection
         T.StructField("psf_fwhm_used_z", T.DoubleType(), True),  # Actual PSF FWHM used for z-band injection
-        T.StructField("psf_source_g", T.IntegerType(), True),  # PSF source: 0=map, 1=manifest, 2=fallback_r
-        T.StructField("psf_source_r", T.IntegerType(), True),  # PSF source: 0=map, 1=manifest, 2=fallback_r
-        T.StructField("psf_source_z", T.IntegerType(), True),  # PSF source: 0=map, 1=manifest, 2=fallback_r
         T.StructField("metrics_only", T.IntegerType(), False),  # Track if stamp was skipped
         # Lens model provenance (for dataset consistency checks)
         T.StructField("lens_model", T.StringType(), True),  # "SIE", "SIS", or "CONTROL"
@@ -2150,15 +2158,10 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
 
                 add_r = None
                 arc_snr = None
-                total_injected_flux_r = None
                 # Track actual PSF FWHM used (for provenance/reproducibility)
                 psf_fwhm_used_g = None
                 psf_fwhm_used_r = None
                 psf_fwhm_used_z = None
-                # Track PSF source: 0=map, 1=manifest, 2=fallback_r
-                psf_source_g = None
-                psf_source_r = None
-                psf_source_z = None
                 physics_metrics = {
                     "magnification": None,
                     "tangential_stretch": None,
@@ -2176,46 +2179,26 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     # PSF FWHM at the stamp center. Otherwise fall back to manifest brick-average.
                     # =========================================================================
                     
-                    # PSF source encoding: 0=map, 1=manifest, 2=fallback_r
-                    PSF_SOURCE_MAP = 0
-                    PSF_SOURCE_MANIFEST = 1
-                    PSF_SOURCE_FALLBACK_R = 2
-                    
                     def _get_psf_fwhm_at_center(cur_dict, band, px, py, manifest_fwhm):
-                        """Get PSF FWHM at stamp center from psfsize map, or use manifest value.
-                        Returns (fwhm_value, source_code) where source_code is:
-                          0 = from psfsize map at pixel
-                          1 = from manifest brick-average
-                        """
+                        """Get PSF FWHM at stamp center from psfsize map, or use manifest value."""
                         psfsize_map = cur_dict.get(f"psfsize_{band}")
                         if psfsize_map is not None:
-                            # Convert numpy 0-d arrays to Python floats before round()
-                            ix, iy = int(round(float(px))), int(round(float(py)))
+                            ix, iy = int(round(px)), int(round(py))
                             if 0 <= iy < psfsize_map.shape[0] and 0 <= ix < psfsize_map.shape[1]:
                                 val = float(psfsize_map[iy, ix])
                                 if np.isfinite(val) and val > 0:
-                                    return val, PSF_SOURCE_MAP
-                        return manifest_fwhm, PSF_SOURCE_MANIFEST
+                                    return val
+                        return manifest_fwhm
                     
                     # Get per-band PSF sizes using center-evaluated psfsize maps
                     # Fall back to manifest brick-average if maps not available
-                    # NOTE: Some bricks have psfsize_g=0 (no g-band coverage), so check for >0 as well
-                    manifest_fwhm_r = float(r["psfsize_r"]) if (r["psfsize_r"] is not None and r["psfsize_r"] > 0) else 1.4
-                    manifest_fwhm_g = float(r["psfsize_g"]) if (r["psfsize_g"] is not None and r["psfsize_g"] > 0) else manifest_fwhm_r
-                    manifest_fwhm_z = float(r["psfsize_z"]) if (r["psfsize_z"] is not None and r["psfsize_z"] > 0) else manifest_fwhm_r
+                    manifest_fwhm_r = float(r["psfsize_r"]) if r["psfsize_r"] is not None else 1.4
+                    manifest_fwhm_g = float(r["psfsize_g"]) if r["psfsize_g"] is not None else manifest_fwhm_r
+                    manifest_fwhm_z = float(r["psfsize_z"]) if r["psfsize_z"] is not None else manifest_fwhm_r
                     
-                    psf_fwhm_r, psf_source_r = _get_psf_fwhm_at_center(cur, "r", x, y, manifest_fwhm_r)
-                    psf_fwhm_g, psf_source_g = _get_psf_fwhm_at_center(cur, "g", x, y, manifest_fwhm_g)
-                    psf_fwhm_z, psf_source_z = _get_psf_fwhm_at_center(cur, "z", x, y, manifest_fwhm_z)
-                    
-                    # Secondary fallback: if g or z PSF is still <=0 (no coverage), use r-band
-                    # This handles the edge case where both psfsize map AND manifest are 0
-                    if psf_fwhm_g <= 0:
-                        psf_fwhm_g = psf_fwhm_r
-                        psf_source_g = PSF_SOURCE_FALLBACK_R
-                    if psf_fwhm_z <= 0:
-                        psf_fwhm_z = psf_fwhm_r
-                        psf_source_z = PSF_SOURCE_FALLBACK_R
+                    psf_fwhm_r = _get_psf_fwhm_at_center(cur, "r", x, y, manifest_fwhm_r)
+                    psf_fwhm_g = _get_psf_fwhm_at_center(cur, "g", x, y, manifest_fwhm_g)
+                    psf_fwhm_z = _get_psf_fwhm_at_center(cur, "z", x, y, manifest_fwhm_z)
                     
                     # Store for output provenance
                     psf_fwhm_used_g = psf_fwhm_g
@@ -2284,17 +2267,13 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                             snr = np.where((sigma > 0) & good_mask, add_r / (sigma + 1e-12), 0.0)
                             arc_snr = float(np.nanmax(snr))
                     
-                    # Total injected flux in r-band (should increase with theta_e due to magnification)
-                    total_injected_flux_r = float(np.sum(add_r)) if add_r is not None else None
-                    
-                    # =========================================================================
+                                        # =========================================================================
                     # Flux-based magnification proxy (stamp-limited):
                     # Compare total injected flux of the lensed source to the total flux of the unlensed source
                     # rendered on the same stamp with the same PSF. This preserves the "do not renormalize"
                     # requirement and avoids unstable Jacobian evaluation near the critical curve.
                     # =========================================================================
-                    # NOTE: Only compute if add_r is not None (injection was actually rendered)
-                    if theta_e > 0 and add_r is not None:
+                    if theta_e > 0:
                         try:
                             # Compute flux-based magnification proxy
                             # NOTE: Variable names fixed 2026-01-24:
@@ -2377,16 +2356,12 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     stamp_npz=stamp_npz,
                     cutout_ok=int(bool(cut_ok_all)),
                     arc_snr=arc_snr,
-                    total_injected_flux_r=total_injected_flux_r,
                     bad_pixel_frac=bad_pixel_frac,
                     wise_brightmask_frac=wise_brightmask_frac,
                     metrics_ok=int(mask_valid and cut_ok_all and arc_snr is not None) if theta_e > 0 else int(mask_valid and cut_ok_all),
                     psf_fwhm_used_g=psf_fwhm_used_g,
                     psf_fwhm_used_r=psf_fwhm_used_r,
                     psf_fwhm_used_z=psf_fwhm_used_z,
-                    psf_source_g=psf_source_g,
-                    psf_source_r=psf_source_r,
-                    psf_source_z=psf_source_z,
                     metrics_only=int(metrics_only),
                     lens_model=lens_model_str,
                     lens_e=lens_e_val,
@@ -2401,7 +2376,6 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
 
             except Exception as e:
                 # Emit a row with cutout_ok=0 and an empty stamp to keep accounting consistent
-                # MUST include ALL 53 schema fields to avoid ValueError on Row length mismatch
                 if metrics_only:
                     empty = None  # Don't store stamp in metrics-only mode
                 else:
@@ -2426,34 +2400,18 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     src_e=float(r["src_e"]),
                     shear=float(r["shear"]),
                     replicate=int(r["replicate"]),
-                    is_control=int(r["is_control"]) if r["is_control"] is not None else 0,
-                    task_seed64=int(r["task_seed64"]) if r["task_seed64"] is not None else None,
-                    src_x_arcsec=float(r["src_x_arcsec"]) if r["src_x_arcsec"] is not None else 0.0,
-                    src_y_arcsec=float(r["src_y_arcsec"]) if r["src_y_arcsec"] is not None else 0.0,
-                    src_phi_rad=float(r["src_phi_rad"]) if r["src_phi_rad"] is not None else 0.0,
-                    shear_phi_rad=float(r["shear_phi_rad"]) if r["shear_phi_rad"] is not None else 0.0,
-                    src_gr=float(r["src_gr"]) if r["src_gr"] is not None else 0.0,
-                    src_rz=float(r["src_rz"]) if r["src_rz"] is not None else 0.0,
-                    psf_bin=int(r["psf_bin"]) if r["psf_bin"] is not None else None,
-                    depth_bin=int(r["depth_bin"]) if r["depth_bin"] is not None else None,
-                    ab_zp_nmgy=float(AB_ZP_NMGY),
-                    pipeline_version=str(PIPELINE_VERSION),
                     psfsize_r=float(r["psfsize_r"]) if r["psfsize_r"] is not None else None,
                     psfdepth_r=float(r["psfdepth_r"]) if r["psfdepth_r"] is not None else None,
                     ebv=float(r["ebv"]) if r["ebv"] is not None else None,
                     stamp_npz=empty,
                     cutout_ok=0,
                     arc_snr=None,
-                    total_injected_flux_r=None,
                     bad_pixel_frac=None,
                     wise_brightmask_frac=None,
                     metrics_ok=0,
                     psf_fwhm_used_g=None,
                     psf_fwhm_used_r=None,
                     psf_fwhm_used_z=None,
-                    psf_source_g=None,
-                    psf_source_r=None,
-                    psf_source_z=None,
                     metrics_only=int(metrics_only),
                     lens_model=str(r["lens_model"]) if r["lens_model"] is not None else "CONTROL",
                     lens_e=float(r["lens_e"]) if r["lens_e"] is not None else None,
@@ -2468,42 +2426,29 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
 
     rdd = df_tasks.rdd.mapPartitions(_proc_partition)
     df_out = spark.createDataFrame(rdd, schema=stamps_schema)
-    
-    # Persist to avoid recomputing mapPartitions for both stamps and metrics writes
-    df_out.persist(StorageLevel.MEMORY_AND_DISK)
 
     out_path = f"{out_root}/stamps/{args.experiment_id}"
-    df_out.write.mode("overwrite").option("compression", "gzip").partitionBy("region_split").parquet(out_path)
+    df_out.write.mode("overwrite").partitionBy("region_split").parquet(out_path)
 
-    # Metrics-only table (derived from persisted df_out)
-    # Metrics table: ALL columns EXCEPT stamp_npz (binary image data)
-    # This provides complete metadata for analysis without the heavy binary payload
-    metrics = df_out.drop("stamp_npz")
+    # Metrics-only table
+    metrics = df_out.select(
+        "task_id", "experiment_id", "selection_set_id", "ranking_mode", "selection_strategy",
+        "region_id", "region_split", "brickname",
+        "config_id", "theta_e_arcsec", "src_dmag", "src_reff_arcsec", "src_e", "shear", "replicate",
+        "cutout_ok", "arc_snr", "psfsize_r", "psfdepth_r", "ebv",
+    )
     met_path = f"{out_root}/metrics/{args.experiment_id}"
-    metrics.write.mode("overwrite").option("compression", "gzip").partitionBy("region_split").parquet(met_path)
-    
-    # Release persisted DataFrame
-    df_out.unpersist()
+    metrics.write.mode("overwrite").partitionBy("region_split").parquet(met_path)
 
     cfg = {
         "stage": "4c",
-        "pipeline_version": PIPELINE_VERSION,
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "variant": args.variant,
         "output_s3": args.output_s3,
         "experiment_id": args.experiment_id,
-        "inputs": {
-            "manifest": in_path,
-            "manifests_subdir": manifests_subdir,
-            "coadd_s3_cache_prefix": args.coadd_s3_cache_prefix,
-        },
+        "inputs": {"manifest": in_path, "coadd_s3_cache_prefix": args.coadd_s3_cache_prefix},
         "bands": bands,
-        "psf": {
-            "use_psfsize_maps": bool(args.use_psfsize_maps),
-        },
-        "output_mode": {
-            "metrics_only": bool(args.metrics_only),
-        },
+        "src_flux_scale": float(args.src_flux_scale),
         "spark": {"sweep_partitions": int(args.sweep_partitions)},
         "idempotency": {"skip_if_exists": int(args.skip_if_exists), "force": int(args.force)},
     }
@@ -2518,399 +2463,63 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
 
 
 # --------------------------
-# Stage 4d: Publication-Grade Completeness Estimation
+# Stage 4d: Completeness summaries
 # --------------------------
-# Key improvements over initial implementation:
-# 1. Filters to INJECTIONS ONLY (controls excluded from completeness)
-# 2. Explicit accounting: attempted → valid → recovered
-# 3. Wilson confidence intervals for completeness estimates
-# 4. Two subsets: "all" and "clean" (quality-cut based)
-# 5. Region-level variance output for cosmic variance proxy
-# 6. PSF provenance summary for methods documentation
-# --------------------------
-
-def _wilson_ci(k: int, n: int, z: float = 1.96) -> Tuple[float, float]:
-    """
-    Wilson score confidence interval for binomial proportion.
-    
-    Args:
-        k: Number of successes
-        n: Number of trials
-        z: Z-score (1.96 for 95% CI, 2.576 for 99%)
-    
-    Returns:
-        (lower_bound, upper_bound) tuple
-    """
-    import math
-    if n == 0:
-        return (0.0, 0.0)
-    p = k / n
-    denom = 1 + z**2 / n
-    center = (p + z**2 / (2 * n)) / denom
-    margin = z * math.sqrt(p * (1 - p) / n + z**2 / (4 * n**2)) / denom
-    return (max(0.0, center - margin), min(1.0, center + margin))
-
 
 def stage_4d_completeness(spark: SparkSession, args: argparse.Namespace) -> None:
-    """
-    Publication-grade completeness estimation with uncertainty quantification.
-    
-    Outputs:
-    - completeness_surfaces/{exp_id}/: Detailed completeness per bin with CI
-    - completeness_surfaces_region_agg/{exp_id}/: Mean/std across regions
-    - psf_provenance/{exp_id}/: PSF source count tables
-    """
     out_root = f"{args.output_s3.rstrip('/')}/phase4d/{args.variant}"
+    # NOTE: Per-experiment checks happen via --experiment-id.
+    # Do NOT skip entire stage based on output dir existing.
 
     if not args.experiment_id:
         raise ValueError("--experiment-id is required for stage 4d")
 
-    # =========================================================================
-    # CONFIGURATION
-    # =========================================================================
     met_path = f"{args.output_s3.rstrip('/')}/phase4c/{args.variant}/metrics/{args.experiment_id}"
+    df = read_parquet_safe(spark, met_path)
+
+    # Recovery proxy
     snr_th = float(args.recovery_snr_thresh)
     sep_th = float(args.recovery_theta_over_psf)
-    bad_pixel_max = float(args.quality_bad_pixel_max)
-    wise_max = float(args.quality_wise_max)
-    psf_bin_width = float(args.psfsize_bin_width)
-    depth_bin_width = float(args.psfdepth_bin_width)
-    ci_z = float(args.ci_z)
-    
-    print(f"[4d] Reading metrics from: {met_path}")
-    print(f"[4d] Recovery thresholds: SNR >= {snr_th}, theta/PSF >= {sep_th}")
-    print(f"[4d] Clean subset: bad_pixel_frac <= {bad_pixel_max}, wise_brightmask_frac <= {wise_max}")
-    
-    df_raw = read_parquet_safe(spark, met_path)
-    
-    # =========================================================================
-    # STEP 1: FILTER TO INJECTIONS ONLY
-    # =========================================================================
-    # Controls (theta_e=0, lens_model=CONTROL) should NOT be in completeness
-    # denominator. They would artificially deflate completeness since they
-    # can never be "recovered" by definition.
-    # =========================================================================
-    df = df_raw.filter(
-        (F.col("lens_model") != "CONTROL") & 
-        (F.col("theta_e_arcsec") > 0)
-    )
-    
-    n_total_raw = df_raw.count()
-    n_injections = df.count()
-    print(f"[4d] Total rows in metrics: {n_total_raw:,}")
-    print(f"[4d] Injections (after filtering controls): {n_injections:,}")
-    
-    # =========================================================================
-    # STEP 2: ADD DERIVED COLUMNS
-    # =========================================================================
-    # Resolution: theta_e / PSF
-    # Use per-stamp PSF from injection (psf_fwhm_used_r) when present,
-    # fall back to manifest-level psfsize_r for compatibility.
-    # This ensures consistency: theta_over_psf uses the same PSF that was
-    # used to convolve the injected arc in Phase 4c.
-    psf_for_resolution = F.coalesce(F.col("psf_fwhm_used_r"), F.col("psfsize_r"))
-    
+
+    df = df.withColumn("theta_over_psf", F.when(F.col("psfsize_r").isNotNull() & (F.col("psfsize_r") > 0), F.col("theta_e_arcsec") / F.col("psfsize_r")).otherwise(F.lit(None)))
     df = df.withColumn(
-        "theta_over_psf", 
-        F.when(
-            (psf_for_resolution.isNotNull()) & (psf_for_resolution > 0), 
-            F.col("theta_e_arcsec") / psf_for_resolution
-        ).otherwise(F.lit(None).cast("double"))
+        "recovered",
+        ((F.col("cutout_ok") == 1) & (F.col("theta_e_arcsec") > 0) & (F.col("arc_snr") >= F.lit(snr_th)) & (F.col("theta_over_psf") >= F.lit(sep_th))).cast("int"),
     )
-    
-    # Resolution bins using quality cut constants
-    df = df.withColumn("resolution_bin",
-        F.when(F.col("theta_over_psf").isNull(), F.lit(None).cast("string"))
-        .when(F.col("theta_over_psf") < 0.4, F.lit("<0.4"))
-        .when(F.col("theta_over_psf") < 0.6, F.lit("0.4-0.6"))
-        .when(F.col("theta_over_psf") < 0.8, F.lit("0.6-0.8"))
-        .when(F.col("theta_over_psf") < 1.0, F.lit("0.8-1.0"))
-        .otherwise(F.lit(">=1.0"))
-    )
-    
-    # Observing condition bins
-    # PSF bin uses same PSF variable as theta_over_psf for consistency
-    df = df.withColumn("psf_bin", 
-        F.when((psf_for_resolution.isNotNull()) & (psf_for_resolution > 0),
-               F.floor(psf_for_resolution / F.lit(psf_bin_width)).cast("int"))
-        .otherwise(F.lit(None).cast("int"))
-    )
-    # Depth bin remains based on manifest psfdepth_r (no per-pixel depth maps in 4c)
-    df = df.withColumn("depth_bin", 
-        F.when((F.col("psfdepth_r").isNotNull()) & (F.col("psfdepth_r") > 0),
-               F.floor(F.col("psfdepth_r") / F.lit(depth_bin_width)).cast("int"))
-        .otherwise(F.lit(None).cast("int"))
-    )
-    
-    # =========================================================================
-    # STEP 3: ADD VALIDITY AND RECOVERY FLAGS
-    # =========================================================================
-    # IMPORTANT: Use when().otherwise(0) instead of .cast("int") to prevent
-    # NULL leakage. If any term in a boolean expression is NULL, the result
-    # is NULL, and .cast("int") stays NULL. Spark's sum() ignores NULLs,
-    # which can cause undercounting. Using otherwise(0) forces explicit 0/1.
-    # =========================================================================
-    
-    # Valid: cutout_ok=1 and arc_snr is not null and theta_over_psf is not null
-    valid_all_expr = (
-        (F.col("cutout_ok") == 1) & 
-        F.col("arc_snr").isNotNull() &
-        F.col("theta_over_psf").isNotNull()
-    )
-    df = df.withColumn("valid_all", 
-        F.when(valid_all_expr, F.lit(1)).otherwise(F.lit(0))
-    )
-    
-    # Clean: valid + passes quality cuts (with explicit NULL checks)
-    valid_clean_expr = (
-        valid_all_expr &
-        F.col("bad_pixel_frac").isNotNull() &
-        F.col("wise_brightmask_frac").isNotNull() &
-        (F.col("bad_pixel_frac") <= F.lit(bad_pixel_max)) &
-        (F.col("wise_brightmask_frac") <= F.lit(wise_max))
-    )
-    df = df.withColumn("valid_clean",
-        F.when(valid_clean_expr, F.lit(1)).otherwise(F.lit(0))
-    )
-    
-    # Diagnostic: recovered by SNR criterion only (valid + SNR >= threshold)
-    recovered_snr_only_expr = (
-        valid_all_expr &
-        (F.col("arc_snr") >= F.lit(snr_th))
-    )
-    df = df.withColumn("recovered_snr_only",
-        F.when(recovered_snr_only_expr, F.lit(1)).otherwise(F.lit(0))
-    )
-    
-    # Diagnostic: recovered by resolution criterion only (valid + theta/PSF >= threshold)
-    recovered_res_only_expr = (
-        valid_all_expr &
-        (F.col("theta_over_psf") >= F.lit(sep_th))
-    )
-    df = df.withColumn("recovered_res_only",
-        F.when(recovered_res_only_expr, F.lit(1)).otherwise(F.lit(0))
-    )
-    
-    # Recovered: valid + passes BOTH SNR and resolution thresholds
-    recovered_all_expr = (
-        valid_all_expr & 
-        (F.col("arc_snr") >= F.lit(snr_th)) & 
-        (F.col("theta_over_psf") >= F.lit(sep_th))
-    )
-    df = df.withColumn("recovered_all",
-        F.when(recovered_all_expr, F.lit(1)).otherwise(F.lit(0))
-    )
-    
-    # Recovered clean: clean + passes thresholds
-    recovered_clean_expr = (
-        valid_clean_expr & 
-        (F.col("arc_snr") >= F.lit(snr_th)) & 
-        (F.col("theta_over_psf") >= F.lit(sep_th))
-    )
-    df = df.withColumn("recovered_clean",
-        F.when(recovered_clean_expr, F.lit(1)).otherwise(F.lit(0))
-    )
-    
-    # =========================================================================
-    # PERSIST BEFORE MULTIPLE AGGREGATIONS
-    # =========================================================================
-    df.persist(StorageLevel.MEMORY_AND_DISK)
-    
-    # =========================================================================
-    # STEP 4: COMPLETENESS SURFACE (with region_id for variance)
-    # =========================================================================
-    grp_cols = [
-        "region_split", "region_id", "selection_set_id", "ranking_mode",
-        "theta_e_arcsec", "src_dmag", "src_reff_arcsec",
-        "psf_bin", "depth_bin", "resolution_bin",
-    ]
-    
-    grp = df.groupBy(*grp_cols).agg(
-        F.count(F.lit(1)).alias("n_attempt"),
-        F.sum("valid_all").alias("n_valid_all"),
-        F.sum("valid_clean").alias("n_valid_clean"),
-        F.sum("recovered_all").alias("n_recovered_all"),
-        F.sum("recovered_clean").alias("n_recovered_clean"),
-        # Diagnostic: which criterion is limiting recovery?
-        F.sum("recovered_snr_only").alias("n_recovered_snr_only"),
-        F.sum("recovered_res_only").alias("n_recovered_res_only"),
+
+    # Bin observing conditions (coarse)
+    df = df.withColumn("psf_bin", F.floor(F.col("psfsize_r") * 10).cast("int"))
+    df = df.withColumn("depth_bin", F.floor(F.col("psfdepth_r") * 2).cast("int"))
+
+    grp = df.groupBy(
+        "region_split", "selection_set_id", "ranking_mode",
+        "theta_e_arcsec", "src_dmag", "src_reff_arcsec", "src_e", "shear",
+        "psf_bin", "depth_bin",
+    ).agg(
+        F.count(F.lit(1)).alias("n"),
+        F.sum("recovered").alias("n_recovered"),
         F.avg("arc_snr").alias("arc_snr_mean"),
         F.expr("percentile_approx(arc_snr, 0.5)").alias("arc_snr_p50"),
-        F.avg("theta_over_psf").alias("theta_over_psf_mean"),
     )
-    
-    # Completeness ratios
-    grp = grp.withColumn("completeness_valid_all", 
-        F.when(F.col("n_valid_all") > 0, F.col("n_recovered_all") / F.col("n_valid_all")).otherwise(F.lit(None))
-    )
-    grp = grp.withColumn("completeness_valid_clean",
-        F.when(F.col("n_valid_clean") > 0, F.col("n_recovered_clean") / F.col("n_valid_clean")).otherwise(F.lit(None))
-    )
-    grp = grp.withColumn("completeness_overall_all",
-        F.when(F.col("n_attempt") > 0, F.col("n_recovered_all") / F.col("n_attempt")).otherwise(F.lit(None))
-    )
-    grp = grp.withColumn("completeness_overall_clean",
-        F.when(F.col("n_attempt") > 0, F.col("n_recovered_clean") / F.col("n_attempt")).otherwise(F.lit(None))
-    )
-    
-    # Valid fraction (data quality metric)
-    grp = grp.withColumn("valid_frac_all",
-        F.when(F.col("n_attempt") > 0, F.col("n_valid_all") / F.col("n_attempt")).otherwise(F.lit(None))
-    )
-    grp = grp.withColumn("valid_frac_clean",
-        F.when(F.col("n_attempt") > 0, F.col("n_valid_clean") / F.col("n_attempt")).otherwise(F.lit(None))
-    )
-    
-    # =========================================================================
-    # STEP 5: WILSON CONFIDENCE INTERVALS (via pandas UDF)
-    # =========================================================================
-    # For efficiency, compute CI after aggregation using a Python UDF
-    @F.udf(T.StructType([
-        T.StructField("ci_low", T.DoubleType(), True),
-        T.StructField("ci_high", T.DoubleType(), True),
-    ]))
-    def wilson_ci_udf(k, n):
-        import math
-        if n is None or n == 0 or k is None:
-            return (None, None)
-        k, n = int(k), int(n)
-        z = ci_z
-        p = k / n
-        denom = 1 + z**2 / n
-        center = (p + z**2 / (2 * n)) / denom
-        margin = z * math.sqrt(p * (1 - p) / n + z**2 / (4 * n**2)) / denom
-        return (max(0.0, center - margin), min(1.0, center + margin))
-    
-    # Apply CI to valid_all completeness
-    grp = grp.withColumn("_ci_valid_all", wilson_ci_udf(F.col("n_recovered_all"), F.col("n_valid_all")))
-    grp = grp.withColumn("ci_low_valid_all", F.col("_ci_valid_all.ci_low"))
-    grp = grp.withColumn("ci_high_valid_all", F.col("_ci_valid_all.ci_high"))
-    grp = grp.drop("_ci_valid_all")
-    
-    # Apply CI to valid_clean completeness
-    grp = grp.withColumn("_ci_valid_clean", wilson_ci_udf(F.col("n_recovered_clean"), F.col("n_valid_clean")))
-    grp = grp.withColumn("ci_low_valid_clean", F.col("_ci_valid_clean.ci_low"))
-    grp = grp.withColumn("ci_high_valid_clean", F.col("_ci_valid_clean.ci_high"))
-    grp = grp.drop("_ci_valid_clean")
-    
-    # Write detailed completeness surface (with region_id)
-    surface_path = f"{out_root}/completeness_surfaces/{args.experiment_id}"
-    grp.write.mode("overwrite").option("compression", "gzip").partitionBy("region_split").parquet(surface_path)
-    print(f"[4d] Wrote completeness surface: {surface_path}")
-    
-    # =========================================================================
-    # STEP 6: REGION-AGGREGATED SURFACE (mean/std across regions)
-    # =========================================================================
-    # Remove region_id from grouping to aggregate across regions
-    agg_cols = [c for c in grp_cols if c != "region_id"]
-    
-    region_agg = grp.groupBy(*agg_cols).agg(
-        F.count(F.lit(1)).alias("n_regions"),
-        F.sum("n_attempt").alias("n_attempt_total"),
-        F.sum("n_valid_all").alias("n_valid_all_total"),
-        F.sum("n_valid_clean").alias("n_valid_clean_total"),
-        F.sum("n_recovered_all").alias("n_recovered_all_total"),
-        F.sum("n_recovered_clean").alias("n_recovered_clean_total"),
-        F.avg("completeness_valid_all").alias("completeness_valid_all_mean"),
-        F.stddev("completeness_valid_all").alias("completeness_valid_all_std"),
-        F.avg("completeness_valid_clean").alias("completeness_valid_clean_mean"),
-        F.stddev("completeness_valid_clean").alias("completeness_valid_clean_std"),
-        F.avg("arc_snr_mean").alias("arc_snr_mean"),
-        F.avg("arc_snr_p50").alias("arc_snr_p50"),
-    )
-    
-    # Overall completeness from totals
-    region_agg = region_agg.withColumn("completeness_valid_all_pooled",
-        F.when(F.col("n_valid_all_total") > 0, 
-               F.col("n_recovered_all_total") / F.col("n_valid_all_total")).otherwise(F.lit(None))
-    )
-    region_agg = region_agg.withColumn("completeness_valid_clean_pooled",
-        F.when(F.col("n_valid_clean_total") > 0, 
-               F.col("n_recovered_clean_total") / F.col("n_valid_clean_total")).otherwise(F.lit(None))
-    )
-    
-    # Wilson CI on pooled totals
-    region_agg = region_agg.withColumn("_ci_pooled_all", 
-        wilson_ci_udf(F.col("n_recovered_all_total"), F.col("n_valid_all_total")))
-    region_agg = region_agg.withColumn("ci_low_pooled_all", F.col("_ci_pooled_all.ci_low"))
-    region_agg = region_agg.withColumn("ci_high_pooled_all", F.col("_ci_pooled_all.ci_high"))
-    region_agg = region_agg.drop("_ci_pooled_all")
-    
-    region_agg = region_agg.withColumn("_ci_pooled_clean", 
-        wilson_ci_udf(F.col("n_recovered_clean_total"), F.col("n_valid_clean_total")))
-    region_agg = region_agg.withColumn("ci_low_pooled_clean", F.col("_ci_pooled_clean.ci_low"))
-    region_agg = region_agg.withColumn("ci_high_pooled_clean", F.col("_ci_pooled_clean.ci_high"))
-    region_agg = region_agg.drop("_ci_pooled_clean")
-    
-    region_agg_path = f"{out_root}/completeness_surfaces_region_agg/{args.experiment_id}"
-    region_agg.write.mode("overwrite").option("compression", "gzip").partitionBy("region_split").parquet(region_agg_path)
-    print(f"[4d] Wrote region-aggregated surface: {region_agg_path}")
-    
-    # =========================================================================
-    # STEP 7: PSF PROVENANCE SUMMARY
-    # =========================================================================
-    if args.write_psf_provenance:
-        psf_prov_root = f"{out_root}/psf_provenance/{args.experiment_id}"
-        
-        for band in ["g", "r", "z"]:
-            col = f"psf_source_{band}"
-            if col in df.columns:
-                psf_summary = df.groupBy(col).agg(
-                    F.count(F.lit(1)).alias("count"),
-                ).withColumn("band", F.lit(band))
-                
-                psf_path = f"{psf_prov_root}/psf_source_{band}"
-                psf_summary.coalesce(1).write.mode("overwrite").option("compression", "gzip").parquet(psf_path)
-                print(f"[4d] Wrote PSF provenance ({band}): {psf_path}")
-    
-    # =========================================================================
-    # CLEANUP
-    # =========================================================================
-    df.unpersist()
-    
-    # =========================================================================
-    # STAGE CONFIG
-    # =========================================================================
+
+    grp = grp.withColumn("completeness", F.col("n_recovered") / F.col("n"))
+
+    out_path = f"{out_root}/completeness/{args.experiment_id}"
+    grp.write.mode("overwrite").partitionBy("region_split").parquet(out_path)
+
     cfg = {
         "stage": "4d",
-        "pipeline_version": PIPELINE_VERSION,
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "variant": args.variant,
         "output_s3": args.output_s3,
         "experiment_id": args.experiment_id,
         "inputs": {"metrics": met_path},
-        "recovery": {
-            "snr_thresh": snr_th, 
-            "theta_over_psf": sep_th,
-        },
-        "quality_cuts": {
-            "bad_pixel_frac_max": bad_pixel_max,
-            "wise_brightmask_frac_max": wise_max,
-        },
-        "binning": {
-            "psfsize_bin_width": psf_bin_width,
-            "psfdepth_bin_width": depth_bin_width,
-        },
-        "confidence_interval": {
-            "method": "wilson",
-            "z_score": ci_z,
-            "coverage": "95%" if ci_z == 1.96 else ("99%" if ci_z == 2.576 else f"z={ci_z}"),
-        },
-        "counts": {
-            "total_raw": n_total_raw,
-            "injections": n_injections,
-        },
-        "outputs": {
-            "completeness_surfaces": surface_path,
-            "completeness_surfaces_region_agg": region_agg_path,
-            "psf_provenance": f"{psf_prov_root}/" if args.write_psf_provenance else None,
-        },
+        "recovery": {"snr_thresh": snr_th, "theta_over_psf": sep_th},
         "idempotency": {"skip_if_exists": int(args.skip_if_exists), "force": int(args.force)},
     }
     write_text_to_s3(f"{out_root}/_stage_config_{args.experiment_id}.json", json.dumps(cfg, indent=2))
-    
-    print(f"[4d] Done. Completeness surfaces written to: {surface_path}")
-    print(f"[4d] Region-aggregated surfaces: {region_agg_path}")
+
+    print(f"[4d] Done. Output: {out_path}")
 
 
 # --------------------------
@@ -2937,7 +2546,7 @@ def stage_4p5_compact(spark: SparkSession, args: argparse.Namespace) -> None:
     if n > 0:
         df = df.repartition(n)
 
-    df.write.mode("overwrite").option("compression", "gzip").parquet(args.compact_output_s3)
+    df.write.mode("overwrite").parquet(args.compact_output_s3)
 
     cfg = {
         "stage": "4p5",
@@ -2996,6 +2605,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Fraction of grid tier samples to mark as controls (theta_e=0)")
     p.add_argument("--control-frac-debug", type=float, default=0.0,
                    help="Fraction of debug tier samples to mark as controls (theta_e=0)")
+    p.add_argument("--unpaired-controls", type=int, default=0,
+                   help="If 1, use unpaired controls from DIFFERENT galaxy positions (harder negatives). "
+                        "If 0, controls use the same galaxy position without lens injection (easier).")
     p.add_argument("--max-total-tasks-soft", type=int, default=30_000_000,
                    help="Soft limit on total estimated tasks to catch accidental explosions. Set to 0 to disable.")
 
@@ -3041,23 +2653,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--use-sie", type=int, default=1,
                    help="DEPRECATED: Lens model is now read from manifest. Kept for backward compatibility.")
 
-    # Stage 4d - Publication-grade completeness estimation
-    p.add_argument("--recovery-snr-thresh", type=float, default=5.0,
-                   help="SNR threshold for recovery classification")
-    p.add_argument("--recovery-theta-over-psf", type=float, default=0.8,
-                   help="Resolution threshold (theta_e/psfsize_r) for recovery")
-    p.add_argument("--quality-bad-pixel-max", type=float, default=0.2,
-                   help="Max bad_pixel_frac for 'clean' subset")
-    p.add_argument("--quality-wise-max", type=float, default=0.2,
-                   help="Max wise_brightmask_frac for 'clean' subset")
-    p.add_argument("--psfsize-bin-width", type=float, default=0.1,
-                   help="PSF bin width in arcsec (e.g., 0.1 -> bins at 1.0, 1.1, 1.2...)")
-    p.add_argument("--psfdepth-bin-width", type=float, default=0.25,
-                   help="Depth bin width in mag (e.g., 0.25 -> bins at 24.0, 24.25, 24.5...)")
-    p.add_argument("--ci-z", type=float, default=1.96,
-                   help="Z-score for Wilson confidence intervals (1.96 = 95%)")
-    p.add_argument("--write-psf-provenance", type=int, default=1,
-                   help="If 1, write PSF source provenance summary tables")
+    # Stage 4d
+    p.add_argument("--recovery-snr-thresh", type=float, default=5.0)
+    p.add_argument("--recovery-theta-over-psf", type=float, default=0.8)
 
     # Stage 4p5
     p.add_argument("--compact-input-s3", default="")
