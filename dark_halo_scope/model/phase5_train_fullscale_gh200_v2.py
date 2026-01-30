@@ -487,17 +487,22 @@ def main():
         if missing:
             raise ValueError(f"Dataset missing contract columns: {missing}")
 
-    required_min = ["stamp_npz", "is_control", "region_split", "cutout_ok"]
+    # Note: region_split is a virtual Hive partition column, checked separately
+    required_min = ["stamp_npz", "is_control", "cutout_ok"]
     for c in required_min:
         if c not in dataset.schema.names:
             raise ValueError(f"Dataset missing required column: {c}")
+    # Verify region_split is available via partitioning
+    if "region_split" not in dataset.schema.names:
+        raise ValueError("Dataset missing region_split partitioning. Ensure data is Hive-partitioned by region_split.")
 
     meta_cols = [c.strip() for c in args.meta_cols.split(",") if c.strip()]
     for c in meta_cols:
         if c not in dataset.schema.names:
             raise ValueError(f"Meta column '{c}' not found in dataset")
 
-    base_cols = ["stamp_npz", "is_control", "region_split", "cutout_ok", "theta_e_arcsec", "psf_fwhm_used_r", "psfsize_r", "arc_snr"]
+    # Note: region_split is a virtual Hive partition column - don't include in fragment reads
+    base_cols = ["stamp_npz", "is_control", "cutout_ok", "theta_e_arcsec", "psf_fwhm_used_r", "psfsize_r", "arc_snr"]
     cols = [c for c in base_cols if c in dataset.schema.names]
 
     train_cfg = StreamConfig(
