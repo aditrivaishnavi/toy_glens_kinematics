@@ -87,6 +87,87 @@ class MetaFusionHead(nn.Module):
         return self.classifier(x).squeeze(1)
 
 
+class FusedHead(nn.Module):
+    """Head matching phase5_train_fullscale_gh200.py FusedHead structure."""
+    def __init__(self, feat_dim: int, meta_dim: int = 0, dropout: float = 0.1):
+        super().__init__()
+        in_dim = feat_dim + meta_dim
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Linear(256, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Linear(128, 1),
+        )
+    
+    def forward(self, feat: torch.Tensor, meta: Optional[torch.Tensor] = None) -> torch.Tensor:
+        if meta is not None:
+            x = torch.cat([feat, meta], dim=1)
+        else:
+            x = feat
+        return self.net(x).squeeze(1)
+
+
+class ImageBackbone(nn.Module):
+    """Backbone wrapper matching phase5_train_fullscale_gh200.py structure."""
+    def __init__(self, name: str, dropout: float = 0.0):
+        super().__init__()
+        self.name = name.lower()
+        
+        if self.name == "resnet18":
+            m = resnet18(weights=None)
+            m.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+            m.maxpool = nn.Identity()
+            self.feature_dim = m.fc.in_features
+            m.fc = nn.Identity()
+            self.backbone = m
+        elif self.name == "convnext_tiny":
+            m = convnext_tiny(weights=None)
+            self.feature_dim = m.classifier[2].in_features
+            # Keep classifier[0] (LayerNorm) but remove classifier[2] (Linear)
+            # Structure: classifier = Sequential(LayerNorm, Flatten, Linear)
+            # We want to keep LayerNorm, keep Flatten, remove Linear
+            m.classifier[2] = nn.Identity()
+            self.backbone = m
+            self.flatten = nn.Flatten(1)
+        elif self.name == "efficientnet_b0":
+            m = efficientnet_b0(weights=None)
+            self.feature_dim = m.classifier[1].in_features
+            m.classifier = nn.Identity()
+            self.backbone = m
+        else:
+            raise ValueError(f"Unknown backbone: {name}")
+        
+        self.drop = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        feat = self.backbone(x)
+        if self.name == "convnext_tiny":
+            # ConvNeXt classifier already has LayerNorm+Flatten, output is (B, feature_dim)
+            pass  # No need to flatten again
+        feat = self.drop(feat)
+        return feat
+
+
+class LensFinderModel(nn.Module):
+    """Model matching phase5_train_fullscale_gh200.py LensFinderModel structure."""
+    def __init__(self, backbone_name: str, use_metadata: bool, meta_dim: int, dropout: float):
+        super().__init__()
+        self.backbone = ImageBackbone(backbone_name, dropout=dropout)
+        self.use_metadata = use_metadata
+        self.head = FusedHead(self.backbone.feature_dim, meta_dim=meta_dim if use_metadata else 0, dropout=dropout)
+    
+    def forward(self, x: torch.Tensor, meta: Optional[torch.Tensor] = None) -> torch.Tensor:
+        feat = self.backbone(x)
+        if self.use_metadata:
+            if meta is None:
+                raise ValueError("use_metadata=True but meta is None")
+            return self.head(feat, meta)
+        return self.head(feat, None)
+
+
 def build_model_wrapped(arch: str, meta_dim: int = 0, dropout: float = 0.1) -> nn.Module:
     """Build model with backbone wrapper - for newer checkpoints."""
     arch = arch.lower()
@@ -153,20 +234,31 @@ def build_model_simple(arch: str) -> nn.Module:
 def build_model(arch: str, meta_dim: int = 0, dropout: float = 0.1, state_dict_keys: Optional[set] = None):
     """
     Build model, auto-detecting wrapper vs simple based on state dict keys.
-    Returns (model, is_simple_model) tuple.
+    Returns (model, is_simple_model, key_transform) tuple.
+    key_transform is a function to apply to state dict keys if needed.
     """
-    # Check if state dict has 'backbone.' prefix
+    # Check state dict key patterns
     if state_dict_keys:
         has_backbone_prefix = any(k.startswith("backbone.") for k in state_dict_keys)
+        has_double_backbone = any(k.startswith("backbone.backbone.") for k in state_dict_keys)
         has_fc = any(k.startswith("fc.") for k in state_dict_keys)
+        has_head_net = any(k.startswith("head.net.") for k in state_dict_keys)
         
         if has_fc and not has_backbone_prefix:
             # Simple model (train_lambda.py style)
             logger.info("Detected simple model structure (no backbone wrapper)")
-            return build_model_simple(arch), True
+            return build_model_simple(arch), True, None
+        
+        if has_double_backbone and has_head_net:
+            # LensFinderModel from phase5_train_fullscale_gh200.py
+            # Structure: backbone.backbone.<layers>, head.net.<layers>
+            logger.info("Detected LensFinderModel structure (phase5_train_fullscale_gh200.py)")
+            # Use LensFinderModel which matches exactly
+            model = LensFinderModel(arch, use_metadata=(meta_dim > 0), meta_dim=meta_dim, dropout=dropout)
+            return model, False, None
     
-    # Default: wrapped model
-    return build_model_wrapped(arch, meta_dim=meta_dim, dropout=dropout), False
+    # Default: wrapped model (for v2 scripts or simple wrappers)
+    return build_model_wrapped(arch, meta_dim=meta_dim, dropout=dropout), False, None
 
 
 def main():
@@ -234,8 +326,14 @@ def main():
     logger.info(f"Using arch={arch}, meta_cols={meta_cols}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model, is_simple_model = build_model(arch, meta_dim=len(meta_cols), state_dict_keys=set(state_dict.keys()))
+    model, is_simple_model, key_transform = build_model(arch, meta_dim=len(meta_cols), state_dict_keys=set(state_dict.keys()))
     model = model.to(device)
+    
+    # Apply key transform if needed (e.g., strip double backbone prefix)
+    if key_transform is not None:
+        state_dict = key_transform(state_dict)
+        logger.info(f"Transformed state dict keys. Sample: {list(state_dict.keys())[:3]}")
+    
     model.load_state_dict(state_dict, strict=True)
     model.eval()
     
