@@ -173,11 +173,11 @@ def main():
         for i in range(len(theta_bins) - 1):
             lo, hi = theta_bins[i], theta_bins[i+1]
             m = (theta >= lo) & (theta < hi)
-            yield (f"theta[{lo},{hi})", m | (y == 0)  # include all controls as negatives
+            yield (f"theta[{lo},{hi})", m | (y == 0))  # include all controls as negatives
         for i in range(len(res_bins) - 1):
             lo, hi = res_bins[i], res_bins[i+1]
             m = (res >= lo) & (res < hi)
-            yield (f"res[{lo},{hi})", m | (y == 0)
+            yield (f"res[{lo},{hi})", m | (y == 0))
 
     lines = []
     header = ["stratum", "n", "P", "N"]
