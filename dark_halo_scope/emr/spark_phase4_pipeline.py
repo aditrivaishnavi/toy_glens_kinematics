@@ -2460,7 +2460,7 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
         "experiment_id": args.experiment_id,
         "inputs": {"manifest": in_path, "coadd_s3_cache_prefix": args.coadd_s3_cache_prefix},
         "bands": bands,
-        "src_flux_scale": float(args.src_flux_scale),
+        "src_flux_scale": float(getattr(args, 'src_flux_scale', 1.0)),
         "spark": {"sweep_partitions": int(args.sweep_partitions)},
         "idempotency": {"skip_if_exists": int(args.skip_if_exists), "force": int(args.force)},
     }
