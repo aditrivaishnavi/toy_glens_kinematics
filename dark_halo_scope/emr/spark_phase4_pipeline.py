@@ -1922,7 +1922,7 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
     if WCS is None:
         raise RuntimeError("astropy.wcs not available; ensure astropy installed")
 
-    manifests_subdir = getattr(args, 'manifests_subdir', 'manifests_filtered')
+    manifests_subdir = getattr(args, 'manifests_subdir', 'manifests')
     manifests_root = f"{args.output_s3.rstrip('/')}/phase4a/{args.variant}/{manifests_subdir}"
     if not args.experiment_id:
         raise ValueError("--experiment-id is required for stage 4c")
@@ -2637,8 +2637,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Stage 4c
     p.add_argument("--experiment-id", default="", help="Experiment id under phase4a/manifests")
-    p.add_argument("--manifests-subdir", default="manifests_filtered",
-                   help="Subdirectory under phase4a/ to read manifests from (use 'manifests_filtered' for blacklist-filtered manifests)")
+    p.add_argument("--manifests-subdir", default="manifests",
+                   help="Subdirectory under phase4a/ to read manifests from")
     p.add_argument("--sweep-partitions", type=int, default=600)
     # NOTE: --src-flux-scale is deprecated. Flux is now computed correctly using
     # mag_to_nMgy() with AB ZP=22.5 (Legacy Survey nanomaggy convention).
