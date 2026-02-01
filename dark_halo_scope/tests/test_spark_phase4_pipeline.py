@@ -2,6 +2,7 @@
 Unit tests for spark_phase4_pipeline.py
 
 These tests validate the patched code BEFORE deploying to EMR.
+NOTE: Tests require PySpark to be installed.
 """
 import sys
 import os
@@ -12,7 +13,15 @@ import pytest
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Check if pyspark is available
+try:
+    import pyspark
+    PYSPARK_AVAILABLE = True
+except ImportError:
+    PYSPARK_AVAILABLE = False
 
+
+@pytest.mark.skipif(not PYSPARK_AVAILABLE, reason="PySpark not installed")
 class TestArgumentParser:
     """Test that all required arguments exist and have correct defaults."""
     
@@ -68,6 +77,7 @@ class TestArgumentParser:
         assert value == 1.0, f"Expected default 1.0, got {value}"
 
 
+@pytest.mark.skipif(not PYSPARK_AVAILABLE, reason="PySpark not installed")
 class TestMoffatPSF:
     """Test Moffat PSF kernel generation."""
     
@@ -97,6 +107,7 @@ class TestMoffatPSF:
         assert kernel[center, center] == kernel.max(), "Max should be at center"
 
 
+@pytest.mark.skipif(not PYSPARK_AVAILABLE, reason="PySpark not installed")
 class TestConvolvePSF:
     """Test the unified _convolve_psf function."""
     
@@ -142,6 +153,7 @@ class TestConvolvePSF:
         np.testing.assert_array_almost_equal(result, img)
 
 
+@pytest.mark.skipif(not PYSPARK_AVAILABLE, reason="PySpark not installed")
 class TestNumpyRoundFix:
     """Test that numpy round() is used instead of built-in round()."""
     
@@ -165,6 +177,7 @@ class TestNumpyRoundFix:
         assert bad_pattern_count == 0, f"Found {bad_pattern_count} occurrences of 'int(round(' which may fail with numpy"
 
 
+@pytest.mark.skipif(not PYSPARK_AVAILABLE, reason="PySpark not installed")
 class TestRowSchemaCompleteness:
     """Test that exception handler Row has all required fields."""
     
