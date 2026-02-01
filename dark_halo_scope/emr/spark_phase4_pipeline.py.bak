@@ -455,9 +455,7 @@ def render_lensed_source(
     src_phi_rad: float,
     src_x_arcsec: float,
     src_y_arcsec: float,
-    psf_fwhm_pix: float,
-    psf_model: str = "gaussian",
-    moffat_beta: float = 3.5,
+    psf_sigma_pix: float,
     psf_apply: bool = True,
 ) -> np.ndarray:
     """
@@ -482,7 +480,7 @@ def render_lensed_source(
         src_phi_rad: Source position angle
         src_x_arcsec: Source x offset from lens center
         src_y_arcsec: Source y offset from lens center
-        psf_fwhm_pix: PSF FWHM in pixels (0 to skip convolution)
+        psf_sigma_pix: PSF sigma in pixels (0 to skip convolution)
         psf_apply: Whether to apply PSF convolution
         
     Returns:
@@ -531,8 +529,8 @@ def render_lensed_source(
     img = base * amp_Ie * pix_area
     
     # PSF convolution
-    if psf_apply and psf_fwhm_pix > 0:
-        img = _convolve_psf(img, psf_fwhm_pix, psf_model=psf_model, moffat_beta=moffat_beta)
+    if psf_apply and psf_sigma_pix > 0:
+        img = _convolve_gaussian(img, psf_sigma_pix)
     
     return img.astype(np.float32)
 
@@ -548,9 +546,7 @@ def render_unlensed_source(
     src_e: float,
     src_phi_rad: float,
     psf_apply: bool,
-    psf_fwhm_pix: float,
-    psf_model: str = "gaussian",
-    moffat_beta: float = 3.5,
+    psf_sigma_pix: float,
 ) -> np.ndarray:
     """Render an unlensed source on the same stamp grid.
 
@@ -576,8 +572,8 @@ def render_unlensed_source(
     img = amp * sersic_profile(dx, dy, src_reff_arcsec, n, src_e, src_phi_rad)
     img = img * (pixscale_arcsec ** 2)
 
-    if psf_apply and psf_fwhm_pix > 0:
-        img = _convolve_psf(img, psf_fwhm_pix, psf_model=psf_model, moffat_beta=moffat_beta)
+    if psf_apply and psf_sigma_pix > 0:
+        img = _convolve_gaussian(img, psf_sigma_pix)
 
     return img.astype(np.float32)
 
@@ -601,88 +597,6 @@ def _convolve_gaussian(img: np.ndarray, sigma_pix: float) -> np.ndarray:
     return out.astype(np.float32)
 
 
-
-# =========================================================================
-# PSF KERNELS AND CONVOLUTION
-# =========================================================================
-
-def _gaussian_kernel2d(sigma_pix: float, radius: Optional[int] = None) -> np.ndarray:
-    """Build a normalized circular Gaussian PSF kernel."""
-    sigma_pix = float(sigma_pix)
-    if sigma_pix <= 0:
-        k = np.zeros((1, 1), dtype=np.float32)
-        k[0, 0] = 1.0
-        return k
-    if radius is None:
-        # 4 sigma captures >99% of Gaussian mass
-        radius = int(max(3, math.ceil(4.0 * sigma_pix)))
-    side = 2 * radius + 1
-    yy, xx = np.mgrid[-radius:radius + 1, -radius:radius + 1]
-    rr2 = (xx * xx + yy * yy).astype(np.float32)
-    k = np.exp(-0.5 * rr2 / (sigma_pix * sigma_pix)).astype(np.float32)
-    s = float(k.sum()) + 1e-12
-    k /= s
-    return k
-
-
-def _moffat_kernel2d(fwhm_pix: float, beta: float = 3.5, radius: Optional[int] = None) -> np.ndarray:
-    """Build a normalized Moffat PSF kernel.
-
-    Moffat profile: I(r) = (1 + (r/alpha)^2)^(-beta)
-    Relation between FWHM and alpha:
-      alpha = fwhm / (2 * sqrt(2^(1/beta) - 1))
-    """
-    fwhm_pix = float(fwhm_pix)
-    beta = float(beta)
-    if fwhm_pix <= 0:
-        k = np.zeros((1, 1), dtype=np.float32)
-        k[0, 0] = 1.0
-        return k
-    if beta <= 1.0:
-        beta = 1.0001  # avoid infinite variance behavior
-    alpha = fwhm_pix / (2.0 * math.sqrt((2.0 ** (1.0 / beta)) - 1.0))
-    if radius is None:
-        # Wider truncation than Gaussian due to wings
-        radius = int(max(4, math.ceil(6.0 * fwhm_pix)))
-    side = 2 * radius + 1
-    yy, xx = np.mgrid[-radius:radius + 1, -radius:radius + 1]
-    rr2 = (xx * xx + yy * yy).astype(np.float32)
-    k = (1.0 + rr2 / (alpha * alpha)).astype(np.float32)
-    k = np.power(k, -beta).astype(np.float32)
-    s = float(k.sum()) + 1e-12
-    k /= s
-    return k
-
-
-def _fft_convolve2d(img: np.ndarray, kernel: np.ndarray) -> np.ndarray:
-    """FFT-based convolution for small stamps (e.g., 64x64)."""
-    ih, iw = img.shape
-    kh, kw = kernel.shape
-    if kh > ih or kw > iw:
-        raise ValueError(f"Kernel {kernel.shape} larger than image {img.shape}")
-    pad = np.zeros((ih, iw), dtype=np.float32)
-    pad[:kh, :kw] = kernel.astype(np.float32)
-    pad = np.fft.ifftshift(pad)  # move kernel center to (0,0)
-    out = np.fft.ifft2(np.fft.fft2(img.astype(np.float32)) * np.fft.fft2(pad)).real
-    return out.astype(np.float32)
-
-
-def _convolve_psf(img: np.ndarray, psf_fwhm_pix: float, psf_model: str = "gaussian", moffat_beta: float = 3.5) -> np.ndarray:
-    """Convolve with a PSF kernel defined by model and FWHM."""
-    psf_model = (psf_model or "gaussian").lower()
-    psf_fwhm_pix = float(psf_fwhm_pix)
-    if psf_fwhm_pix <= 0:
-        return img.astype(np.float32)
-
-    if psf_model == "gaussian":
-        sigma = psf_fwhm_pix / 2.355
-        k = _gaussian_kernel2d(sigma)
-    elif psf_model == "moffat":
-        k = _moffat_kernel2d(psf_fwhm_pix, beta=moffat_beta)
-    else:
-        raise ValueError(f"Unknown psf_model={psf_model}. Use gaussian or moffat.")
-
-    return _fft_convolve2d(img.astype(np.float32), k)
 def _elliptical_gaussian(beta_x: np.ndarray, beta_y: np.ndarray, reff_pix: float, e: float) -> np.ndarray:
     # Ellipticity parameter e in [0,1). Use axis ratio q=(1-e)/(1+e)
     q = (1.0 - e) / (1.0 + e + 1e-6)
@@ -2008,7 +1922,7 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
     if WCS is None:
         raise RuntimeError("astropy.wcs not available; ensure astropy installed")
 
-    manifests_subdir = getattr(args, 'manifests_subdir', 'manifests_filtered')
+    manifests_subdir = getattr(args, 'manifests_subdir', 'manifests')
     manifests_root = f"{args.output_s3.rstrip('/')}/phase4a/{args.variant}/{manifests_subdir}"
     if not args.experiment_id:
         raise ValueError("--experiment-id is required for stage 4c")
@@ -2333,9 +2247,7 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                             src_phi_rad=src_phi_rad,
                             src_x_arcsec=src_x_arcsec,
                             src_y_arcsec=src_y_arcsec,
-                            psf_fwhm_pix=psf_sigma_b * 2.355,
-                            psf_model=args.psf_model,
-                            moffat_beta=args.moffat_beta,
+                            psf_sigma_pix=psf_sigma_b,
                             psf_apply=True,
                         )
                         
@@ -2378,9 +2290,7 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                                 src_e=src_e,
                                 src_phi_rad=src_phi_rad,
                                 psf_apply=True,
-                                psf_fwhm_pix=psf_sigma_r * 2.355,  # Use r-band PSF for magnification proxy
-                                psf_model=args.psf_model,
-                                moffat_beta=args.moffat_beta
+                                psf_sigma_pix=psf_sigma_r,  # Use r-band PSF for magnification proxy
                             )
                             unlensed_sum = float(np.sum(add_r_unlensed))
                             lensed_sum = float(np.sum(add_r))
@@ -2694,14 +2604,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--stamp-sizes", default="64")
     p.add_argument("--bandsets", default="grz", help="Comma list of r or grz")
 
-
-    # Stage 4c rendering: PSF model for injection convolution
-    p.add_argument("--psf-model", default="moffat", choices=["gaussian", "moffat"],
-                   help="PSF model used for injected source convolution. 'moffat' is more realistic for DECaLS-like PSF wings.")
-    p.add_argument("--moffat-beta", type=float, default=3.5,
-                   help="Moffat beta parameter (typical 3.0-4.5). Only used when --psf-model=moffat.")
-
-
     p.add_argument("--tiers", default="debug,grid,train", help="Comma list among debug,grid,train")
     p.add_argument("--grid-debug", default="grid_small")
     p.add_argument("--grid-grid", default="grid_medium")
@@ -2710,12 +2612,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--n-per-config-debug", type=int, default=5)
     p.add_argument("--n-per-config-grid", type=int, default=25)
     p.add_argument("--n-total-train-per-split", type=int, default=200000)
-    p.add_argument("--control-frac-train", type=float, default=0.50)
+    p.add_argument("--control-frac-train", type=float, default=0.25)
     p.add_argument("--control-frac-grid", type=float, default=0.10,
                    help="Fraction of grid tier samples to mark as controls (theta_e=0)")
     p.add_argument("--control-frac-debug", type=float, default=0.0,
                    help="Fraction of debug tier samples to mark as controls (theta_e=0)")
-    p.add_argument("--unpaired-controls", type=int, default=1,
+    p.add_argument("--unpaired-controls", type=int, default=0,
                    help="If 1, use unpaired controls from DIFFERENT galaxy positions (harder negatives). "
                         "If 0, controls use the same galaxy position without lens injection (easier).")
     p.add_argument("--max-total-tasks-soft", type=int, default=30_000_000,
@@ -2735,8 +2637,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Stage 4c
     p.add_argument("--experiment-id", default="", help="Experiment id under phase4a/manifests")
-    p.add_argument("--manifests-subdir", default="manifests_filtered",
-                   help="Subdirectory under phase4a/ to read manifests from (use 'manifests_filtered' for blacklist-filtered manifests)")
+    p.add_argument("--manifests-subdir", default="manifests",
+                   help="Subdirectory under phase4a/ to read manifests from")
     p.add_argument("--sweep-partitions", type=int, default=600)
     # NOTE: --src-flux-scale is deprecated. Flux is now computed correctly using
     # mag_to_nMgy() with AB ZP=22.5 (Legacy Survey nanomaggy convention).

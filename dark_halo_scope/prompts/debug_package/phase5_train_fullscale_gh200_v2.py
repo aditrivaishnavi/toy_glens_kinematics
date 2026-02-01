@@ -95,43 +95,11 @@ def decode_stamp_npz(npz_bytes: bytes) -> np.ndarray:
 
 
 def robust_mad_norm(x: np.ndarray, clip: float = 10.0, eps: float = 1e-6) -> np.ndarray:
-    """Normalize using median/MAD of full image (legacy method)."""
     out = np.empty_like(x, dtype=np.float32)
     for c in range(x.shape[0]):
         v = x[c]
         med = np.median(v)
         mad = np.median(np.abs(v - med))
-        scale = 1.4826 * mad + eps
-        vv = (v - med) / scale
-        if clip is not None:
-            vv = np.clip(vv, -clip, clip)
-        out[c] = vv.astype(np.float32)
-    return out
-
-
-def robust_mad_norm_outer(x: np.ndarray, clip: float = 10.0, eps: float = 1e-6,
-                          inner_frac: float = 0.5) -> np.ndarray:
-    """Normalize using outer annulus only to avoid leaking injection strength.
-    
-    FIX D1: The full-image normalization can encode injection strength as a global cue
-    since injected flux changes the tail of the pixel distribution. By computing
-    median/MAD from the outer region only (where arcs are less likely), we reduce
-    this information leakage.
-    """
-    out = np.empty_like(x, dtype=np.float32)
-    h, w = x.shape[-2:]
-    cy, cx = h // 2, w // 2
-    ri = int(min(h, w) * inner_frac / 2)
-    
-    # Create circular mask for outer region
-    yy, xx = np.ogrid[:h, :w]
-    outer_mask = ((yy - cy)**2 + (xx - cx)**2) > ri**2
-    
-    for c in range(x.shape[0]):
-        v = x[c]
-        outer_v = v[outer_mask]
-        med = np.median(outer_v)
-        mad = np.median(np.abs(outer_v - med))
         scale = 1.4826 * mad + eps
         vv = (v - med) / scale
         if clip is not None:
@@ -182,42 +150,21 @@ class FocalLoss(nn.Module):
 
 
 def roc_curve_np(scores: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Compute ROC curve with proper tie handling.
-    
-    FIXES (per LLM1/LLM2 analysis):
-    1. Keep LAST element of each tied-score run (not first)
-    2. Prepend (0,0) origin point
-    3. Handle edge cases for empty/single-class data
-    """
     order = np.argsort(-scores, kind="mergesort")
     s = scores[order]
     yy = y[order].astype(np.int64)
-    P = int(yy.sum())
+    P = yy.sum()
     N = len(yy) - P
-    
     if P == 0 or N == 0:
-        # Return minimal valid ROC curve
-        return np.array([0.0, 1.0]), np.array([0.0, 1.0]), np.array([np.inf, -np.inf])
-    
+        return np.array([]), np.array([]), np.array([])
     tp = np.cumsum(yy)
     fp = np.cumsum(1 - yy)
-    
-    # FIX: Keep LAST element of each tied-score run (where score changes OR is last element)
-    # np.diff(s) != 0 finds where score changes; we add True at end to always include last
-    distinct = np.r_[np.diff(s) != 0, True]
-    
+    distinct = np.r_[True, s[1:] != s[:-1]]
     tp = tp[distinct]
     fp = fp[distinct]
     thr = s[distinct]
-    
     tpr = tp / P
     fpr = fp / N
-    
-    # FIX: Prepend (0, 0) origin point for proper ROC curve
-    fpr = np.r_[0.0, fpr]
-    tpr = np.r_[0.0, tpr]
-    thr = np.r_[np.inf, thr]  # threshold above max score for origin
-    
     return fpr, tpr, thr
 
 
@@ -259,8 +206,6 @@ class StreamConfig:
     max_rows: int
     min_theta_over_psf: float
     min_arc_snr: float
-    norm_method: str = "full"  # FIX D1: "full" or "outer"
-    epoch: int = 0  # FIX A6: Added for epoch-dependent shuffle
 
 
 class ParquetStreamDataset(IterableDataset):
@@ -268,33 +213,18 @@ class ParquetStreamDataset(IterableDataset):
         super().__init__()
         self.cfg = cfg
         self.fs = filesystem
-        self._epoch = 0  # Mutable epoch for epoch-dependent shuffle
-    
-    def set_epoch(self, epoch: int):
-        """Set epoch for epoch-dependent shuffling (call before each epoch)."""
-        self._epoch = epoch
 
     def _iter_fragments(self) -> List[ds.Fragment]:
         # Use partitioning="hive" to auto-detect region_split from directory structure
         dataset = ds.dataset(self.cfg.data, format="parquet", filesystem=self.fs, partitioning="hive")
         frags = list(dataset.get_fragments(filter=ds.field("region_split") == self.cfg.split))
-        
-        # CRITICAL: Shard by BOTH DDP rank AND DataLoader worker id
-        # Without this, all workers process the same fragments = N*duplicate samples per epoch
-        wi = torch.utils.data.get_worker_info()
-        worker_id = wi.id if wi is not None else 0
-        num_workers = wi.num_workers if wi is not None else 1
-        
-        shard = rank() * num_workers + worker_id
-        nshard = world() * num_workers
-        return frags[shard::nshard]
+        return frags[rank()::world()]
 
     def __iter__(self) -> Iterator[Tuple[np.ndarray, float, Optional[np.ndarray]]]:
         cfg = self.cfg
         worker = torch.utils.data.get_worker_info()
         worker_id = worker.id if worker is not None else 0
-        # FIX A6: Include epoch in seed so shuffle varies each epoch
-        rng = np.random.RandomState(cfg.seed + 997 * rank() + 131 * worker_id + 7919 * self._epoch)
+        rng = np.random.RandomState(cfg.seed + 997 * rank() + 131 * worker_id)
         logger = logging.getLogger(__name__)
 
         frags = self._iter_fragments()
@@ -360,11 +290,7 @@ class ParquetStreamDataset(IterableDataset):
                     # Decode stamp - narrow exception scope to expected errors only
                     try:
                         x = decode_stamp_npz(colmap["stamp_npz"][i].as_py())
-                        # FIX D1: Use outer annulus normalization to reduce injection leakage
-                        if cfg.norm_method == "outer":
-                            x = robust_mad_norm_outer(x, clip=cfg.mad_clip)
-                        else:
-                            x = robust_mad_norm(x, clip=cfg.mad_clip)
+                        x = robust_mad_norm(x, clip=cfg.mad_clip)
                     except (ValueError, KeyError, IOError) as e:
                         skip_count += 1
                         if skip_count <= 10:
@@ -511,27 +437,6 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device, max_bat
     out.update(tpr_at_fpr(s, yy, [1e-2, 1e-3, 1e-4, 1e-5]))
     fpr, tpr, _ = roc_curve_np(s, yy)
     out["auroc"] = float(np.trapz(tpr, fpr)) if len(fpr) > 1 else math.nan
-    
-    # FIX C1/C4: Calibration monitoring - detect binary score collapse
-    binary_low = (s < 0.01).sum()
-    binary_high = (s > 0.99).sum()
-    binary_frac = (binary_low + binary_high) / max(len(s), 1)
-    out["binary_score_frac"] = float(binary_frac)
-    if binary_frac > 0.5:
-        logging.warning(f"CALIBRATION COLLAPSE: {binary_frac:.1%} of scores are <0.01 or >0.99")
-    
-    # FIX B5: Log top-50 negative and bottom-50 positive scores for diagnostics
-    neg_mask = (yy == 0)
-    pos_mask = (yy == 1)
-    if neg_mask.sum() > 0:
-        neg_scores = s[neg_mask]
-        top_neg_idx = np.argsort(-neg_scores)[:50]
-        out["top_neg_scores"] = neg_scores[top_neg_idx].tolist()
-    if pos_mask.sum() > 0:
-        pos_scores = s[pos_mask]
-        bottom_pos_idx = np.argsort(pos_scores)[:50]
-        out["bottom_pos_scores"] = pos_scores[bottom_pos_idx].tolist()
-    
     return out
 
 
@@ -541,7 +446,6 @@ def main():
     ap.add_argument("--out_dir", required=True)
     ap.add_argument("--arch", default="convnext_tiny", choices=["resnet18", "convnext_tiny", "efficientnet_b0"])
     ap.add_argument("--epochs", type=int, default=8)
-    ap.add_argument("--early_stopping_patience", type=int, default=3, help="Stop if no improvement for N epochs. 0=disable")
     ap.add_argument("--batch_size", type=int, default=512)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--weight_decay", type=float, default=1e-2)
@@ -556,8 +460,6 @@ def main():
     ap.add_argument("--val_batches", type=int, default=250)
     ap.add_argument("--augment", action="store_true")
     ap.add_argument("--mad_clip", type=float, default=10.0)
-    ap.add_argument("--norm_method", default="full", choices=["full", "outer"],
-                    help="Normalization method: full (legacy) or outer (outer annulus only)")
     ap.add_argument("--min_theta_over_psf", type=float, default=0.0)
     ap.add_argument("--min_arc_snr", type=float, default=0.0)
     ap.add_argument("--meta_cols", default="", help="Comma-separated scalar columns to fuse")
@@ -598,22 +500,6 @@ def main():
     for c in meta_cols:
         if c not in dataset.schema.names:
             raise ValueError(f"Meta column '{c}' not found in dataset")
-    
-    # FIX E1: Forbidden metadata guard - block columns that leak labels
-    FORBIDDEN_META = frozenset({
-        # Injection parameters (direct label leakage)
-        "theta_e_arcsec", "theta_e", "src_dmag", "src_reff_arcsec", "src_n",
-        "src_e", "src_phi_deg", "src_x_arcsec", "src_y_arcsec",
-        "lens_e", "lens_phi_deg", "shear_gamma", "shear_phi_deg", "shear",
-        # Derived from injection (indirect leakage)
-        "arc_snr", "magnification", "tangential_stretch", "radial_stretch",
-        # Labels themselves
-        "is_control", "label", "cutout_ok",
-    })
-    for c in meta_cols:
-        if c in FORBIDDEN_META:
-            raise ValueError(f"REFUSING meta_cols that leak labels: '{c}'. "
-                            f"Forbidden columns: {sorted(FORBIDDEN_META)}")
 
     # Note: region_split is a virtual Hive partition column - don't include in fragment reads
     base_cols = ["stamp_npz", "is_control", "cutout_ok", "theta_e_arcsec", "psf_fwhm_used_r", "psfsize_r", "arc_snr"]
@@ -625,20 +511,17 @@ def main():
         augment=args.augment, mad_clip=args.mad_clip,
         max_rows=args.max_train_rows_per_epoch,
         min_theta_over_psf=args.min_theta_over_psf, min_arc_snr=args.min_arc_snr,
-        norm_method=args.norm_method,
     )
     val_cfg = StreamConfig(
         data=args.data, split="val", seed=args.seed + 99,
         columns=cols, meta_cols=meta_cols,
         augment=False, mad_clip=args.mad_clip,
-        norm_method=args.norm_method,
         max_rows=args.max_val_rows,
         min_theta_over_psf=args.min_theta_over_psf, min_arc_snr=args.min_arc_snr,
     )
 
-    train_dataset = ParquetStreamDataset(train_cfg, filesystem=fs)
     train_loader = DataLoader(
-        train_dataset,
+        ParquetStreamDataset(train_cfg, filesystem=fs),
         batch_size=args.batch_size, num_workers=args.num_workers,
         pin_memory=True, persistent_workers=(args.num_workers > 0),
         collate_fn=collate,
@@ -675,16 +558,7 @@ def main():
         best_metric = float(ckpt.get("best_metric", -1.0))
 
     history = []
-    no_improve_count = 0
-    early_stop = False
-    
     for epoch in range(start_epoch, args.epochs):
-        if early_stop:
-            break
-        
-        # FIX A6: Update epoch for epoch-dependent shuffle
-        train_dataset.set_epoch(epoch)
-        
         model.train()
         total_loss = 0.0
         n_seen = 0
@@ -758,24 +632,12 @@ def main():
                 best_metric = float(score)
                 ckpt["best_metric"] = best_metric
                 torch.save(ckpt, os.path.join(args.out_dir, "ckpt_best.pt"))
-                no_improve_count = 0
-            else:
-                no_improve_count += 1
-                if args.early_stopping_patience > 0 and no_improve_count >= args.early_stopping_patience:
-                    print(f"Early stopping at epoch {epoch}: no improvement for {no_improve_count} epochs")
-                    early_stop = True
 
             with open(os.path.join(args.out_dir, "history.json"), "w", encoding="utf-8") as f:
                 json.dump(history, f, indent=2, sort_keys=True)
 
             print(json.dumps(metrics, indent=2, sort_keys=True))
 
-        # Broadcast early_stop to all ranks
-        if is_dist():
-            stop_tensor = torch.tensor([1 if early_stop else 0], device=device)
-            dist.broadcast(stop_tensor, src=0)
-            early_stop = bool(stop_tensor.item())
-        
         barrier()
 
     if rank() == 0:

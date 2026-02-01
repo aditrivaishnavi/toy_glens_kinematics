@@ -117,6 +117,12 @@ def robust_mad_norm_outer(x: np.ndarray, clip: float = 10.0, eps: float = 1e-6,
     since injected flux changes the tail of the pixel distribution. By computing
     median/MAD from the outer region only (where arcs are less likely), we reduce
     this information leakage.
+    
+    Args:
+        x: Image array of shape (C, H, W)
+        clip: Clip normalized values to [-clip, clip]
+        eps: Small constant for numerical stability
+        inner_frac: Fraction of image to exclude from center (0.5 = exclude inner half)
     """
     out = np.empty_like(x, dtype=np.float32)
     h, w = x.shape[-2:]
@@ -275,12 +281,16 @@ class ParquetStreamDataset(IterableDataset):
         self._epoch = epoch
 
     def _iter_fragments(self) -> List[ds.Fragment]:
+        """Get fragments sharded by BOTH DDP rank AND DataLoader worker id.
+        
+        FIX (per LLM1 Q2): Without worker sharding, all N workers process same fragments,
+        causing N*duplication per epoch and accelerated overfitting.
+        """
         # Use partitioning="hive" to auto-detect region_split from directory structure
         dataset = ds.dataset(self.cfg.data, format="parquet", filesystem=self.fs, partitioning="hive")
         frags = list(dataset.get_fragments(filter=ds.field("region_split") == self.cfg.split))
         
         # CRITICAL: Shard by BOTH DDP rank AND DataLoader worker id
-        # Without this, all workers process the same fragments = N*duplicate samples per epoch
         wi = torch.utils.data.get_worker_info()
         worker_id = wi.id if wi is not None else 0
         num_workers = wi.num_workers if wi is not None else 1
@@ -541,7 +551,6 @@ def main():
     ap.add_argument("--out_dir", required=True)
     ap.add_argument("--arch", default="convnext_tiny", choices=["resnet18", "convnext_tiny", "efficientnet_b0"])
     ap.add_argument("--epochs", type=int, default=8)
-    ap.add_argument("--early_stopping_patience", type=int, default=3, help="Stop if no improvement for N epochs. 0=disable")
     ap.add_argument("--batch_size", type=int, default=512)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--weight_decay", type=float, default=1e-2)
@@ -565,6 +574,8 @@ def main():
     ap.add_argument("--loss", default="bce", choices=["bce", "focal"])
     ap.add_argument("--focal_alpha", type=float, default=0.25)
     ap.add_argument("--focal_gamma", type=float, default=2.0)
+    ap.add_argument("--early_stopping_patience", type=int, default=3, 
+                    help="Stop if no improvement for N epochs. 0=disable")
     ap.add_argument("--resume", default="")
     args = ap.parse_args()
 
@@ -769,13 +780,13 @@ def main():
                 json.dump(history, f, indent=2, sort_keys=True)
 
             print(json.dumps(metrics, indent=2, sort_keys=True))
-
-        # Broadcast early_stop to all ranks
+        
+        # Broadcast early_stop signal to all ranks in DDP
         if is_dist():
             stop_tensor = torch.tensor([1 if early_stop else 0], device=device)
             dist.broadcast(stop_tensor, src=0)
             early_stop = bool(stop_tensor.item())
-        
+
         barrier()
 
     if rank() == 0:
