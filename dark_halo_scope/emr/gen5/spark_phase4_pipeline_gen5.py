@@ -460,8 +460,16 @@ def s3_success_marker_exists(uri: str) -> bool:
 
 
 def write_text_to_s3(uri: str, text: str) -> None:
-    bucket, key = _parse_s3(uri)
-    _s3_client().put_object(Bucket=bucket, Key=key, Body=text.encode("utf-8"))
+    """Write text to S3. Skips gracefully if boto3 unavailable."""
+    try:
+        bucket, key = _parse_s3(uri)
+        _s3_client().put_object(Bucket=bucket, Key=key, Body=text.encode("utf-8"))
+    except RuntimeError as e:
+        if "boto3 not available" in str(e):
+            print(f"[Warning] Skipping S3 write to {uri}: boto3 not available")
+        else:
+            raise
+
 
 
 def stage_should_skip(output_uri: str, skip_if_exists: bool, force: bool) -> bool:
