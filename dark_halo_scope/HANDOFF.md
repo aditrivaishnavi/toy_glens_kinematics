@@ -1,9 +1,81 @@
 # Project Handoff: Gravitational Lens Detection Gen5 COSMOS Integration
 
 **Date:** 2026-02-03  
-**Current State:** Gen5 Phase 4c production RUNNING (j-1D16947UERBIY, 270 vCPUs, us-east-2)  
-**Git Commit:** `646762e` - Gen5 COSMOS pipeline with test-limit and boto3 graceful fallback  
-**Next Phase:** Training Gen5 model after Phase 4c completes
+**Current State:** Smoke test j-2O66SUDK8WZGC running to validate source_mode fix  
+**Git Commit:** `f3b0672` - fix: Define source_mode outside if block to fix UnboundLocalError  
+**Next Phase:** If smoke test passes → launch full 270 vCPU production run
+
+---
+
+## 🚨 CRITICAL SESSION UPDATE (2026-02-03 17:30 UTC) 🚨
+
+### Bug Found and Fixed
+**Error:** `local variable 'source_mode' referenced before assignment`
+
+**Root Cause:** The variable `source_mode` was defined inside `if theta_e > 0:` block but referenced outside it. When processing control samples (theta_e=0), the variable was never defined.
+
+**Fix Applied:** Moved `source_mode = getattr(args, 'source_mode', 'sersic')` and `cosmos_idx = None`, `cosmos_hlr = None` declarations BEFORE the if block.
+
+**Commit:** `f3b0672` - Already pushed to GitHub and uploaded to S3
+
+### Current EMR Job
+- **Cluster ID:** `j-2O66SUDK8WZGC` (smoke test, 2 nodes)
+- **Status:** RUNNING - validating the source_mode fix
+- **Check status:**
+```bash
+ssh emr-launcher 'aws emr describe-cluster --cluster-id j-2O66SUDK8WZGC --region us-east-2 --query "Cluster.Status.State" --output text'
+```
+
+### How to Validate the Fix
+```bash
+# Check output after job completes:
+ssh emr-launcher 'python3 << "EOF"
+import pyarrow.parquet as pq
+import numpy as np
+import io
+
+table = pq.read_table("s3://darkhaloscope/phase4_pipeline/phase4c/v5_cosmos_source_test/stamps/boto3_fix/", 
+                      columns=["stamp_npz", "cutout_ok", "source_mode", "cosmos_index", "physics_warnings"])
+print(f"Total rows: {len(table)}")
+cutout_ok_vals = [x.as_py() for x in table["cutout_ok"]]
+unique, counts = np.unique(cutout_ok_vals, return_counts=True)
+print(f"cutout_ok: {dict(zip(unique.tolist(), counts.tolist()))}")
+
+# Check for errors in physics_warnings
+for i in range(min(5, len(table))):
+    pw = table["physics_warnings"][i].as_py()
+    ok = table["cutout_ok"][i].as_py()
+    if pw:
+        print(f"Row {i}: cutout_ok={ok}, error={pw}")
+    elif ok == 1:
+        blob = table["stamp_npz"][i].as_py()
+        if blob:
+            npz = np.load(io.BytesIO(blob))
+            img = npz["image_r"]
+            print(f"Row {i}: cutout_ok={ok}, stamp sum={img.sum():.2f}, max={img.max():.4f}")
+EOF
+'
+```
+
+### If Smoke Test PASSES (cutout_ok=1 for some rows):
+Launch full production run with 270 vCPUs:
+```bash
+ssh emr-launcher 'aws emr create-cluster \
+  --name "Gen5-Phase4c-PRODUCTION" \
+  --region us-east-2 \
+  --release-label emr-7.0.0 \
+  --applications Name=Spark \
+  --instance-groups "[{\"Name\":\"Master\",\"InstanceGroupType\":\"MASTER\",\"InstanceType\":\"m5.2xlarge\",\"InstanceCount\":1},{\"Name\":\"Core\",\"InstanceGroupType\":\"CORE\",\"InstanceType\":\"m5.2xlarge\",\"InstanceCount\":33}]" \
+  --use-default-roles \
+  --log-uri s3://darkhaloscope/emr-logs/ \
+  --bootstrap-actions Path=s3://darkhaloscope/scripts/gen5/emr_bootstrap_gen5.sh \
+  --auto-terminate \
+  --steps "Type=Spark,Name=Gen5-Phase4c-Production,ActionOnFailure=TERMINATE_CLUSTER,Args=[--deploy-mode,cluster,--master,yarn,--num-executors,32,--executor-memory,12g,--executor-cores,4,s3://darkhaloscope/scripts/gen5/spark_phase4_pipeline_gen5.py,--stage,4c,--parent-s3,s3://darkhaloscope/phase4_pipeline/phase4c/v5_cosmos_source/manifests/,--variant,v5_cosmos_source,--experiment-id,train_stamp64_bandsgrz_cosmos,--s3-output,s3://darkhaloscope/phase4_pipeline/phase4c/v5_cosmos_source/stamps/,--psf-model,moffat,--moffat-beta,3.5,--source-mode,cosmos,--cosmos-bank-h5,s3://darkhaloscope/cosmos_bank/cosmos_sources_v1.h5]" \
+  --query ClusterId --output text'
+```
+
+### If Smoke Test FAILS (all cutout_ok=0):
+Check physics_warnings for error messages and debug.
 
 ---
 
@@ -206,6 +278,63 @@ rm -f /path/to/partial/downloads/*
 ```bash
 galsim_download_cosmos -s 25.2 -f  # Force download 25.2
 ls ~/.local/lib/python3.9/site-packages/galsim/share/COSMOS_25.2_training_sample/*.fits
+```
+
+### Mistake 7: boto3 Not Available on EMR Executors ❌
+**What happened:** The `_load_cosmos_bank_h5` function tried to import `boto3` to download the COSMOS bank from S3, but `boto3` wasn't installed on EMR executors.
+
+**Result:** All cutouts failed silently with `cutout_ok=0`.
+
+**LESSON:** **Add `boto3` to the EMR bootstrap script for ANY code that needs S3 access on executors.** The fix was adding `sudo python3 -m pip install boto3` to `emr_bootstrap_gen5.sh`.
+
+### Mistake 8: Broken Self-Import in Python Module ❌
+**What happened:** The `render_cosmos_lensed_source` function had `from spark_phase4_pipeline_gen5 import render_lensed_source` which fails on EMR executors.
+
+**Result:** Import error causing all cutouts to fail.
+
+**LESSON:** **Never self-import from the same module. If a function is defined in the same file, call it directly without import.**
+
+### Mistake 9: Variable Scope Error (UnboundLocalError) ❌
+**What happened:** `source_mode` was defined inside `if theta_e > 0:` block but referenced outside it. Control samples (theta_e=0) never defined the variable.
+
+**Result:** `UnboundLocalError: local variable 'source_mode' referenced before assignment`
+
+**LESSON:** **Always initialize variables BEFORE conditional blocks if they're used AFTER the block.**
+
+**Fix:**
+```python
+# BEFORE (broken):
+if theta_e > 0:
+    source_mode = getattr(args, 'source_mode', 'sersic')
+    # ... processing ...
+# ... later, outside the if block:
+if source_mode == "cosmos":  # ERROR! source_mode undefined if theta_e <= 0
+
+# AFTER (fixed):
+source_mode = getattr(args, 'source_mode', 'sersic')  # Define BEFORE if block
+cosmos_idx = None
+cosmos_hlr = None
+if theta_e > 0:
+    # ... processing ...
+```
+
+### Mistake 10: Inadequate Output Validation ❌
+**What happened:** Smoke tests only checked for job completion and `_SUCCESS` marker, not actual data quality (`cutout_ok` values, stamp content).
+
+**Result:** Bugs persisted through multiple smoke tests into production run.
+
+**LESSON:** **Always validate output DATA, not just job status:**
+```python
+# Check cutout_ok distribution
+table = pq.read_table(output_path, columns=["cutout_ok", "physics_warnings"])
+cutout_ok_vals = [x.as_py() for x in table["cutout_ok"]]
+print(f"cutout_ok distribution: {dict(zip(*np.unique(cutout_ok_vals, return_counts=True)))}")
+
+# Check for errors in physics_warnings
+for i in range(min(5, len(table))):
+    pw = table["physics_warnings"][i].as_py()
+    if pw:
+        print(f"ERROR: {pw}")
 ```
 
 ---
