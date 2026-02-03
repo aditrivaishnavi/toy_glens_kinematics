@@ -282,11 +282,14 @@ def _load_cosmos_bank_h5(h5_path: str) -> Dict:
         # Download to executor local temp
         import boto3
         import tempfile
-        s3 = boto3.client("s3")
+        # CRITICAL: Use us-east-2 region explicitly - bucket is in us-east-2!
+        s3 = boto3.client("s3", region_name="us-east-2")
         bucket, key = h5_path.replace("s3://", "").split("/", 1)
         local_path = os.path.join(tempfile.gettempdir(), os.path.basename(h5_path))
         if not os.path.exists(local_path):
+            print(f"[COSMOS] Downloading {h5_path} to {local_path}...")
             s3.download_file(bucket, key, local_path)
+            print(f"[COSMOS] Downloaded {os.path.getsize(local_path) / 1e6:.1f} MB")
         h5_path = local_path
     
     with h5py.File(h5_path, "r") as f:
