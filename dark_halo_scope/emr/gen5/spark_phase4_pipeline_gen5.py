@@ -2612,6 +2612,11 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                 physics_valid = None
                 physics_warnings_str = None
                 
+                # Gen5: Get source mode (must be defined before the if block since it's used in output)
+                source_mode = getattr(args, 'source_mode', 'sersic')
+                cosmos_idx = None
+                cosmos_hlr = None
+                
                 if theta_e > 0 and src_flux_r_nmgy > 0:
                     # =========================================================================
                     # PER-BAND PSF: Use center-evaluated psfsize map for highest fidelity
@@ -2657,9 +2662,6 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     # This normalizes the UNLENSED source analytically, so lensed images
                     # are naturally brighter due to magnification. No more image-sum normalization!
                     # =========================================================================
-                    
-                    # Gen5: Check source mode (sersic vs cosmos)
-                    source_mode = getattr(args, 'source_mode', 'sersic')
                     
                     if source_mode == "cosmos":
                         # =========================================================================
@@ -2823,8 +2825,8 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                 # Gen5: Add COSMOS metadata if cosmos mode was used
                 if source_mode == "cosmos":
                     row_source_mode = "cosmos"
-                    row_cosmos_index = int(cosmos_idx) if 'cosmos_idx' in locals() else None
-                    row_cosmos_hlr = float(cosmos_hlr) if 'cosmos_hlr' in locals() and cosmos_hlr else None
+                    row_cosmos_index = int(cosmos_idx) if cosmos_idx is not None else None
+                    row_cosmos_hlr = float(cosmos_hlr) if cosmos_hlr is not None else None
                 else:
                     row_source_mode = "sersic"
                     row_cosmos_index = None
