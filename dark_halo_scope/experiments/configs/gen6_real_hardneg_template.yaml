@@ -1,0 +1,117 @@
+# Gen6 Real Hard Negative Experiment Configuration Template
+# 
+# This is a template for Gen6 experiments using real hard negatives
+# (ring galaxies, mergers) in addition to COSMOS sources.
+#
+# IMPORTANT: Requires Gen5 model scores for hard negative mining!
+
+experiment_id: gen6_hardneg_YYYYMMDD_HHMMSS_XXXXXX  # Will be auto-generated
+experiment_name: "Gen6 Real Hard Negative Training"
+description: |
+  Gen6 model training with:
+  - Real COSMOS galaxy morphologies (from Gen5)
+  - Real hard negatives: ring galaxies, mergers, model false positives
+  - Weighted sampling to emphasize difficult cases
+generation: gen6
+created_at: "2026-02-01T00:00:00+00:00"
+
+# Reproducibility seeds
+seeds:
+  global_seed: 42
+  numpy_seed: 42
+  torch_seed: 42
+  cuda_deterministic: true
+
+# Data variant configuration (same as Gen5)
+data:
+  variant_name: v5_cosmos_source
+  description: "COSMOS source morphology with Moffat PSF"
+  phase3_parent_sample: "s3://darkhaloscope/phase3/parent_sample.parquet"
+  phase4a_manifest: "s3://darkhaloscope/phase4_pipeline/phase4a/v5_cosmos_source/manifests/"
+  phase4c_stamps: "s3://darkhaloscope/phase4_pipeline/phase4c/v5_cosmos_source/stamps/train_stamp64_bandsgrz_cosmos/"
+  
+  psf_model: moffat
+  moffat_beta: 3.5
+  source_mode: cosmos
+  cosmos_library_path: "s3://darkhaloscope/cosmos_sources.h5"
+  theta_e_range: [0.5, 2.5]
+  control_type: unpaired
+  stamp_size: 64
+  bands: [g, r, z]
+
+# Model architecture (same as Gen5)
+model:
+  architecture: convnext_tiny
+  pretrained: false
+  input_channels: 3
+  dropout: 0.1
+  use_metadata: true
+  metadata_columns: [psfsize_r, psfdepth_r]
+  metadata_hidden_dim: 64
+
+# Training hyperparameters
+training:
+  epochs: 50
+  batch_size: 256
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  optimizer: adamw
+  
+  loss_type: focal
+  focal_alpha: 0.25
+  focal_gamma: 2.0
+  
+  scheduler: cosine
+  warmup_epochs: 2
+  
+  early_stopping_patience: 5
+  early_stopping_metric: tpr_at_fpr1e-4
+  
+  use_amp: true
+  amp_dtype: bfloat16
+  
+  num_workers: 8
+  prefetch_factor: 2
+  
+  augment: true
+  augment_flip: true
+  augment_rotate: true
+  
+  min_theta_over_psf: 0.5
+  norm_method: outer
+
+# Hard negatives - KEY CHANGE FOR GEN6
+hard_negatives:
+  enabled: true
+  hard_neg_path: "/path/to/hard_negatives/hard_neg_lookup.parquet"
+  hard_neg_weight: 5.0
+  min_score_threshold: 0.8
+  
+  # Real hard negative sources
+  use_real_hard_negatives: true
+  ring_galaxy_catalog: "/path/to/ring_galaxies.parquet"
+  merger_catalog: "/path/to/mergers.parquet"
+
+# Evaluation configuration
+evaluation:
+  fpr_targets: [0.00001, 0.0001, 0.001, 0.01]
+  tpr_targets: [0.80, 0.85, 0.90, 0.95]
+  theta_e_bins: [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5]
+  theta_over_psf_bins: [0.5, 0.7, 0.9, 1.1, 1.4, 2.0]
+  
+  # Anchor catalogs for validation
+  anchor_catalogs:
+    - "/path/to/slacs_cutouts/"
+    - "/path/to/bells_cutouts/"
+    - "/path/to/ring_galaxy_cutouts/"
+  match_radius_arcsec: 2.0
+
+# Paths
+output_dir: "/lambda/nfs/darkhaloscope-training/experiments/gen6_hardneg/"
+checkpoint_dir: "/lambda/nfs/darkhaloscope-training/experiments/gen6_hardneg/checkpoints/"
+log_dir: "/lambda/nfs/darkhaloscope-training/experiments/gen6_hardneg/logs/"
+
+git_commit: null
+git_branch: null
+git_dirty: null
+

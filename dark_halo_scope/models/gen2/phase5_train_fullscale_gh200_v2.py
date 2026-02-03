@@ -546,37 +546,71 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device, max_bat
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--data", required=True)
-    ap.add_argument("--out_dir", required=True)
-    ap.add_argument("--arch", default="convnext_tiny", choices=["resnet18", "convnext_tiny", "efficientnet_b0"])
-    ap.add_argument("--epochs", type=int, default=8)
-    ap.add_argument("--batch_size", type=int, default=512)
-    ap.add_argument("--lr", type=float, default=3e-4)
-    ap.add_argument("--weight_decay", type=float, default=1e-2)
-    ap.add_argument("--dropout", type=float, default=0.1)
-    ap.add_argument("--num_workers", type=int, default=8)
-    ap.add_argument("--seed", type=int, default=1337)
-    ap.add_argument("--use_bf16", action="store_true")
-    ap.add_argument("--use_fp16", action="store_true")
-    ap.add_argument("--grad_clip", type=float, default=1.0)
-    ap.add_argument("--max_train_rows_per_epoch", type=int, default=0)
-    ap.add_argument("--max_val_rows", type=int, default=2_000_000)
-    ap.add_argument("--val_batches", type=int, default=250)
-    ap.add_argument("--augment", action="store_true")
-    ap.add_argument("--mad_clip", type=float, default=10.0)
-    ap.add_argument("--norm_method", default="full", choices=["full", "outer"],
-                    help="Normalization method: full (legacy) or outer (outer annulus only)")
-    ap.add_argument("--min_theta_over_psf", type=float, default=0.0)
-    ap.add_argument("--min_arc_snr", type=float, default=0.0)
-    ap.add_argument("--meta_cols", default="", help="Comma-separated scalar columns to fuse")
-    ap.add_argument("--contract_json", default="")
-    ap.add_argument("--loss", default="bce", choices=["bce", "focal"])
-    ap.add_argument("--focal_alpha", type=float, default=0.25)
-    ap.add_argument("--focal_gamma", type=float, default=2.0)
+    ap = argparse.ArgumentParser(
+        description="Phase 5 training with scientifically-validated defaults for lens finding."
+    )
+    ap.add_argument("--data", required=True, help="Path to Phase 4c stamps (local or s3://)")
+    ap.add_argument("--out_dir", required=True, help="Output directory for checkpoints and logs")
+    
+    # Model architecture
+    ap.add_argument("--arch", default="convnext_tiny", choices=["resnet18", "convnext_tiny", "efficientnet_b0"],
+                    help="CNN backbone architecture")
+    
+    # Training hyperparameters
+    ap.add_argument("--epochs", type=int, default=8, help="Number of training epochs")
+    ap.add_argument("--batch_size", type=int, default=512, help="Batch size per GPU")
+    ap.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
+    ap.add_argument("--weight_decay", type=float, default=1e-2, help="Weight decay for AdamW")
+    ap.add_argument("--dropout", type=float, default=0.1, help="Dropout rate in classifier head")
+    ap.add_argument("--num_workers", type=int, default=8, help="DataLoader workers")
+    ap.add_argument("--seed", type=int, default=1337, help="Random seed")
+    
+    # Precision - bf16 is DEFAULT for H100/GH200
+    ap.add_argument("--use_bf16", action="store_true", default=True,
+                    help="Use bfloat16 mixed precision (default: True)")
+    ap.add_argument("--no_bf16", action="store_false", dest="use_bf16",
+                    help="Disable bfloat16, use fp32")
+    ap.add_argument("--use_fp16", action="store_true", default=False,
+                    help="Use float16 mixed precision instead of bf16")
+    ap.add_argument("--grad_clip", type=float, default=1.0, help="Gradient clipping norm")
+    
+    # Data limits
+    ap.add_argument("--max_train_rows_per_epoch", type=int, default=0, help="Max train rows per epoch (0=all)")
+    ap.add_argument("--max_val_rows", type=int, default=2_000_000, help="Max validation rows")
+    ap.add_argument("--val_batches", type=int, default=250, help="Max validation batches per epoch")
+    
+    # Augmentation - DEFAULT ON
+    ap.add_argument("--augment", action="store_true", default=True,
+                    help="Enable augmentation (rot90 + flips) - default: True")
+    ap.add_argument("--no_augment", action="store_false", dest="augment",
+                    help="Disable augmentation")
+    
+    # Normalization - OUTER ANNULUS is scientifically preferred to avoid injection leakage
+    ap.add_argument("--mad_clip", type=float, default=10.0, help="MAD clipping threshold")
+    ap.add_argument("--norm_method", default="outer", choices=["full", "outer"],
+                    help="Normalization method: 'outer' (annulus, preferred) or 'full' (legacy)")
+    
+    # Resolvability filtering - DEFAULT 0.5 to exclude unresolved lenses
+    ap.add_argument("--min_theta_over_psf", type=float, default=0.5,
+                    help="Minimum theta_e / PSF_FWHM ratio for positives (0.5 = resolved only)")
+    ap.add_argument("--min_arc_snr", type=float, default=0.0,
+                    help="Minimum arc SNR for positives (0 = no filter)")
+    
+    # Metadata fusion - DEFAULT includes PSF and depth for conditioning
+    ap.add_argument("--meta_cols", default="psfsize_r,psfdepth_r",
+                    help="Comma-separated scalar columns to fuse (default: psfsize_r,psfdepth_r)")
+    ap.add_argument("--contract_json", default="", help="Path to schema contract JSON")
+    
+    # Loss function - FOCAL LOSS is preferred for imbalanced/hard example focus
+    ap.add_argument("--loss", default="focal", choices=["bce", "focal"],
+                    help="Loss function: 'focal' (preferred for low-FPR) or 'bce'")
+    ap.add_argument("--focal_alpha", type=float, default=0.25, help="Focal loss alpha")
+    ap.add_argument("--focal_gamma", type=float, default=2.0, help="Focal loss gamma")
+    
+    # Early stopping
     ap.add_argument("--early_stopping_patience", type=int, default=3, 
                     help="Stop if no improvement for N epochs. 0=disable")
-    ap.add_argument("--resume", default="")
+    ap.add_argument("--resume", default="", help="Path to checkpoint to resume from")
     args = ap.parse_args()
 
     ddp_init()
@@ -689,6 +723,10 @@ def main():
     no_improve_count = 0
     early_stop = False
     
+    logger = logging.getLogger(__name__)
+    logger.info(f"Starting training: epochs={args.epochs}, batch_size={args.batch_size}, arch={args.arch}")
+    logger.info(f"Device: {device}, AMP: {use_amp} (dtype={amp_dtype if use_amp else 'N/A'})")
+    
     for epoch in range(start_epoch, args.epochs):
         if early_stop:
             break
@@ -699,7 +737,11 @@ def main():
         model.train()
         total_loss = 0.0
         n_seen = 0
+        batch_idx = 0
+        log_interval = 100  # Log every 100 batches
 
+        logger.info(f"Epoch {epoch + 1}/{args.epochs} - Starting training...")
+        
         for x, y, meta in train_loader:
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
@@ -733,7 +775,13 @@ def main():
 
             total_loss += float(loss.detach().cpu().item()) * x.size(0)
             n_seen += x.size(0)
+            batch_idx += 1
+            
+            if batch_idx % log_interval == 0:
+                avg_loss = total_loss / max(1, n_seen)
+                logger.info(f"  Epoch {epoch+1} - Batch {batch_idx}: samples={n_seen}, loss={avg_loss:.4f}")
 
+        logger.info(f"Epoch {epoch + 1} - Training complete: {n_seen} samples, avg_loss={total_loss/max(1,n_seen):.4f}")
         tl = torch.tensor([total_loss, n_seen], device=device, dtype=torch.float64)
         if is_dist():
             dist.all_reduce(tl, op=dist.ReduceOp.SUM)
@@ -764,6 +812,9 @@ def main():
                 "args": vars(args),
             }
             torch.save(ckpt, os.path.join(args.out_dir, "ckpt_last.pt"))
+            
+            # Save per-epoch checkpoint for reproducibility
+            torch.save(ckpt, os.path.join(args.out_dir, f"ckpt_epoch_{epoch}.pt"))
 
             if score > best_metric:
                 best_metric = float(score)

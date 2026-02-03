@@ -1,0 +1,31 @@
+╔════════════════════════════════════════════════════════════════╗
+║  Gen5 COSMOS Bank Builder - Quick Reference                   ║
+╚════════════════════════════════════════════════════════════════╝
+
+🚀 LAUNCH COMMAND (run on emr-launcher):
+   bash emr/gen5/launch_cosmos_bank_builder.sh
+
+📊 CLUSTER SPECS:
+   • 1x r6i.8xlarge (32 vCPUs, 256 GB RAM)
+   • Runtime: 30-60 minutes
+   • Cost: ~$3-5 USD
+   • Auto-terminates when done
+
+📦 OUTPUT:
+   s3://darkhaloscope/cosmos/cosmos_bank_20k_parametric_v1.h5
+   s3://darkhaloscope/cosmos/cosmos_bank_config_20k_v1.json
+
+📋 MONITOR:
+   CLUSTER_ID=$(cat /tmp/cosmos_bank_cluster_id.txt)
+   aws emr describe-cluster --cluster-id $CLUSTER_ID \
+     --query 'Cluster.Status.State'
+
+📖 FULL DOCS:
+   emr/gen5/README.md
+   emr/gen5/LAUNCH_INSTRUCTIONS.sh
+
+╔════════════════════════════════════════════════════════════════╗
+║  After completion, proceed to Phase 2 (test injection)        ║
+║  See: docs/gen5_remaining_steps.md                            ║
+╚════════════════════════════════════════════════════════════════╝
+

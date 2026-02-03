@@ -2,16 +2,19 @@
 
 **Project**: CNN-Based Strong Gravitational Lens Finder for DESI Legacy Survey DR10  
 **Target Publication**: MNRAS / ApJ / AAS  
-**Last Updated**: 2026-01-31
+**Last Updated**: 2026-02-02
 
 ---
 
 ## Table of Contents
 
 1. [Model Generation 1: ResNet18 on v3_color_relaxed](#generation-1-resnet18-on-v3_color_relaxed)
-2. [Model Generation 2: ConvNeXt-Tiny on v4_sota](#generation-2-convnext-tiny-on-v4_sota)
-3. [Comparative Analysis](#comparative-analysis)
-4. [Key Insights and Lessons Learned](#key-insights-and-lessons-learned)
+2. [Model Generation 2: ConvNeXt-Tiny on v4_sota (Gaussian PSF)](#generation-2-convnext-tiny-on-v4_sota-gaussian-psf)
+3. [Model Generation 3: ConvNeXt-Tiny on v4_sota_moffat (Moffat PSF)](#generation-3-convnext-tiny-on-v4_sota_moffat-moffat-psf)
+4. [Model Generation 4: ConvNeXt-Tiny with Hard Negative Mining](#generation-4-convnext-tiny-with-hard-negative-mining)
+5. [Comparative Analysis](#comparative-analysis)
+6. [Key Insights and Lessons Learned](#key-insights-and-lessons-learned)
+7. [Sim-to-Real Gap Analysis](#sim-to-real-gap-analysis)
 
 ---
 
@@ -25,7 +28,7 @@
 | Data Version | v3_color_relaxed |
 | Training Date | 2026-01-28 to 2026-01-29 |
 | Training Platform | Lambda Labs GH200 (96GB) |
-| Status | Completed, inference analyzed |
+| Status | ✅ Completed |
 
 ### Phase 3: Target Galaxy Selection
 
@@ -82,19 +85,9 @@ z - W1 > 0.8
 **Total configurations**: 3 × 2 × 2 × 2 × 2 = 48 injection configs
 
 **Control Strategy**: 
-- **PAIRED CONTROLS** (same galaxy, no injection)
+- **PAIRED CONTROLS** ❌ (same galaxy, no injection)
 - 50% of samples marked as controls with theta_e=0
 - Hash-based deterministic assignment per galaxy
-
-### Phase 4b: Coadd Caching
-
-```bash
-# S3 cache location
-s3://darkhaloscope/dr10_coadd_cache/
-
-# Bands cached: g, r, z
-# Brick coverage: All bricks containing target LRGs
-```
 
 ### Phase 4c: Lens Injection
 
@@ -111,28 +104,6 @@ Controls:          ~5.3M (49.9%)
 Injections:        ~5.3M (50.1%)
 Cutout success:    100%
 Compression:       Snappy (parquet default)
-```
-
-**Commands Used**:
-```bash
-# Phase 4a
-spark-submit \
-  --deploy-mode cluster \
-  spark_phase4_pipeline.py \
-  --stage 4a \
-  --output-s3 s3://darkhaloscope/phase4_pipeline \
-  --variant v3_color_relaxed \
-  --grid-train grid_small \
-  --control-frac-train 0.5
-
-# Phase 4c
-spark-submit \
-  --deploy-mode cluster \
-  spark_phase4_pipeline.py \
-  --stage 4c \
-  --output-s3 s3://darkhaloscope/phase4_pipeline \
-  --variant v3_color_relaxed \
-  --experiment-id train_stamp64_bandsgrz_gridgrid_small
 ```
 
 ### Phase 5: Model Training
@@ -157,65 +128,28 @@ spark-submit \
 | Mixed precision | fp16 |
 | Augmentation | Flip + Rot90 |
 
-**Normalization**:
-```python
-# Per-channel robust MAD normalization
-for c in [g, r, z]:
-    median = np.median(stamp[c])
-    mad = np.median(np.abs(stamp[c] - median))
-    stamp[c] = np.clip((stamp[c] - median) / (1.4826 * mad + eps), -10, 10)
-```
-
-**Training Command**:
-```bash
-python train_lambda.py \
-  --data_dir /lambda/nfs/darkhaloscope-training/phase4c \
-  --output_dir /lambda/nfs/darkhaloscope-training/phase5/models/resnet18_v1 \
-  --epochs 10 \
-  --batch_size 32 \
-  --lr 3e-4
-```
-
 ### Evaluation Results
 
-**Training Progression**:
-| Epoch | Train Loss | Val Loss | Val AUROC |
-|-------|-----------|----------|-----------|
-| 1 | 0.2831 | 0.1824 | 0.9762 |
-| 5 | 0.0892 | 0.0734 | 0.9941 |
-| 10 | 0.0612 | 0.0589 | 0.9963 |
+**Final Model Performance**:
+| Metric | Value |
+|--------|-------|
+| AUROC | 0.9963 |
+| tpr@fpr1e-4 | **0.4%** |
+| tpr@fpr1e-3 | 35.2% |
+| tpr@fpr1e-2 | 74.7% |
+| fpr@tpr0.85 | 6.2% |
 
-**FPR vs Completeness (Final Model)**:
-| Completeness (TPR) | FPR | log₁₀(FPR) |
-|--------------------|-----|------------|
-| 99.0% | 4.14e-01 | -0.38 |
-| 95.0% | 1.88e-01 | -0.73 |
-| 90.0% | 1.02e-01 | -0.99 |
-| **85.0%** | **6.17e-02** | **-1.21** |
-| 80.0% | 3.97e-02 | -1.40 |
-| 70.0% | 1.79e-02 | -1.75 |
+### Issues Identified
 
-**Completeness at Fixed FPR**:
-| Target FPR | Actual Completeness (TPR) |
-|------------|---------------------------|
-| 1e-2 | 74.7% |
-| 1e-3 | 35.2% |
-| **1e-4** | **0.4%** |
-| 1e-5 | ~0% |
-
-### Issues Identified Post-Training
-
-1. **Paired Controls (Critical)**: Controls used the SAME galaxy as positives (just without injection). Model learned to detect "extra flux added" rather than arc morphology.
+1. **Paired Controls (Critical)**: Controls used the SAME galaxy as positives. Model learned to detect "extra flux added" rather than arc morphology.
 
 2. **Unresolved Injections (Critical)**: With theta_e range [0.3, 0.6, 1.0] and median PSF ~1.3", ~60% of injections had theta_e/PSF < 0.5 (unresolved).
 
 3. **Gaussian PSF Approximation**: Real DECaLS PSFs have extended wings; Gaussian underestimates this.
 
-4. **No Metadata Fusion**: PSF size and depth information not used during training.
-
 ---
 
-## Generation 2: ConvNeXt-Tiny on v4_sota
+## Generation 2: ConvNeXt-Tiny on v4_sota (Gaussian PSF)
 
 ### Overview
 
@@ -223,29 +157,22 @@ python train_lambda.py \
 |----------|-------|
 | Model Name | ConvNeXt-v4sota |
 | Data Version | v4_sota |
-| Training Date | 2026-01-31 (ongoing) |
+| Training Date | 2026-01-31 |
 | Training Platform | Lambda Labs GH200 (96GB) |
-| Status | **Training in progress** (epoch 2 of 12) |
+| Status | ✅ Completed |
+| Checkpoint Location | `/lambda/nfs/darkhaloscope-training-dc/runs/gen2_final/` |
 
-### Phase 3: Target Galaxy Selection
+### Key Changes from Gen1
 
-**Same as Generation 1** - Uses v3_color_relaxed parent sample.
+| Aspect | Gen1 | Gen2 | Impact |
+|--------|------|------|--------|
+| Control Type | Paired ❌ | **Unpaired** ✅ | No shortcut learning |
+| theta_e range | 0.3-1.0" | **0.5-2.5"** | Resolvable lenses |
+| Injection Grid | 48 configs | **1,008 configs** | Better coverage |
+| Architecture | ResNet18 | **ConvNeXt-Tiny** | More capacity |
+| Loss | BCE | BCE | Same |
 
 ### Phase 4a: Injection Manifest Generation
-
-**Configuration** (`_stage_config.json`):
-```json
-{
-  "variant": "v4_sota",
-  "tiers": {
-    "train": {
-      "grid": "grid_sota",
-      "n_total_per_split": 200000,
-      "control_frac": 0.5
-    }
-  }
-}
-```
 
 **Injection Grid: `grid_sota`** (Extended for Resolved Lenses):
 | Parameter | Values | Description |
@@ -259,53 +186,22 @@ python train_lambda.py \
 **Total configurations**: 7 × 4 × 4 × 3 × 3 = 1,008 injection configs
 
 **Control Strategy**:
-- **UNPAIRED CONTROLS** (different galaxies for controls vs positives)
-- 50% control fraction
-- Hash-based deterministic assignment **ensures disjoint galaxy sets**
-- Controls: 2,715 unique galaxies
-- Positives: 2,770 unique galaxies
-- Overlap: **0 galaxies** (verified)
+- **UNPAIRED CONTROLS** ✅ (different galaxies for controls vs positives)
+- Hash-based deterministic assignment ensures disjoint galaxy sets
+- Overlap verification: **0 galaxies** shared between controls and positives
 
 ### Phase 4c: Lens Injection
 
-**Key Differences from v3**:
-| Aspect | v3_color_relaxed | v4_sota |
-|--------|------------------|---------|
-| theta_e range | [0.3, 1.0] arcsec | [0.5, 2.5] arcsec |
-| Min theta_e | 0.3 arcsec | 0.5 arcsec |
-| Control type | Paired (same galaxy) | Unpaired (different galaxies) |
-| PSF model | Gaussian | Gaussian (Moffat available) |
-| Compression | Snappy | **Gzip** |
-
-**Output Statistics**:
-```
-Total files:       1,800 parquet files
-Total size:        450 GB (gzip compressed)
-Cutout success:    100% (all cutout_ok=1)
-Control fraction:  47.4%
-```
+**Injection Method**:
+- Lens model: SIE (Singular Isothermal Ellipsoid)
+- Source profile: Sersic (n=1, exponential disk)
+- PSF convolution: **Gaussian** (psfsize per-band: g, r, z)
+- Pixel scale: 0.262 arcsec/pixel
 
 **Commands Used**:
 ```bash
-# Phase 4a
 spark-submit \
   --deploy-mode cluster \
-  --driver-memory 8g \
-  --executor-memory 18g \
-  spark_phase4_pipeline.py \
-  --stage 4a \
-  --output-s3 s3://darkhaloscope/phase4_pipeline \
-  --variant v4_sota \
-  --grid-train grid_sota \
-  --control-frac-train 0.5
-
-# Phase 4c (with gzip compression)
-spark-submit \
-  --deploy-mode cluster \
-  --driver-memory 8g \
-  --executor-memory 18g \
-  --executor-cores 4 \
-  --num-executors 50 \
   --conf spark.sql.parquet.compression.codec=gzip \
   spark_phase4_pipeline.py \
   --stage 4c \
@@ -314,23 +210,7 @@ spark-submit \
   --experiment-id train_stamp64_bandsgrz_gridgrid_sota
 ```
 
-**Bug Fixed During 4c**:
-```python
-# Original (caused "numpy.ndarray doesn't define __round__" error):
-x0 = int(round(x)) - half
-
-# Fixed:
-x0 = int(np.round(x)) - half
-```
-
 ### Phase 5: Model Training
-
-**Architecture**: ConvNeXt-Tiny
-```python
-# torchvision.models.convnext_tiny
-# Feature dimension: 768
-# Classifier: Identity (features extracted, custom head)
-```
 
 **Training Configuration**:
 | Hyperparameter | Value |
@@ -339,187 +219,554 @@ x0 = int(np.round(x)) - half
 | Learning rate | 3e-4 |
 | Weight decay | 1e-2 |
 | Batch size | 512 |
-| Epochs | 12 |
+| Epochs | 7 (early stopped) |
 | Loss | BCEWithLogitsLoss |
 | Mixed precision | bf16 |
 | Augmentation | Flip + Rot90 |
-| min_theta_over_psf | 0.0 (no filtering) |
-| Metadata fusion | None |
+| Early stopping | Patience 5 |
 
 **Training Command**:
 ```bash
-PYTHONUNBUFFERED=1 nohup python3 -u phase5_train_fullscale_gh200_v2.py \
+PYTHONUNBUFFERED=1 python3 -u phase5_train_fullscale_gh200_v2.py \
     --data /lambda/nfs/darkhaloscope-training-dc/phase4c_v4_sota \
-    --out_dir /lambda/nfs/darkhaloscope-training-dc/runs/pathb_v4sota_convnext \
+    --out_dir /lambda/nfs/darkhaloscope-training-dc/runs/gen2_final \
     --arch convnext_tiny \
-    --epochs 12 \
+    --epochs 50 \
     --batch_size 512 \
     --lr 3e-4 \
     --use_bf16 \
     --augment \
-    > /tmp/pathb_train.log 2>&1 &
+    --early_stopping_patience 5
 ```
 
-### Evaluation Results (Partial - Training Ongoing)
+### Evaluation Results
 
 **Training Progression**:
-| Epoch | Train Loss | AUROC | tpr@fpr1e-4 | fpr@tpr0.85 |
+| Epoch | Train Loss | AUROC | tpr@fpr1e-4 | tpr@fpr1e-3 |
 |-------|-----------|-------|-------------|-------------|
-| 0 | 0.0828 | 0.9910 | 69.8% | 0.0011 |
-| 1 | 0.0234 | 0.9892 | 78.8% | 0.0018 |
-| 2 | 0.0107 | 0.9894 | 77.8% | 0.0017 |
+| 0 | 0.0828 | 0.9910 | 69.8% | 83.1% |
+| 1 | 0.0234 | 0.9892 | 78.8% | 81.5% |
+| 2 | 0.0107 | 0.9894 | 77.8% | 82.2% |
+| 3 | 0.0071 | 0.9902 | 79.8% | 85.4% |
+| **4** | 0.0049 | 0.9906 | **75.1%** ★ | 86.1% |
 
-**Comparison to ResNet18 at Similar Epoch**:
-| Metric | ResNet18-v3 (Epoch 2) | ConvNeXt-v4sota (Epoch 2) | Improvement |
-|--------|----------------------|---------------------------|-------------|
-| tpr@fpr1e-4 | ~0.4% | 77.8% | **195x** |
-| fpr@tpr0.85 | ~6% | 0.17% | **35x** |
+**Best Model (Epoch 4)**:
+| Metric | Value |
+|--------|-------|
+| AUROC | 0.9906 |
+| **tpr@fpr1e-4** | **75.1%** ★ Best across all generations |
+| tpr@fpr1e-3 | 86.1% |
+| tpr@fpr1e-2 | 93.3% |
 
-### Known Issues in Current Training
+### Known Issues
 
-1. **DataLoader Worker Duplication Bug**: 
-   - `_iter_fragments()` shards by DDP rank only, not by worker ID
-   - With num_workers=8, each worker processes same fragments (8x duplication)
-   - Fix identified but not applied to running training
+1. **Worker Sharding Bug**: DataLoader workers processed same fragments (8x duplication) - fixed in Gen3+
+2. **No resolvability filter**: All theta_e values included, some still unresolved
+3. **No metadata fusion**: PSF/depth conditioning not used
 
-2. **No Metadata Leakage Guard**:
-   - If `--meta_cols arc_snr` were used, it would leak labels
-   - Currently not using metadata, so not affecting this run
+---
+
+## Generation 3: ConvNeXt-Tiny on v4_sota_moffat (Moffat PSF)
+
+### Overview
+
+| Property | Value |
+|----------|-------|
+| Model Name | ConvNeXt-v4sota-moffat |
+| Data Version | v4_sota_moffat |
+| Training Date | 2026-02-01 |
+| Training Platform | Lambda Labs GH200 (96GB) |
+| Status | ✅ Completed |
+| Checkpoint Location | `/lambda/nfs/darkhaloscope-training-dc/runs/gen3_moffat/` |
+
+### Key Changes from Gen2
+
+| Aspect | Gen2 | Gen3 | Rationale |
+|--------|------|------|-----------|
+| PSF Model | Gaussian | **Moffat (β=3.5)** | Extended wings, more realistic |
+| Loss | BCE | **Focal Loss** | Focus on hard examples |
+| Resolvability Filter | None | **θ/PSF ≥ 0.5** | Exclude unresolved |
+| Worker Sharding | Bug | **Fixed** | No sample duplication |
+| Metadata Guard | None | **Active** | Block label-leaking columns |
+| Normalization | Full image | **Outer annulus** | Reduce injection leakage |
+
+### Phase 4c: Lens Injection
+
+**Key Difference**: Moffat PSF with β=3.5 instead of Gaussian
+
+**Commands Used**:
+```bash
+spark-submit \
+  --deploy-mode cluster \
+  --conf spark.sql.parquet.compression.codec=gzip \
+  spark_phase4_pipeline.py \
+  --stage 4c \
+  --output-s3 s3://darkhaloscope/phase4_pipeline \
+  --variant v4_sota_moffat \
+  --psf-model moffat \
+  --moffat-beta 3.5 \
+  --experiment-id train_stamp64_bandsgrz_gridgrid_sota
+```
+
+### Phase 5: Model Training
+
+**Training Configuration**:
+| Hyperparameter | Value |
+|----------------|-------|
+| Optimizer | AdamW |
+| Learning rate | 3e-4 |
+| Weight decay | 1e-2 |
+| Batch size | 256 |
+| Epochs | 8 (early stopped) |
+| **Loss** | **Focal (α=0.25, γ=2.0)** |
+| Mixed precision | bf16 |
+| Augmentation | Flip + Rot90 |
+| **min_theta_over_psf** | **0.5** |
+| **norm_method** | **outer** |
+| meta_cols | psfsize_r, psfdepth_r |
+
+**Training Command**:
+```bash
+PYTHONUNBUFFERED=1 python3 -u phase5_train_fullscale_gh200_v2.py \
+    --data /lambda/nfs/darkhaloscope-training-dc/phase4c_v4_sota_moffat \
+    --out_dir /lambda/nfs/darkhaloscope-training-dc/runs/gen3_moffat \
+    --arch convnext_tiny \
+    --epochs 50 \
+    --batch_size 256 \
+    --lr 3e-4 \
+    --use_bf16 \
+    --augment \
+    --loss focal \
+    --focal_alpha 0.25 \
+    --focal_gamma 2.0 \
+    --min_theta_over_psf 0.5 \
+    --norm_method outer \
+    --meta_cols psfsize_r,psfdepth_r \
+    --early_stopping_patience 5
+```
+
+### Evaluation Results
+
+**Training Progression**:
+| Epoch | Train Loss | AUROC | tpr@fpr1e-4 | tpr@fpr1e-3 | binary_frac |
+|-------|-----------|-------|-------------|-------------|-------------|
+| 0 | - | 0.9636 | 30.1% | 46.9% | 0.0% |
+| 1 | - | 0.9802 | 33.0% | 71.3% | 1.3% |
+| 2 | - | 0.9818 | 29.2% | 74.4% | 21.9% |
+| 3 | - | 0.9842 | 54.2% | 77.4% | 42.6% |
+| **4** | - | 0.9829 | **66.8%** ★ | 78.1% | 62.2% |
+| 5 | - | 0.9829 | 57.4% | 78.8% | 84.9% |
+| 6 | - | 0.9808 | 57.7% | 78.7% | 93.4% |
+| 7 | - | 0.9809 | 55.8% | 80.8% | 93.1% |
+
+**Best Model (Epoch 4)**:
+| Metric | Value |
+|--------|-------|
+| AUROC | 0.9829 |
+| **tpr@fpr1e-4** | **66.8%** |
+| tpr@fpr1e-3 | 78.1% |
+
+### ⚠️ Issues Identified
+
+1. **Calibration Collapse**: binary_score_frac increased from 0% to 93% over training
+   - Model becoming overconfident
+   - Scores clustering at 0 or 1, losing calibration
+
+2. **Performance DECREASED from Gen2**: 
+   - Gen2: 75.1% tpr@fpr1e-4
+   - Gen3: 66.8% tpr@fpr1e-4
+   - Moffat PSF actually hurt synthetic performance
+
+3. **Possible explanation**: Moffat PSF makes arcs harder to detect (more spread out), but also makes negatives look more lens-like
+
+---
+
+## Generation 4: ConvNeXt-Tiny with Hard Negative Mining
+
+### Overview
+
+| Property | Value |
+|----------|-------|
+| Model Name | ConvNeXt-v4sota-moffat-hardneg |
+| Data Version | v4_sota_moffat (same as Gen3) |
+| Training Date | 2026-02-02 |
+| Training Platform | Lambda Labs GH200 (96GB) |
+| Status | ✅ Completed |
+| Checkpoint Location | `/lambda/nfs/darkhaloscope-training-dc/models/gen4_hardneg/` |
+
+### Key Changes from Gen3
+
+| Aspect | Gen3 | Gen4 | Rationale |
+|--------|------|------|-----------|
+| Training Data | Base only | **Base + Hard Negatives** | Push FPR down |
+| Hard Neg Source | N/A | **Gen2 + Gen3 FPs** | Controls scoring >0.9 |
+| Hard Neg Weight | N/A | **5x upsampling** | Increase HN importance |
+| Hard Neg Count | 0 | **~35k unique positions** | Substantial coverage |
+
+### Hard Negative Mining Strategy
+
+**Source**: False positives from Gen2 and Gen3 inference
+- Gen2: ~20k controls with p_lens > 0.9
+- Gen3: ~20k controls with p_lens > 0.9
+- Total: ~40k candidates
+
+**Processing**:
+1. Merge Gen2 + Gen3 hard negatives
+2. Deduplicate by (ra, dec) position → ~35k unique
+3. Create lookup parquet with `ra_key`, `dec_key` (rounded to 6 decimals)
+4. During training, match by position and upsample 5x
+
+**Hard Negative Preparation Script**:
+```python
+# From run_gen4_training.sh
+merged = pd.concat([gen2_hn, gen3_hn], ignore_index=True)
+merged = merged.drop_duplicates(subset=["ra", "dec"])
+merged["ra_key"] = np.round(merged["ra"], 6)
+merged["dec_key"] = np.round(merged["dec"], 6)
+lookup = merged[["ra_key", "dec_key", "brickname", "source_model"]]
+lookup.to_parquet("hard_neg_lookup.parquet", index=False)
+```
+
+### Phase 5: Model Training
+
+**Training Configuration**:
+| Hyperparameter | Value |
+|----------------|-------|
+| Optimizer | AdamW |
+| Learning rate | 3e-4 |
+| Weight decay | 1e-2 |
+| Batch size | 256 |
+| Epochs | 13 (early stopped at 12) |
+| Loss | Focal (α=0.25, γ=2.0) |
+| Mixed precision | bf16 |
+| Augmentation | Flip + Rot90 |
+| min_theta_over_psf | 0.5 |
+| norm_method | outer |
+| meta_cols | psfsize_r, psfdepth_r |
+| **hard_neg_path** | `hard_neg_lookup.parquet` |
+| **hard_neg_weight** | **5** |
+
+**Training Command**:
+```bash
+PYTHONUNBUFFERED=1 python3 -u phase5_train_gen4_hardneg.py \
+    --data /lambda/nfs/darkhaloscope-training-dc/phase4c_v4_sota_moffat \
+    --out_dir /lambda/nfs/darkhaloscope-training-dc/models/gen4_hardneg \
+    --hard_neg_path /lambda/nfs/darkhaloscope-training-dc/hard_negatives/merged/hard_neg_lookup.parquet \
+    --hard_neg_weight 5 \
+    --arch convnext_tiny \
+    --epochs 50 \
+    --batch_size 256 \
+    --lr 3e-4 \
+    --weight_decay 1e-2 \
+    --dropout 0.1 \
+    --use_bf16 \
+    --augment \
+    --loss focal \
+    --focal_alpha 0.25 \
+    --focal_gamma 2.0 \
+    --min_theta_over_psf 0.5 \
+    --norm_method outer \
+    --meta_cols psfsize_r,psfdepth_r \
+    --early_stopping_patience 5
+```
+
+### Evaluation Results
+
+**Training Progression**:
+| Epoch | Train Loss | AUROC | tpr@fpr1e-4 | tpr@fpr1e-3 | binary_frac | hard_neg_yield |
+|-------|-----------|-------|-------------|-------------|-------------|----------------|
+| 0 | 0.0109 | 0.9526 | 13.3% | 50.7% | 0.1% | ~12k |
+| 1 | 0.0069 | 0.9746 | 32.5% | 64.4% | 0.0% | ~12k |
+| 2 | 0.0054 | 0.9849 | 50.1% | 64.9% | 3.6% | ~13k |
+| 3 | 0.0044 | 0.9912 | 56.0% | 74.1% | 0.0% | ~12k |
+| 4 | 0.0038 | 0.9894 | 66.3% | 76.1% | 19.4% | ~13k |
+| 5 | 0.0033 | 0.9873 | 63.4% | 74.9% | 33.4% | ~11k |
+| 6 | 0.0028 | 0.9920 | 64.9% | 82.3% | 2.3% | ~12k |
+| **7** | 0.0024 | 0.9904 | **74.5%** ★ | 80.1% | 8.1% | ~12k |
+| 8 | 0.0021 | 0.9883 | 66.7% | 80.3% | 32.1% | ~14k |
+| 9 | 0.0018 | 0.9872 | 70.3% | 76.3% | 38.6% | ~14k |
+| 10 | 0.0015 | 0.9894 | 74.1% | 81.3% | 31.2% | ~12k |
+| 11 | 0.0012 | 0.9877 | 67.2% | 83.2% | 2.9% | ~12k |
+| 12 | 0.0011 | 0.9900 | 68.8% | 82.4% | 53.6% | ~13k |
+
+**Best Model (Epoch 7)**:
+| Metric | Value |
+|--------|-------|
+| AUROC | 0.9904 |
+| **tpr@fpr1e-4** | **74.5%** |
+| tpr@fpr1e-3 | 80.1% |
+| tpr@fpr1e-2 | 93.0% |
+
+**Training Statistics Per Epoch**:
+- Train batches: 6,027
+- Samples yielded: ~195k
+- Hard negatives yielded: ~12-14k (with 5x weight)
+- Total effective hard neg samples: ~60-70k per epoch
+
+### Checkpoint Files
+
+| File | Size | Description |
+|------|------|-------------|
+| `ckpt_best.pt` | 323 MB | Epoch 7 (best tpr@fpr1e-4) |
+| `ckpt_last.pt` | 323 MB | Epoch 12 (final) |
+| `ckpt_epoch_0.pt` | 323 MB | Initial checkpoint |
+| `ckpt_epoch_5.pt` | 323 MB | Epoch 5 |
+| `ckpt_epoch_10.pt` | 323 MB | Epoch 10 |
+
+### ⚠️ Issues Identified
+
+1. **Calibration Collapse (Final Epoch)**: binary_score_frac = 53.6%
+   - Scores clustering at extremes
+   - Loss of probability calibration
+
+2. **Validation Set Imbalance**:
+   - pos_eval: 5,064 (4%)
+   - neg_eval: 122,936 (96%)
+   - Very different from 50/50 training distribution
+
+3. **Hard Negatives Did NOT Help Significantly**:
+   - Gen2 (no HN): 75.1% tpr@fpr1e-4
+   - Gen4 (with HN): 74.5% tpr@fpr1e-4
+   - Synthetic hard negatives may not represent real contaminants
+
+4. **Training Instability**: tpr@fpr1e-4 fluctuated between 63-75% across epochs
 
 ---
 
 ## Comparative Analysis
 
+### Complete Results Summary
+
+| Generation | Data | PSF | Controls | Hard Neg | Best tpr@fpr1e-4 | tpr@fpr1e-3 | AUROC |
+|------------|------|-----|----------|----------|------------------|-------------|-------|
+| **Gen1** | v3_color_relaxed | Gaussian | Paired ❌ | No | 0.4% | 35.2% | 0.9963 |
+| **Gen2** | v4_sota | Gaussian | Unpaired ✅ | No | **75.1%** ★ | 86.1% | 0.9906 |
+| **Gen3** | v4_sota_moffat | Moffat | Unpaired ✅ | No | 66.8% | 78.1% | 0.9829 |
+| **Gen4** | v4_sota_moffat | Moffat | Unpaired ✅ | Yes (35k) | 74.5% | 80.1% | 0.9904 |
+
+### Performance Progression Chart
+
+```
+tpr@fpr1e-4 Performance:
+
+Gen1 (Paired)      ▓░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0.4%
+Gen2 (Gaussian)    ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░  75.1% ★ BEST
+Gen3 (Moffat)      ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░  66.8%
+Gen4 (Moffat+HN)   ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░  74.5%
+```
+
 ### Data Pipeline Comparison
 
-| Aspect | Gen 1 (v3) | Gen 2 (v4_sota) |
-|--------|------------|-----------------|
-| **Injection Grid** | grid_small (48 configs) | grid_sota (1,008 configs) |
-| **theta_e range** | 0.3 - 1.0 arcsec | 0.5 - 2.5 arcsec |
-| **Min theta_e** | 0.3 arcsec | 0.5 arcsec |
-| **Resolvability** | ~40% resolved | ~80%+ resolved |
-| **Control Type** | Paired (trivial) | Unpaired (realistic) |
-| **Control Source** | Same galaxy | Different galaxy |
-| **PSF Model** | Gaussian | Gaussian |
-| **Compression** | Snappy | Gzip |
+| Aspect | Gen 1 | Gen 2 | Gen 3 | Gen 4 |
+|--------|-------|-------|-------|-------|
+| theta_e range | 0.3-1.0" | 0.5-2.5" | 0.5-2.5" | 0.5-2.5" |
+| Control Type | Paired ❌ | Unpaired ✅ | Unpaired ✅ | Unpaired ✅ |
+| PSF Model | Gaussian | Gaussian | **Moffat** | **Moffat** |
+| Resolvability Filter | None | None | θ/PSF≥0.5 | θ/PSF≥0.5 |
+| Hard Negatives | No | No | No | **Yes (35k)** |
 
-### Model Architecture Comparison
+### Training Configuration Comparison
 
-| Aspect | Gen 1 | Gen 2 |
-|--------|-------|-------|
-| **Backbone** | ResNet18 | ConvNeXt-Tiny |
-| **Parameters** | ~11M | ~28M |
-| **Feature Dim** | 512 | 768 |
-| **Precision** | fp16 | bf16 |
-| **Batch Size** | 32 | 512 |
-
-### Performance Comparison
-
-| Metric | Gen 1 (Final) | Gen 2 (Epoch 2) | Target |
-|--------|---------------|-----------------|--------|
-| AUROC | 0.9963 | 0.9894 | >0.99 |
-| tpr@fpr1e-4 | 0.4% | **77.8%** | >70% |
-| tpr@fpr1e-3 | 35.2% | **82.2%** | >80% |
-| fpr@tpr0.85 | 6.2% | **0.17%** | <1% |
-| fpr@tpr0.90 | 10.2% | **0.39%** | <1% |
+| Aspect | Gen 1 | Gen 2 | Gen 3 | Gen 4 |
+|--------|-------|-------|-------|-------|
+| Architecture | ResNet18 | ConvNeXt-Tiny | ConvNeXt-Tiny | ConvNeXt-Tiny |
+| Loss | BCE | BCE | **Focal** | **Focal** |
+| Precision | fp16 | bf16 | bf16 | bf16 |
+| Batch Size | 32 | 512 | 256 | 256 |
+| Normalization | Full | Full | **Outer** | **Outer** |
+| Worker Sharding | Bug | Bug | Fixed | Fixed |
 
 ---
 
 ## Key Insights and Lessons Learned
 
-### Insight 1: Data Quality >> Model Architecture
+### Insight 1: Unpaired Controls >> Everything Else
 
-The 195x improvement in tpr@fpr1e-4 came from **data changes**, not model changes:
-- Extended theta_e range (resolvable lenses)
-- Unpaired controls (realistic negatives)
+The 188x improvement from Gen1→Gen2 came almost entirely from unpaired controls:
+- Gen1 with paired controls: 0.4%
+- Gen2 with unpaired controls: 75.1%
 
-ConvNeXt is larger than ResNet18, but the improvement is dominated by data quality.
+This is the single most important fix for synthetic lens training.
 
-### Insight 2: Unpaired Controls Are Critical
+### Insight 2: Moffat PSF Did NOT Help (Unexpectedly)
 
-**Paired controls** (same galaxy with/without injection) allow the model to learn trivial shortcuts:
-- Detect "is there extra flux added?"
-- Ignore arc morphology entirely
+Despite theoretical expectations:
+- Gen2 (Gaussian): 75.1%
+- Gen3 (Moffat): 66.8%
 
-**Unpaired controls** (different galaxies) force the model to learn:
-- What lens morphology looks like
-- What non-lens galaxies look like
-- Genuine discriminative features
+**Possible explanations**:
+1. Moffat spreads flux into extended wings, making both lenses AND non-lenses look more similar
+2. Gaussian PSF may be "unrealistically easy" but this helps synthetic metrics
+3. The sim-to-real gap is NOT primarily about PSF model
 
-**Verification**: We confirmed v4_sota has 0 overlapping (ra, dec) between controls and positives.
+### Insight 3: Synthetic Hard Negatives Have Limited Value
 
-### Insight 3: Resolvability Matters for Morphology Learning
+- Gen3 (no HN): 66.8%
+- Gen4 (with 35k HN, 5x weight): 74.5%
 
-With theta_e < PSF/2, lensing arcs appear point-like:
-- No arc morphology to learn
-- Model falls back to flux cues
+The improvement exists but is modest. Synthetic hard negatives (high-scoring controls from previous models) may not represent **real** contaminants like:
+- Ring galaxies
+- Mergers
+- Spirals with prominent arms
+- Artifacts
 
-v4_sota extends theta_e to 2.5 arcsec, ensuring most injections have visible arc structure.
+### Insight 4: Calibration Collapse is a Warning Sign
 
-### Insight 4: AUROC Can Be Misleading
+Both Gen3 and Gen4 showed increasing `binary_score_frac`:
+- Early epochs: 0-5%
+- Late epochs: 30-93%
 
-Both models achieve AUROC > 0.98, but operational performance differs dramatically:
-- AUROC dominated by easy cases
-- FPR at high completeness reveals true performance
-- Always report tpr@fpr and fpr@tpr, not just AUROC
+This indicates:
+- Model is memorizing training data
+- Scores are not calibrated probabilities
+- May perform poorly on out-of-distribution data
 
-### Insight 5: Hash-Based Galaxy Assignment Enables Reproducible Unpaired Controls
+### Insight 5: AUROC is Not a Reliable Metric
 
-Our pipeline uses deterministic hashing:
-```python
-ctrl_hash = F.xxhash64(F.col("row_id"), F.col("brickname"), ...)
-is_control = (ctrl_hash % 1M / 1M) < control_frac
-```
+All generations achieve AUROC > 0.98, but operational performance varies enormously:
+- Gen1: AUROC 0.9963, tpr@fpr1e-4 = 0.4%
+- Gen2: AUROC 0.9906, tpr@fpr1e-4 = 75.1%
 
-This ensures:
-- Same splits on every run (reproducible)
-- Disjoint control/positive galaxy sets
-- No possibility of paired contamination
+**Always report tpr@fpr and fpr@tpr at operationally relevant thresholds.**
 
 ---
 
-## Remaining Work
+## Sim-to-Real Gap Analysis
 
-### Before Publication
+### What's Been Fixed
 
-1. **Complete v4_sota training** (12 epochs)
-2. **Run stratified FPR evaluation** by theta_e bins
-3. **Fix worker sharding bug** for future runs
-4. **Consider focal loss** for improved low-FPR performance
-5. **Add metadata fusion** (psfsize_r, psfdepth_r only - no leakage)
-6. **Hard negative mining** if FPR still insufficient
+| Gap | Gen1 | Gen2 | Gen3 | Gen4 |
+|-----|------|------|------|------|
+| Paired controls | ❌ | ✅ | ✅ | ✅ |
+| Unresolved lenses | ❌ | ⚠️ | ✅ | ✅ |
+| Per-band PSF | ❌ | ✅ | ✅ | ✅ |
+| Moffat PSF | ❌ | ❌ | ✅ | ✅ |
+| Worker sharding bug | ❌ | ❌ | ✅ | ✅ |
+| Outer normalization | ❌ | ❌ | ✅ | ✅ |
+| Synthetic hard negatives | ❌ | ❌ | ❌ | ✅ |
 
-### Optional Improvements
+### What's Still Missing
 
-1. Moffat PSF for better sim-to-real match
-2. Real galaxy cutouts (COSMOS) instead of parametric Sersic
-3. External validation on known lenses (SLACS, BELLS)
-4. Curriculum training (strict resolved → full range)
+| Gap | Description | Priority |
+|-----|-------------|----------|
+| **Real source morphology** | Using Sersic n=1, not COSMOS galaxies | HIGH |
+| **Real hard negatives** | Using synthetic HN, not GZ Rings/Mergers | HIGH |
+| **Anchor baseline validation** | Never tested on SLACS/BELLS | CRITICAL |
+| PSFEx models | DR10 doesn't provide, using psfsize | LOW |
+| Spatially varying PSF | Using center-evaluated only | LOW |
+| CCD artifacts | No cosmic rays, bad pixels | LOW |
+| Color gradients | Source colors uniform | MEDIUM |
+
+### Critical Next Step: COMPLETED ✅
+
+**Anchor baseline evaluation completed on 2026-02-02**
+
+---
+
+## Stage 0: Anchor Baseline Results (CRITICAL)
+
+### 🚨 CATASTROPHIC SIM-TO-REAL GAP CONFIRMED
+
+**The model that achieved 75% tpr@fpr1e-4 on synthetic data can only detect 2.9% of real confirmed lenses!**
+
+### Test Setup
+
+- **Model**: Gen2 (best synthetic performance: 75.1% tpr@fpr1e-4)
+- **Known Lenses**: 68 (48 SLACS + 20 BELLS)
+- **Hard Negatives**: 14 in DR10 footprint (rings, mergers)
+- **Cutout Service**: Legacy Survey DR10 via cutout API
+
+### Results
+
+| Metric | Value | Target | Status |
+|--------|-------|--------|--------|
+| **Recall @ 0.5** | **2.9%** (2/68) | >50% | ❌ FAILED |
+| Recall @ 0.7 | 1.5% (1/68) | - | ❌ |
+| Recall @ 0.9 | 0.0% (0/68) | - | ❌ |
+| Contamination @ 0.5 | 7.1% (1/14) | <20% | ✅ OK |
+
+### Score Distributions
+
+| Set | Mean p_lens | Median p_lens | Std |
+|-----|-------------|---------------|-----|
+| **Known Lenses** | **0.232** | 0.209 | 0.126 |
+| **Hard Negatives** | **0.323** | 0.290 | 0.223 |
+
+⚠️ **The model scores hard negatives HIGHER than known lenses on average!**
+
+### Top Detected Lenses
+
+| Lens | p_lens | θ_e (arcsec) | Notes |
+|------|--------|--------------|-------|
+| SDSSJ0912+0029 | 0.749 | 1.63" | ✅ Only lens >0.7 |
+| SDSSJ1205+4910 | 0.582 | 1.22" | ✅ Second detection |
+| SDSSJ2300+0022 | 0.481 | 1.24" | ❌ Below threshold |
+| BELLSJ1401+3845 | 0.440 | 1.35" | ❌ Below threshold |
+
+### Completely Missed Lenses (Examples)
+
+| Lens | p_lens | θ_e (arcsec) | Notes |
+|------|--------|--------------|-------|
+| SDSSJ1531-0105 | 0.042 | 1.71" | Large θ_e, still missed |
+| SDSSJ1538+5817 | 0.069 | 1.0" | |
+| SDSSJ1432+6317 | 0.081 | 1.25" | |
+| SDSSJ1416+5136 | 0.082 | 1.37" | |
+
+### False Positive (Hard Negative Scored High)
+
+| Object | p_lens | Type |
+|--------|--------|------|
+| Merger002 | 0.991 | Merger galaxy |
+
+### Root Cause Analysis
+
+The synthetic training data differs from real lenses in several critical ways:
+
+1. **Source Morphology**: Synthetic uses smooth Sersic n=1 profiles. Real lensed sources are clumpy, irregular galaxies with color gradients.
+
+2. **Arc Appearance**: Synthetic arcs are smooth, symmetric. Real arcs have substructure, dust, star-forming regions.
+
+3. **Lens Galaxy Properties**: SLACS/BELLS lenses are massive ellipticals at z~0.1-0.5. Our training focused on DECaLS LRGs which may differ.
+
+4. **Training Shortcut**: Model learned to detect "smooth arc-like feature" which is NOT what real lensed arcs look like.
+
+### Conclusion
+
+**GATING RULE FAILED**: Further model architecture iteration is pointless until we fix the simulation realism.
+
+**Priority Actions**:
+1. **COSMOS source morphology** - Use real galaxy images as lensed sources
+2. **Real hard negatives in training** - Include rings, mergers, spirals
+3. **Validate after each change** - Re-run anchor baseline before proceeding
 
 ---
 
 ## File Locations
 
-### Models
+### Models (Lambda NFS)
 ```
-Gen 1: s3://darkhaloscope/phase5/models/colab/
-Gen 2: /lambda/nfs/darkhaloscope-training-dc/runs/pathb_v4sota_convnext/
+Gen 1: /lambda/nfs/darkhaloscope-training/phase5/models/resnet18_v1/
+Gen 2: /lambda/nfs/darkhaloscope-training-dc/runs/gen2_final/
+Gen 3: /lambda/nfs/darkhaloscope-training-dc/runs/gen3_moffat/
+Gen 4: /lambda/nfs/darkhaloscope-training-dc/models/gen4_hardneg/
 ```
 
-### Data
+### Data (S3)
 ```
 v3_color_relaxed: s3://darkhaloscope/phase4_pipeline/phase4c/v3_color_relaxed/
-v4_sota: s3://darkhaloscope/phase4_pipeline/phase4c/v4_sota/
+v4_sota:          s3://darkhaloscope/phase4_pipeline/phase4c/v4_sota/
+v4_sota_moffat:   s3://darkhaloscope/phase4_pipeline/phase4c/v4_sota_moffat/
 ```
 
 ### Code
 ```
-Pipeline: dark_halo_scope/emr/spark_phase4_pipeline.py
-Training: dark_halo_scope/model/phase5_train_fullscale_gh200_v2.py
+Pipeline:     dark_halo_scope/emr/spark_phase4_pipeline.py
+Training:     dark_halo_scope/models/gen3_moffat/phase5_train_fullscale_gh200_v2.py
+Gen4 Script:  dark_halo_scope/models/gen4_hardneg/phase5_train_gen4_hardneg.py
 ```
 
 ---
 
 *Document created: 2026-01-31*  
+*Last updated: 2026-02-02*  
 *This is a living document - update as new models are trained.*
-

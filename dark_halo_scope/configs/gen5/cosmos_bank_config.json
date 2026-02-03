@@ -1,0 +1,18 @@
+{
+  "generation": "gen5",
+  "component": "cosmos_bank",
+  "seed": 1337,
+  "n_sources": 20000,
+  "stamp_size": 128,
+  "src_pixscale_arcsec": 0.03,
+  "intrinsic_psf_fwhm_arcsec": 0.10,
+  "dtype": "float32",
+  "denoise_sigma_pix": 0.0,
+  "max_tries": 400000,
+  "hlr_min_arcsec": 0.1,
+  "hlr_max_arcsec": 1.0,
+  "created_utc": "2026-02-02T12:00:00Z",
+  "cosmos_catalog_path": "/data/COSMOS/COSMOS_25.2_training_sample",
+  "output_path": "data/gen5/cosmos_sources_20k_gen5.h5"
+}
+

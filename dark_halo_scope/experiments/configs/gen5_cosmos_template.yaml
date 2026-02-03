@@ -1,0 +1,125 @@
+# Gen5 COSMOS Source Experiment Configuration Template
+# 
+# This is a template for Gen5 experiments using real COSMOS galaxy morphologies.
+# Copy this file and modify for your specific experiment.
+#
+# IMPORTANT: Review all paths before running!
+
+experiment_id: gen5_cosmos_YYYYMMDD_HHMMSS_XXXXXX  # Will be auto-generated
+experiment_name: "Gen5 COSMOS Source Training"
+description: |
+  Gen5 model training with real COSMOS galaxy morphologies replacing parametric
+  Sersic sources. Uses Moffat PSF, unpaired controls, and resolvability filtering.
+generation: gen5
+created_at: "2026-02-01T00:00:00+00:00"
+
+# Reproducibility seeds
+seeds:
+  global_seed: 42
+  numpy_seed: 42
+  torch_seed: 42
+  cuda_deterministic: true
+
+# Data variant configuration
+data:
+  variant_name: v5_cosmos_source
+  description: "COSMOS source morphology with Moffat PSF"
+  phase3_parent_sample: "s3://darkhaloscope/phase3/parent_sample.parquet"
+  phase4a_manifest: "s3://darkhaloscope/phase4_pipeline/phase4a/v5_cosmos_source/manifests/"
+  phase4c_stamps: "s3://darkhaloscope/phase4_pipeline/phase4c/v5_cosmos_source/stamps/train_stamp64_bandsgrz_cosmos/"
+  
+  # PSF configuration
+  psf_model: moffat
+  moffat_beta: 3.5
+  
+  # Source configuration - KEY CHANGE FOR GEN5
+  source_mode: cosmos
+  cosmos_library_path: "s3://darkhaloscope/cosmos_sources.h5"
+  
+  # Grid parameters (same as v4_sota_moffat)
+  theta_e_range: [0.5, 2.5]
+  src_dmag_range: [0.5, 2.0]
+  control_type: unpaired
+  stamp_size: 64
+  bands: [g, r, z]
+
+# Model architecture
+model:
+  architecture: convnext_tiny
+  pretrained: false
+  input_channels: 3
+  dropout: 0.1
+  use_metadata: true
+  metadata_columns: [psfsize_r, psfdepth_r]
+  metadata_hidden_dim: 64
+
+# Training hyperparameters
+training:
+  epochs: 50
+  batch_size: 256
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  optimizer: adamw
+  
+  # Loss function
+  loss_type: focal
+  focal_alpha: 0.25
+  focal_gamma: 2.0
+  
+  # Scheduler
+  scheduler: cosine
+  warmup_epochs: 2
+  
+  # Early stopping
+  early_stopping_patience: 5
+  early_stopping_metric: tpr_at_fpr1e-4
+  
+  # Mixed precision
+  use_amp: true
+  amp_dtype: bfloat16
+  
+  # Data loading
+  num_workers: 8
+  prefetch_factor: 2
+  
+  # Augmentation
+  augment: true
+  augment_flip: true
+  augment_rotate: true
+  
+  # Filtering
+  min_theta_over_psf: 0.5
+  min_arc_snr: null
+  
+  # Normalization
+  norm_method: outer
+
+# Hard negatives (disabled for Gen5, enabled for Gen6)
+hard_negatives:
+  enabled: false
+  hard_neg_path: null
+  hard_neg_weight: 5.0
+  min_score_threshold: 0.9
+  use_real_hard_negatives: false
+  ring_galaxy_catalog: null
+  merger_catalog: null
+
+# Evaluation configuration
+evaluation:
+  fpr_targets: [0.00001, 0.0001, 0.001, 0.01]
+  tpr_targets: [0.80, 0.85, 0.90, 0.95]
+  theta_e_bins: [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5]
+  theta_over_psf_bins: [0.5, 0.7, 0.9, 1.1, 1.4, 2.0]
+  anchor_catalogs: []
+  match_radius_arcsec: 2.0
+
+# Paths (will be auto-populated by create_experiment_config)
+output_dir: "/lambda/nfs/darkhaloscope-training/experiments/gen5_cosmos/"
+checkpoint_dir: "/lambda/nfs/darkhaloscope-training/experiments/gen5_cosmos/checkpoints/"
+log_dir: "/lambda/nfs/darkhaloscope-training/experiments/gen5_cosmos/logs/"
+
+# Git tracking (auto-populated at runtime)
+git_commit: null
+git_branch: null
+git_dirty: null
+
