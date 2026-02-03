@@ -1,9 +1,17 @@
 # Project Handoff: Gravitational Lens Detection Gen5 COSMOS Integration
 
 **Date:** 2026-02-03  
-**Current State:** COSMOS catalog download in progress (29% complete)  
-**Git Commit:** `31bd599` - Gen5 COSMOS integration: infrastructure, config system, Stage 0 anchor baseline  
-**Next Phase:** Complete COSMOS bank build, then Phase 4c data generation
+**Current State:** Gen5 Phase 4c production RUNNING (j-1D16947UERBIY, 270 vCPUs, us-east-2)  
+**Git Commit:** `646762e` - Gen5 COSMOS pipeline with test-limit and boto3 graceful fallback  
+**Next Phase:** Training Gen5 model after Phase 4c completes
+
+---
+
+## 🚨 CRITICAL: Always Use US-EAST-2 for EMR! 🚨
+
+**Region:** `us-east-2` (NOT us-east-1!)  
+**Reason:** All data, vCPU quotas, and infrastructure are in us-east-2  
+**Mistake made:** Wasted ~2 hours and multiple cluster launches trying us-east-1 before realizing all resources are in us-east-2
 
 ---
 
