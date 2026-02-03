@@ -1,0 +1,35 @@
+{
+  "generation": "gen5",
+  "component": "phase4c_smoke_test",
+  "stage": "4c",
+  "output_s3": "s3://darkhaloscope/phase4_pipeline",
+  "variant": "v5_cosmos_source_test",
+  "experiment_id": "test_stamp64_bandsgrz_cosmos_smoke",
+  
+  "source_mode": "cosmos",
+  "cosmos_bank_h5": "s3://darkhaloscope/data/cosmos_banks/cosmos_bank_20k_gen5.h5",
+  "cosmos_salt": "gen5_test_v1",
+  "seed_base": 1337,
+  
+  "psf_model": "moffat",
+  "moffat_beta": 3.5,
+  "split_seed": 42,
+  
+  "bands": "g,r,z",
+  "stamp_sizes": "64",
+  "bandsets": "grz",
+  
+  "tiers": "debug",
+  "grid_debug": "grid_small",
+  "n_per_config_debug": 5,
+  
+  "skip_if_exists": 1,
+  "force": 0,
+  
+  "manifests_subdir": "manifests",
+  "parent_s3": "s3://darkhaloscope/phase4_pipeline/phase4a/v4_sota_moffat/manifests/train_stamp64_bandsgrz_gridgrid_sota",
+  
+  "created_utc": "2026-02-03T08:00:00Z",
+  "description": "Smoke test for Gen5 COSMOS source injection. Uses debug tier only (~50 stamps)."
+}
+
