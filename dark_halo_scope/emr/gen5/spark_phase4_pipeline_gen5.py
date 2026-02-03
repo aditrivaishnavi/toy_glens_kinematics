@@ -2887,6 +2887,11 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                 )
 
             except Exception as e:
+                # Log the actual error for debugging!
+                import traceback
+                print(f"[4c] ERROR processing task {r['task_id']}: {type(e).__name__}: {e}")
+                traceback.print_exc()
+                
                 # Emit a row with cutout_ok=0 and an empty stamp to keep accounting consistent
                 if metrics_only:
                     empty = None  # Don't store stamp in metrics-only mode
