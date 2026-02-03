@@ -388,7 +388,7 @@ def render_cosmos_lensed_source(
     
     # Use existing Sersic renderer for now (until full INTERPOL is implemented)
     # This ensures the pipeline runs and produces output
-    from spark_phase4_pipeline_gen5 import render_lensed_source
+    # NOTE: render_lensed_source is defined earlier in this file, no import needed!
     
     return render_lensed_source(
         stamp_size=stamp_size,
