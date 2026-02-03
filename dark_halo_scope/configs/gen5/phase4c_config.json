@@ -1,0 +1,16 @@
+{
+  "generation": "gen5",
+  "component": "phase4c_data_generation",
+  "seed_base": 1337,
+  "variant": "v5_cosmos_source",
+  "experiment_id": "train_stamp64_bandsgrz_cosmos",
+  "source_mode": "cosmos",
+  "cosmos_bank_h5": "s3://darkhaloscope/data/cosmos_banks/cosmos_bank_20k_gen5.h5",
+  "cosmos_salt": "gen5_v1",
+  "psf_model": "moffat",
+  "moffat_beta": 3.5,
+  "output_s3": "s3://darkhaloscope/data/v5_cosmos_source/train_stamp64_bandsgrz_cosmos",
+  "created_utc": "2026-02-03T07:40:00Z",
+  "description": "Gen5 Phase 4c config with COSMOS real galaxy sources, Moffat PSF, and existing v4_sota_moffat manifests"
+}
+
