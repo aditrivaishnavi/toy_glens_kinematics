@@ -2336,11 +2336,19 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
         raise RuntimeError("astropy.wcs not available; ensure astropy installed")
 
     manifests_subdir = getattr(args, 'manifests_subdir', 'manifests_filtered')
-    manifests_root = f"{args.output_s3.rstrip('/')}/phase4a/{args.variant}/{manifests_subdir}"
-    if not args.experiment_id:
-        raise ValueError("--experiment-id is required for stage 4c")
-    in_path = f"{manifests_root}/{args.experiment_id}"
-    print(f"[4c] Reading manifests from: {in_path}")
+    
+    # Gen5: Use --parent-s3 if provided (for reusing v4_sota_moffat manifests)
+    if hasattr(args, 'parent_s3') and args.parent_s3:
+        in_path = args.parent_s3
+        print(f"[4c] Reading manifests from (parent_s3): {in_path}")
+    else:
+        manifests_root = f"{args.output_s3.rstrip('/')}/phase4a/{args.variant}/{manifests_subdir}"
+        if not args.experiment_id:
+            raise ValueError("--experiment-id is required for stage 4c")
+        in_path = f"{manifests_root}/{args.experiment_id}"
+        print(f"[4c] Reading manifests from: {in_path}")
+    
+   
     df_tasks = read_parquet_safe(spark, in_path)
 
     bands = [b.strip() for b in args.bands.split(",") if b.strip()]
