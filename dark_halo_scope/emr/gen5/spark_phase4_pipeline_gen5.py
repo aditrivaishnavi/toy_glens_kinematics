@@ -2350,6 +2350,11 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
     
    
     df_tasks = read_parquet_safe(spark, in_path)
+    
+    # Smoke test: limit to N rows if --test-limit specified
+    if hasattr(args, 'test_limit') and args.test_limit is not None and args.test_limit > 0:
+        print(f"[SMOKE TEST] Limiting to {args.test_limit} tasks (--test-limit={args.test_limit})")
+        df_tasks = df_tasks.limit(args.test_limit)
 
     bands = [b.strip() for b in args.bands.split(",") if b.strip()]
 
@@ -3123,6 +3128,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Optional salt for deterministic COSMOS template selection")
     p.add_argument("--seed-base", type=int, default=42,
                    help="Base seed for reproducible randomness in deterministic operations")
+    
+    # Smoke test parameter
+    p.add_argument("--test-limit", type=int, default=None,
+                   help="Limit number of tasks to process (for smoke testing). If set, only process first N rows from manifests.")
 
     p.add_argument("--tiers", default="debug,grid,train", help="Comma list among debug,grid,train")
     p.add_argument("--grid-debug", default="grid_small")
@@ -3236,7 +3245,8 @@ def main() -> None:
     spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
 
     # Gen5: Save effective config to S3 for audit trail (Stage 4c only)
-    if stage == "4c" and _is_s3(args.output_s3):
+    # Note: Skip if boto3 not available (EMR driver doesn't have it by default)
+    if stage == "4c" and _is_s3(args.output_s3) and boto3 is not None:
         effective_config = {
             "stage": args.stage,
             "variant": args.variant,
@@ -3255,7 +3265,6 @@ def main() -> None:
         # Write to S3
         config_s3_path = f"{args.output_s3}/phase4c/{args.variant}/run_config_{args.experiment_id}.json"
         try:
-            import boto3
             s3 = boto3.client("s3")
             bucket, key = config_s3_path.replace("s3://", "").split("/", 1)
             s3.put_object(
