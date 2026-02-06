@@ -55,11 +55,14 @@ from pyspark.sql import functions as F
 from pyspark.sql import types as T
 from pyspark.sql.window import Window
 
-# Optional runtime deps installed by bootstrap
+# NOTE: Module-level boto3 import is ONLY for driver-side checks.
+# NEVER use this in UDFs/executor code - import boto3 inside functions instead!
+# The driver may not have boto3, but executors get it via bootstrap.
+# If you use module-level boto3 in UDFs, it serializes as None and fails on executors.
 try:
-    import boto3
+    import boto3 as _boto3_driver_only
 except Exception:
-    boto3 = None
+    _boto3_driver_only = None
 
 try:
     import requests
@@ -96,16 +99,32 @@ def _load_cosmos_bank_h5(path: str) -> Dict[str, np.ndarray]:
     """Executor-local cache of COSMOS bank.
     
     Loads HDF5 file once per executor and caches in memory.
+    Handles both local paths and S3 URIs.
     Returns dict with 'images', 'src_pixscale', and 'n_sources' keys.
     """
     global _COSMOS_BANK
-    if _COSMOS_BANK is None:
-        _COSMOS_BANK = {}
-        with h5py.File(path, "r") as f:
-            _COSMOS_BANK["images"] = np.array(f["images"][:], dtype=np.float32)
-            _COSMOS_BANK["src_pixscale"] = float(f.attrs["src_pixscale_arcsec"])
-            _COSMOS_BANK["n_sources"] = _COSMOS_BANK["images"].shape[0]
-        print(f"[COSMOS] Loaded bank: {_COSMOS_BANK['n_sources']} sources from {path}")
+    if _COSMOS_BANK is not None:
+        return _COSMOS_BANK
+    
+    # Handle S3 paths by downloading to local temp first
+    local_path = path
+    if path.startswith("s3://"):
+        import boto3
+        import tempfile
+        s3 = boto3.client("s3", region_name="us-east-2")
+        bucket, key = path.replace("s3://", "").split("/", 1)
+        local_path = os.path.join(tempfile.gettempdir(), os.path.basename(path))
+        if not os.path.exists(local_path):
+            print(f"[COSMOS] Downloading {path} to {local_path}...")
+            s3.download_file(bucket, key, local_path)
+            print(f"[COSMOS] Downloaded {os.path.getsize(local_path) / 1e6:.1f} MB")
+    
+    _COSMOS_BANK = {}
+    with h5py.File(local_path, "r") as f:
+        _COSMOS_BANK["images"] = np.array(f["images"][:], dtype=np.float32)
+        _COSMOS_BANK["src_pixscale"] = float(f.attrs["src_pixscale_arcsec"])
+        _COSMOS_BANK["n_sources"] = _COSMOS_BANK["images"].shape[0]
+    print(f"[COSMOS] Loaded bank: {_COSMOS_BANK['n_sources']} sources from {path}")
     return _COSMOS_BANK
 
 
@@ -219,9 +238,15 @@ def render_cosmos_lensed_source(
     ]
     
     # Source model: INTERPOL (interpolated template)
+    # CRITICAL: lenstronomy INTERPOL expects surface brightness (flux/arcsec^2),
+    # not flux/pixel. We must divide by the source pixel area to convert.
+    # Without this, arcs are ~1111x too faint (ratio = 1 / 0.03^2 = 1111).
+    src_pixel_area = cosmos_bank["src_pixscale"] ** 2  # 0.03^2 = 0.0009 arcsec^2
+    surface_brightness = template * flux_nmgy / src_pixel_area  # flux/arcsec^2
+    
     light_model = LightModel(["INTERPOL"])
     kwargs_source = [{
-        "image": template * flux_nmgy,
+        "image": surface_brightness,
         "center_x": src_x_arcsec,
         "center_y": src_y_arcsec,
         "scale": cosmos_bank["src_pixscale"],
@@ -235,30 +260,9 @@ def render_cosmos_lensed_source(
     return arc.astype(np.float32)
 
 
-def load_phase4c_config(config_path: str) -> dict:
-    """Load Phase 4c config from JSON (local or S3)."""
-    if config_path.startswith("s3://"):
-        # Download from S3
-        import boto3
-        import tempfile
-        s3 = boto3.client("s3")
-        bucket, key = config_path.replace("s3://", "").split("/", 1)
-        with tempfile.NamedTemporaryFile(mode='r', delete=False) as f:
-            s3.download_file(bucket, key, f.name)
-            with open(f.name) as cf:
-                return json.load(cf)
-    else:
-        with open(config_path) as f:
-            return json.load(f)
-
-
 # --------------------------
-# S3 utilities
+# S3 utilities and Config loading
 # --------------------------
-
-# =========================================================================
-# Gen5: Config loading and COSMOS helpers
-# =========================================================================
 
 def load_phase4c_config(config_path: str) -> Dict:
     """Load Phase 4c config from local file or S3."""
@@ -274,145 +278,9 @@ def load_phase4c_config(config_path: str) -> Dict:
             return json.load(f)
 
 
-def _load_cosmos_bank_h5(h5_path: str) -> Dict:
-    """Load COSMOS source bank from HDF5 file (local or S3)."""
-    import h5py
-    
-    if h5_path.startswith("s3://"):
-        # Download to executor local temp
-        import boto3
-        import tempfile
-        # CRITICAL: Use us-east-2 region explicitly - bucket is in us-east-2!
-        s3 = boto3.client("s3", region_name="us-east-2")
-        bucket, key = h5_path.replace("s3://", "").split("/", 1)
-        local_path = os.path.join(tempfile.gettempdir(), os.path.basename(h5_path))
-        if not os.path.exists(local_path):
-            print(f"[COSMOS] Downloading {h5_path} to {local_path}...")
-            s3.download_file(bucket, key, local_path)
-            print(f"[COSMOS] Downloaded {os.path.getsize(local_path) / 1e6:.1f} MB")
-        h5_path = local_path
-    
-    with h5py.File(h5_path, "r") as f:
-        images = f["images"][:]
-        hlr_arcsec = f["meta/hlr_arcsec"][:]
-        clumpiness = f["meta/clumpiness"][:]
-        kept_idx = f["meta/index"][:]
-        src_pixscale = float(f.attrs["src_pixscale_arcsec"])
-        stamp_size = int(f.attrs["stamp_size"])
-    
-    return {
-        "images": images,
-        "hlr_arcsec": hlr_arcsec,
-        "clumpiness": clumpiness,
-        "kept_idx": kept_idx,
-        "src_pixscale_arcsec": src_pixscale,
-        "stamp_size": stamp_size,
-        "n_sources": images.shape[0],
-    }
-
-
-def _cosmos_choose_index(task_id: str, n_sources: int, salt: str = "") -> int:
-    """Deterministic COSMOS template selection from task_id."""
-    import hashlib
-    h = hashlib.sha256((task_id + salt).encode("utf-8")).hexdigest()
-    seed = int(h[:16], 16)
-    return seed % n_sources
-
-
-def _compute_hlr_arcsec(image: np.ndarray, pixscale: float) -> float:
-    """Compute half-light radius in arcsec."""
-    total = float(np.sum(image))
-    if total <= 0:
-        return 0.0
-    
-    ny, nx = image.shape
-    cy, cx = ny / 2.0, nx / 2.0
-    y, x = np.ogrid[:ny, :nx]
-    r_pix = np.sqrt((x - cx)**2 + (y - cy)**2)
-    
-    # Sort by radius
-    flat_r = r_pix.ravel()
-    flat_flux = image.ravel()
-    idx = np.argsort(flat_r)
-    sorted_r = flat_r[idx]
-    sorted_flux = flat_flux[idx]
-    
-    # Cumulative sum
-    cum_flux = np.cumsum(sorted_flux)
-    half_idx = np.searchsorted(cum_flux, total / 2.0)
-    if half_idx >= len(sorted_r):
-        half_idx = len(sorted_r) - 1
-    
-    hlr_pix = float(sorted_r[half_idx])
-    return hlr_pix * pixscale
-
-
-def render_cosmos_lensed_source(
-    cosmos_bank: Dict,
-    cosmos_index: int,
-    stamp_size: int,
-    pixscale_arcsec: float,
-    theta_e_arcsec: float,
-    lens_e: float,
-    lens_phi_rad: float,
-    shear: float,
-    shear_phi_rad: float,
-    src_x_arcsec: float,
-    src_y_arcsec: float,
-    src_mag_r: float,
-    z_s: float,
-    psf_fwhm_arcsec: float,
-    psf_model: str,
-    moffat_beta: float,
-    band: str,
-) -> np.ndarray:
-    """
-    Render a lensed COSMOS source using the SIE model.
-    
-    This is a simplified placeholder that uses the existing render_lensed_source
-    function but with COSMOS morphology injected. In production, this would use
-    lenstronomy's INTERPOL light model for the COSMOS template.
-    
-    For now, we'll just return the Sersic rendering weighted by COSMOS clumpiness
-    as a proxy. The full implementation should follow the pattern in
-    `cosmos_lens_injector.py` from the LLM response.
-    """
-    # TODO: Implement full lenstronomy INTERPOL rendering
-    # For now, fall back to Sersic rendering
-    # This is a placeholder that allows the pipeline to run
-    
-    # Get COSMOS template (unit flux)
-    template = cosmos_bank["images"][cosmos_index].astype(np.float32)
-    
-    # Compute flux for this band (using simple SED)
-    sed_offsets = {"g": 0.7, "r": 0.0, "z": -0.4}  # Typical red galaxy
-    mag_band = src_mag_r + sed_offsets.get(band, 0.0)
-    flux_nmgy = 10 ** ((22.5 - mag_band) / 2.5)
-    
-    # Use existing Sersic renderer for now (until full INTERPOL is implemented)
-    # This ensures the pipeline runs and produces output
-    # NOTE: render_lensed_source is defined earlier in this file, no import needed!
-    
-    return render_lensed_source(
-        stamp_size=stamp_size,
-        pixscale_arcsec=pixscale_arcsec,
-        lens_model="SIE",
-        theta_e_arcsec=theta_e_arcsec,
-        lens_e=lens_e,
-        lens_phi_rad=lens_phi_rad,
-        shear=shear,
-        shear_phi_rad=shear_phi_rad,
-        src_total_flux_nmgy=flux_nmgy,
-        src_reff_arcsec=cosmos_bank["hlr_arcsec"][cosmos_index] if "hlr_arcsec" in cosmos_bank else 0.5,
-        src_e=0.3,  # Use COSMOS morphology (TODO: extract from template)
-        src_phi_rad=0.0,
-        src_x_arcsec=src_x_arcsec,
-        src_y_arcsec=src_y_arcsec,
-        psf_fwhm_pix=psf_fwhm_arcsec / pixscale_arcsec,
-        psf_model=psf_model,
-        moffat_beta=moffat_beta,
-        psf_apply=True,
-    )
+# NOTE: _load_cosmos_bank_h5, _cosmos_choose_index, and _compute_hlr_arcsec 
+# are defined above (lines ~98-155) with proper executor-local caching. 
+# Do not duplicate here!
 
 
 # =========================================================================
@@ -424,7 +292,8 @@ def _is_s3(uri: str) -> bool:
 
 
 def _parse_s3(uri: str) -> Tuple[str, str]:
-    m = re.match(r"^s3://([^/]+)/?(.*)$", uri)
+    # Handle both s3:// and s3a:// (Hadoop S3A filesystem)
+    m = re.match(r"^s3a?://([^/]+)/?(.*)$", uri)
     if not m:
         raise ValueError(f"Not an s3 uri: {uri}")
     bucket = m.group(1)
@@ -433,8 +302,10 @@ def _parse_s3(uri: str) -> Tuple[str, str]:
 
 
 def _s3_client():
-    if boto3 is None:
-        raise RuntimeError("boto3 not available; ensure bootstrap installed it")
+    # CRITICAL: Import boto3 inside function, NOT at module level!
+    # Module-level imports get serialized as None when driver doesn't have boto3,
+    # even if executors have it installed via bootstrap.
+    import boto3
     return boto3.client("s3")
 
 
@@ -944,8 +815,12 @@ def _convolve_gaussian(img: np.ndarray, sigma_pix: float) -> np.ndarray:
 # PSF KERNELS AND CONVOLUTION
 # =========================================================================
 
-def _gaussian_kernel2d(sigma_pix: float, radius: Optional[int] = None) -> np.ndarray:
-    """Build a normalized circular Gaussian PSF kernel."""
+def _gaussian_kernel2d(sigma_pix: float, radius: Optional[int] = None, max_side: int = 63) -> np.ndarray:
+    """Build a normalized circular Gaussian PSF kernel.
+    
+    Args:
+        max_side: Maximum kernel side length (must be < stamp size to avoid convolution errors)
+    """
     sigma_pix = float(sigma_pix)
     if sigma_pix <= 0:
         k = np.zeros((1, 1), dtype=np.float32)
@@ -953,7 +828,10 @@ def _gaussian_kernel2d(sigma_pix: float, radius: Optional[int] = None) -> np.nda
         return k
     if radius is None:
         # 4 sigma captures >99% of Gaussian mass
+        # Cap to avoid kernel > stamp size errors
         radius = int(max(3, math.ceil(4.0 * sigma_pix)))
+        max_radius = (max_side - 1) // 2
+        radius = min(radius, max_radius)
     side = 2 * radius + 1
     yy, xx = np.mgrid[-radius:radius + 1, -radius:radius + 1]
     rr2 = (xx * xx + yy * yy).astype(np.float32)
@@ -963,12 +841,15 @@ def _gaussian_kernel2d(sigma_pix: float, radius: Optional[int] = None) -> np.nda
     return k
 
 
-def _moffat_kernel2d(fwhm_pix: float, beta: float = 3.5, radius: Optional[int] = None) -> np.ndarray:
+def _moffat_kernel2d(fwhm_pix: float, beta: float = 3.5, radius: Optional[int] = None, max_side: int = 63) -> np.ndarray:
     """Build a normalized Moffat PSF kernel.
 
     Moffat profile: I(r) = (1 + (r/alpha)^2)^(-beta)
     Relation between FWHM and alpha:
       alpha = fwhm / (2 * sqrt(2^(1/beta) - 1))
+    
+    Args:
+        max_side: Maximum kernel side length (must be < stamp size to avoid convolution errors)
     """
     fwhm_pix = float(fwhm_pix)
     beta = float(beta)
@@ -981,7 +862,10 @@ def _moffat_kernel2d(fwhm_pix: float, beta: float = 3.5, radius: Optional[int] =
     alpha = fwhm_pix / (2.0 * math.sqrt((2.0 ** (1.0 / beta)) - 1.0))
     if radius is None:
         # Wider truncation than Gaussian due to wings
+        # Cap to avoid kernel > stamp size errors
         radius = int(max(4, math.ceil(6.0 * fwhm_pix)))
+        max_radius = (max_side - 1) // 2
+        radius = min(radius, max_radius)
     side = 2 * radius + 1
     yy, xx = np.mgrid[-radius:radius + 1, -radius:radius + 1]
     rr2 = (xx * xx + yy * yy).astype(np.float32)
@@ -993,14 +877,20 @@ def _moffat_kernel2d(fwhm_pix: float, beta: float = 3.5, radius: Optional[int] =
 
 
 def _fft_convolve2d(img: np.ndarray, kernel: np.ndarray) -> np.ndarray:
-    """FFT-based convolution for small stamps (e.g., 64x64)."""
+    """FFT-based convolution for small stamps (e.g., 64x64).
+    
+    Note: Uses roll-based kernel centering (not ifftshift) to correctly
+    place the kernel center at (0,0) for FFT convolution.
+    """
     ih, iw = img.shape
     kh, kw = kernel.shape
     if kh > ih or kw > iw:
         raise ValueError(f"Kernel {kernel.shape} larger than image {img.shape}")
     pad = np.zeros((ih, iw), dtype=np.float32)
     pad[:kh, :kw] = kernel.astype(np.float32)
-    pad = np.fft.ifftshift(pad)  # move kernel center to (0,0)
+    # Roll to move kernel center to (0,0) - correct for FFT convolution
+    oy, ox = kh // 2, kw // 2
+    pad = np.roll(np.roll(pad, -oy, axis=0), -ox, axis=1)
     out = np.fft.ifft2(np.fft.fft2(img.astype(np.float32)) * np.fft.fft2(pad)).real
     return out.astype(np.float32)
 
@@ -2360,12 +2250,40 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
         print(f"[4c] Reading manifests from: {in_path}")
     
    
-    df_tasks = read_parquet_safe(spark, in_path)
-    
-    # Smoke test: limit to N rows if --test-limit specified
+    # Smoke test: for --test-limit, read a single partition file directly to avoid slow metadata scan
     if hasattr(args, 'test_limit') and args.test_limit is not None and args.test_limit > 0:
-        print(f"[SMOKE TEST] Limiting to {args.test_limit} tasks (--test-limit={args.test_limit})")
-        df_tasks = df_tasks.limit(args.test_limit)
+        # Find first parquet file using boto3 (which we know works now)
+        print(f"[SMOKE TEST] --test-limit={args.test_limit}: finding single partition file")
+        import boto3
+        s3 = boto3.client("s3")
+        # Normalize path: handle both s3:// and s3a://
+        normalized_path = in_path.replace("s3a://", "s3://")
+        bucket = normalized_path.replace("s3://", "").split("/")[0]
+        prefix = "/".join(normalized_path.replace("s3://", "").split("/")[1:])
+        if not prefix.endswith("/"):
+            prefix += "/"
+        
+        response = s3.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=100)
+        parquet_files = [obj["Key"] for obj in response.get("Contents", []) 
+                        if obj["Key"].endswith(".parquet")]
+        
+        if parquet_files:
+            # Use s3a:// for Spark compatibility (works on both EMR and local Spark with hadoop-aws)
+            first_file = f"s3a://{bucket}/{parquet_files[0]}"
+            print(f"[SMOKE TEST] Reading single file: {first_file}")
+            df_tasks = spark.read.parquet(first_file).limit(args.test_limit)
+        else:
+            print(f"[SMOKE TEST] No parquet files found under {normalized_path}, using full path")
+            # Fallback: try reading with s3a:// prefix
+            spark_path = in_path.replace("s3://", "s3a://") if in_path.startswith("s3://") else in_path
+            df_tasks = read_parquet_safe(spark, spark_path).limit(args.test_limit)
+        
+        # Force evaluation and cache
+        df_tasks = df_tasks.cache()
+        actual_count = df_tasks.count()
+        print(f"[SMOKE TEST] Got {actual_count} tasks for processing")
+    else:
+        df_tasks = read_parquet_safe(spark, in_path)
 
     bands = [b.strip() for b in args.bands.split(",") if b.strip()]
 
@@ -2434,7 +2352,8 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
         T.StructField("ebv", T.DoubleType(), True),
         T.StructField("stamp_npz", T.BinaryType(), True),  # Nullable for metrics-only mode
         T.StructField("cutout_ok", T.IntegerType(), False),
-        T.StructField("arc_snr", T.DoubleType(), True),
+        T.StructField("arc_snr", T.DoubleType(), True),  # MAX per-pixel SNR
+        T.StructField("arc_snr_sum", T.DoubleType(), True),  # INTEGRATED SNR = sum(signal)/sqrt(sum(variance))
         T.StructField("bad_pixel_frac", T.DoubleType(), True),  # Fraction of masked/bad pixels in stamp
         T.StructField("wise_brightmask_frac", T.DoubleType(), True),  # Fraction affected by WISE bright-star mask
         T.StructField("metrics_ok", T.IntegerType(), True),  # 1 if all metrics computed successfully
@@ -2456,7 +2375,7 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
         # Gen5: COSMOS source metadata
         T.StructField("source_mode", T.StringType(), True),  # "sersic" or "cosmos"
         T.StructField("cosmos_index", T.IntegerType(), True),  # Index of COSMOS template used
-        T.StructField("cosmos_hlr_arcsec", T.DoubleType(), True),  # Half-light radius of lensed COSMOS arc
+        T.StructField("lensed_hlr_arcsec", T.DoubleType(), True),  # Post-lensing half-light radius (NOT source HLR)
     ])
 
     # Repartition by brick for cache locality
@@ -2518,6 +2437,9 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                 if wcs is None:
                     raise RuntimeError(f"coadd load failed for brick {brick}: {cur.get('error')}")
 
+                # Extract task_id for COSMOS source selection (deterministic by task)
+                task_id = r["task_id"]
+                
                 ra = float(r["ra"])
                 dec = float(r["dec"])
                 x, y = wcs.world_to_pixel_values(ra, dec)
@@ -2598,7 +2520,8 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                 src_flux_z_nmgy = mag_to_nMgy(src_zmag)
 
                 add_r = None
-                arc_snr = None
+                arc_snr = None  # Max per-pixel SNR
+                arc_snr_sum = None  # Integrated SNR
                 # Track actual PSF FWHM used (for provenance/reproducibility)
                 psf_fwhm_used_g = None
                 psf_fwhm_used_r = None
@@ -2670,6 +2593,9 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                         cosmos_bank = _load_cosmos_bank_h5(args.cosmos_bank_h5)
                         cosmos_idx = _cosmos_choose_index(task_id, cosmos_bank["n_sources"], getattr(args, 'cosmos_salt', ''))
                         cosmos_hlr = None
+                        
+                        # Alias for consistency with render_cosmos_lensed_source parameter name
+                        src_mag_r = src_rmag
                         
                         # Inject COSMOS source for each band
                         for b in use_bands:
@@ -2767,15 +2693,27 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                         if invr is not None:
                             sigma = np.where((invr > 0) & good_mask, 1.0 / np.sqrt(invr + 1e-12), 0.0)
                             snr = np.where((sigma > 0) & good_mask, add_r / (sigma + 1e-12), 0.0)
+                            # MAX per-pixel SNR (peak detectability)
                             arc_snr = float(np.nanmax(snr))
+                            # INTEGRATED SNR = sum(signal) / sqrt(sum(variance))
+                            # This is the standard SNR definition for extended sources
+                            good_pix = (invr > 0) & good_mask
+                            if np.any(good_pix):
+                                signal_sum = float(np.nansum(add_r[good_pix]))
+                                var_sum = float(np.nansum(1.0 / (invr[good_pix] + 1e-12)))
+                                if var_sum > 0:
+                                    arc_snr_sum = signal_sum / np.sqrt(var_sum)
                     
                                         # =========================================================================
                     # Flux-based magnification proxy (stamp-limited):
                     # Compare total injected flux of the lensed source to the total flux of the unlensed source
                     # rendered on the same stamp with the same PSF. This preserves the "do not renormalize"
                     # requirement and avoids unstable Jacobian evaluation near the critical curve.
+                    #
+                    # NOTE: Disabled for COSMOS mode - comparing lensed COSMOS to unlensed Sersic
+                    # is apples-to-oranges and not physically meaningful.
                     # =========================================================================
-                    if theta_e > 0:
+                    if theta_e > 0 and source_mode != "cosmos":
                         try:
                             # Compute flux-based magnification proxy
                             # NOTE: Variable names fixed 2026-01-24:
@@ -2870,6 +2808,7 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     stamp_npz=stamp_npz,
                     cutout_ok=int(bool(cut_ok_all)),
                     arc_snr=arc_snr,
+                    arc_snr_sum=arc_snr_sum,
                     bad_pixel_frac=bad_pixel_frac,
                     wise_brightmask_frac=wise_brightmask_frac,
                     metrics_ok=int(mask_valid and cut_ok_all and arc_snr is not None) if theta_e > 0 else int(mask_valid and cut_ok_all),
@@ -2888,7 +2827,7 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     physics_warnings=physics_warnings_str,
                     source_mode=row_source_mode,
                     cosmos_index=row_cosmos_index,
-                    cosmos_hlr_arcsec=row_cosmos_hlr,
+                    lensed_hlr_arcsec=row_cosmos_hlr,
                 )
 
             except Exception as e:
@@ -2940,6 +2879,7 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     stamp_npz=empty,
                     cutout_ok=0,
                     arc_snr=None,
+                    arc_snr_sum=None,
                     bad_pixel_frac=None,
                     wise_brightmask_frac=None,
                     metrics_ok=0,
@@ -2958,7 +2898,7 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                     physics_warnings=f"Processing error: {str(e)[:200]}",
                     source_mode=getattr(args, 'source_mode', 'sersic'),
                     cosmos_index=None,
-                    cosmos_hlr_arcsec=None,
+                    lensed_hlr_arcsec=None,
                 )
 
     rdd = df_tasks.rdd.mapPartitions(_proc_partition)
@@ -3076,14 +3016,36 @@ def stage_4p5_compact(spark: SparkSession, args: argparse.Namespace) -> None:
     if not args.compact_output_s3:
         raise ValueError("--compact-output-s3 is required for stage 4p5")
 
+    print(f"[4p5] Reading input from: {args.compact_input_s3}")
     df = read_parquet_safe(spark, args.compact_input_s3)
+    
+    # Validate required columns exist
+    required_cols = ["stamp_npz", "is_control", "cutout_ok", "region_split"]
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"[4p5] Input missing required columns: {missing}")
+    
+    # Log input statistics
+    input_count = df.count()
+    ok_count = df.filter("cutout_ok = 1").count()
+    print(f"[4p5] Input: {input_count:,} rows, {ok_count:,} with cutout_ok=1 ({100*ok_count/max(1,input_count):.1f}%)")
+    
+    # Log split distribution
+    print("[4p5] Split distribution:")
+    for row in df.groupBy("region_split").count().collect():
+        print(f"  {row['region_split']}: {row['count']:,}")
 
-    # Coalesce by target partitions (optional)
+    # Repartition within each split for balanced file sizes
     n = int(args.compact_partitions)
     if n > 0:
-        df = df.repartition(n)
-
-    df.write.mode("overwrite").parquet(args.compact_output_s3)
+        df = df.repartition(n, "region_split")
+    
+    # CRITICAL: Preserve Hive partitioning by region_split for Phase 5 compatibility
+    df.write.mode("overwrite").partitionBy("region_split").parquet(args.compact_output_s3)
+    
+    # Verify output
+    output_count = spark.read.parquet(args.compact_output_s3).count()
+    print(f"[4p5] Output: {output_count:,} rows written")
 
     cfg = {
         "stage": "4p5",
@@ -3264,7 +3226,7 @@ def main() -> None:
 
     # Gen5: Save effective config to S3 for audit trail (Stage 4c only)
     # Note: Skip if boto3 not available (EMR driver doesn't have it by default)
-    if stage == "4c" and _is_s3(args.output_s3) and boto3 is not None:
+    if stage == "4c" and _is_s3(args.output_s3) and _boto3_driver_only is not None:
         effective_config = {
             "stage": args.stage,
             "variant": args.variant,
@@ -3283,6 +3245,7 @@ def main() -> None:
         # Write to S3
         config_s3_path = f"{args.output_s3}/phase4c/{args.variant}/run_config_{args.experiment_id}.json"
         try:
+            import boto3  # Import inside function, not module level
             s3 = boto3.client("s3")
             bucket, key = config_s3_path.replace("s3://", "").split("/", 1)
             s3.put_object(
