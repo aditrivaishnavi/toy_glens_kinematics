@@ -1,9 +1,16 @@
 # Project Handoff: Gravitational Lens Detection Gen5 COSMOS Integration
 
-**Date:** 2026-02-03  
-**Current State:** Smoke test j-2O66SUDK8WZGC running to validate source_mode fix  
-**Git Commit:** `f3b0672` - fix: Define source_mode outside if block to fix UnboundLocalError  
-**Next Phase:** If smoke test passes → launch full 270 vCPU production run
+**Date:** 2026-02-04  
+**Current State:** Gen5 training running on Lambda, Corrected 4c EMR job launching  
+**Active Jobs:**
+- **Training:** Gen5 Phase 5 on Lambda (Epoch 8, loss=0.0009)
+- **EMR 4c Corrected:** Cluster `j-20V17FPRYWQ7N` (with arc_snr_sum, lensed_hlr_arcsec fixes)
+
+**Output Paths:**
+- Original 4c: `s3://darkhaloscope/phase4_pipeline/phase4c/v5_cosmos_production/`
+- Corrected 4c: `s3://darkhaloscope/phase4_pipeline/phase4c/v5_cosmos_corrected/`
+
+**Next Phase:** After 4c corrected completes → Run compaction with split relabeling
 
 ---
 

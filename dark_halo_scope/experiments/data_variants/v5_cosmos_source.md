@@ -1,12 +1,27 @@
-# Data Variant: v5_cosmos_source
+# Data Variant: v5_cosmos_corrected
 
-**Status**: PLANNED  
-**Target Date**: TBD  
-**Used by**: Gen5 (planned)
+**Status**: IN PRODUCTION  
+**Date**: 2026-02-04  
+**Used by**: Gen5
 
 ## Summary
 
-Next-generation data variant using real COSMOS galaxy morphologies as lensed sources instead of parametric Sersic profiles.
+Gen5 data variant using real COSMOS galaxy morphologies as lensed sources. This is the **corrected** version with proper arc_snr calculation and HLR naming.
+
+## Data Paths
+
+| Path | Description |
+|------|-------------|
+| **Original (has issues)** | `s3://darkhaloscope/phase4_pipeline/phase4c/v5_cosmos_production/` |
+| **Corrected (use this)** | `s3://darkhaloscope/phase4_pipeline/phase4c/v5_cosmos_corrected/` |
+
+## Corrections Applied (vs v5_cosmos_production)
+
+| Field | Issue | Fix |
+|-------|-------|-----|
+| `arc_snr_sum` | Missing | Added: integrated SNR = sum(signal)/sqrt(sum(variance)) |
+| `lensed_hlr_arcsec` | Named `cosmos_hlr_arcsec` | Renamed for clarity (this is post-lensing HLR) |
+| Surface brightness | Wrong units | Fixed: template * flux / pixel_scale² for lenstronomy INTERPOL |
 
 ## Key Improvements over v4_sota_moffat
 

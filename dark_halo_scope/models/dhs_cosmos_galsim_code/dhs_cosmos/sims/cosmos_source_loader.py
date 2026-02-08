@@ -36,6 +36,10 @@ Notes
 - GalSim supports COSMOS loading via COSMOSCatalog or RealGalaxyCatalog.
   This module tries both.
 - The stored images are normalized to unit total flux. Flux scaling is applied during injection.
+- KNOWN LIMITATION: HST COSMOS stamps have correlated noise from drizzle processing.
+  GalSim's `whiten()` or `symmetrize_noise()` can mitigate this, but are not applied here.
+  Mitigation: The 8.7x resolution ratio (0.03" -> 0.262") plus PSF convolution substantially
+  washes out the correlated noise structure in the final DECaLS-resolution stamps.
 
 """
 

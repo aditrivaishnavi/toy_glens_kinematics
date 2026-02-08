@@ -22,11 +22,16 @@ seeds:
 
 # Data variant configuration
 data:
-  variant_name: v5_cosmos_source
-  description: "COSMOS source morphology with Moffat PSF"
+  variant_name: v5_cosmos_corrected
+  description: "COSMOS source morphology with Moffat PSF (corrected: arc_snr_sum, lensed_hlr_arcsec)"
   phase3_parent_sample: "s3://darkhaloscope/phase3/parent_sample.parquet"
-  phase4a_manifest: "s3://darkhaloscope/phase4_pipeline/phase4a/v5_cosmos_source/manifests/"
-  phase4c_stamps: "s3://darkhaloscope/phase4_pipeline/phase4c/v5_cosmos_source/stamps/train_stamp64_bandsgrz_cosmos/"
+  phase4a_manifest: "s3://darkhaloscope/phase4_pipeline/phase4a/v4_sota_moffat/manifests/train_stamp64_bandsgrz_gridgrid_sota"
+  phase4c_stamps: "s3://darkhaloscope/phase4_pipeline/phase4c/v5_cosmos_corrected/stamps/train_stamp64_bandsgrz_cosmos_corrected/"
+  
+  # NOTE: Use v5_cosmos_corrected which includes:
+  # - arc_snr_sum: integrated SNR = sum(signal)/sqrt(sum(variance))
+  # - lensed_hlr_arcsec: renamed from cosmos_hlr_arcsec for clarity
+  # - Fixed surface brightness conversion for lenstronomy INTERPOL
   
   # PSF configuration
   psf_model: moffat

@@ -2,7 +2,7 @@
 
 **Project**: CNN-Based Strong Gravitational Lens Finder for DESI Legacy Survey DR10  
 **Target Publication**: MNRAS / ApJ / AAS  
-**Last Updated**: 2026-02-02
+**Last Updated**: 2026-02-03
 
 ---
 
@@ -15,6 +15,7 @@
 5. [Comparative Analysis](#comparative-analysis)
 6. [Key Insights and Lessons Learned](#key-insights-and-lessons-learned)
 7. [Sim-to-Real Gap Analysis](#sim-to-real-gap-analysis)
+8. [Generation 5: COSMOS Source Integration (In Preparation)](#generation-5-cosmos-source-integration-in-preparation)
 
 ---
 
@@ -741,6 +742,108 @@ The synthetic training data differs from real lenses in several critical ways:
 
 ---
 
+## Generation 5: COSMOS Source Integration (In Preparation)
+
+### Overview
+
+| Property | Value |
+|----------|-------|
+| Model Name | ConvNeXt-v5-COSMOS |
+| Data Version | v5_cosmos_source |
+| Training Date | TBD |
+| Training Platform | Lambda Labs GH200 (96GB) |
+| Status | 🔧 Pipeline Validated, Awaiting Production Run |
+
+### Key Changes from Gen4
+
+| Aspect | Gen4 | Gen5 | Rationale |
+|--------|------|------|-----------|
+| Source Profile | Sersic n=1 | **COSMOS Real Galaxies** | Clumpy, irregular morphology |
+| Source Morphology | Smooth, symmetric | **Realistic substructure** | Bridge sim-to-real gap |
+| COSMOS Bank | None | **~50k HST F814W stamps** | Real galaxy morphologies |
+| Lens Model | SIE | SIE + **lenstronomy rendering** | More accurate magnification |
+
+### Pipeline Validation (2026-02-03)
+
+The Gen5 Spark pipeline was extensively tested and debugged. Key findings:
+
+#### Bugs Fixed
+
+| Bug | Impact | Fix |
+|-----|--------|-----|
+| Module-level boto3 import | boto3=None on executors | Import boto3 inside functions |
+| PSF kernel size > stamp | 46/50 stamps failed | Cap kernel radius to 31 (max 63×63) |
+| `--bands grz` parsing | Treated as single band | Use `--bands g,r,z` (comma-separated) |
+| s3:// vs s3a:// paths | Local Spark failed | Handle both prefixes |
+| Inefficient smoke test | Full manifest scan even with `--test-limit` | Read single partition file directly |
+
+#### arc_snr Variance Investigation
+
+**Observation**: arc_snr ranged from 0.007 to 227 across test stamps.
+
+**Investigation**: 4 stamps had arc_snr < 1 despite visible arc signal in the image.
+
+**Root Cause**: These stamps fell on regions masked by DR10's MEDIUM star flag (bit 11):
+
+```
+Stamp at RA=121.389571, Dec=19.167777 (brick 1214p192):
+  Good pixels: 1035/4096 (25.3%)
+  Ring pixels: 68
+  Ring pixels that are GOOD: 0    ← 100% of Einstein ring is masked!
+  Ring pixels that are BAD: 68
+```
+
+**Conclusion**: arc_snr calculation is **correct**:
+1. The arc IS rendered and added to the image (visible)
+2. But DR10 maskbits flag the region as near a medium-bright star
+3. arc_snr only considers unmasked pixels (correct behavior)
+4. Low arc_snr correctly indicates the stamp is unreliable for detection
+
+| arc_snr Range | Cause | Interpretation |
+|---------------|-------|----------------|
+| < 1 | Arc in masked region (MEDIUM star) | Correctly flagged as unreliable |
+| 1-10 | Faint arcs or partial masking | Weak but detectable |
+| 10-50 | Typical lensing signals | Good training samples |
+| > 50 | Bright arcs, high magnification | Strong lensing events |
+
+**Key Takeaway**: Wide arc_snr variance is expected and correctly reflects data quality. Stamps with low arc_snr will be filtered via `metrics_ok` or SNR thresholds.
+
+#### Local Spark Smoke Test Results
+
+```
+Total stamps processed: 50
+Successful (cutout_ok=1): 50/50 (100%)
+arc_snr: mean=39.9, std=48.8, range=[0.007, 227]
+Bricks processed: 26 unique bricks
+```
+
+### Production Run Prerequisites
+
+1. **Coadd Cache**: All bricks in manifest must be in S3 coadd cache
+2. **COSMOS Bank**: H5 file with ~50k galaxy stamps ready
+3. **EMR Cluster**: 20+ m5.xlarge executors recommended
+
+### Expected Improvements from Gen5
+
+Based on anchor baseline failure analysis:
+
+| Issue | Gen4 Status | Gen5 Solution |
+|-------|-------------|---------------|
+| Smooth Sersic sources | ❌ Unrealistic | ✅ COSMOS real galaxies |
+| Missing source clumpiness | ❌ | ✅ HST F814W morphology |
+| Arc substructure | ❌ None | ✅ Preserved from COSMOS |
+| Color gradients | ❌ Uniform | ⚠️ Still monochromatic (future work) |
+
+### S3 Data Locations
+
+```
+COSMOS Bank:     s3://darkhaloscope/cosmos/cosmos_source_bank_v1.h5 (TBD)
+Gen5 Pipeline:   s3://darkhaloscope/phase4_pipeline/phase4c/v5_cosmos_source/
+EMR Bootstrap:   s3://darkhaloscope/emr/gen5/emr_bootstrap_gen5.sh
+```
+
+---
+
 ## File Locations
 
 ### Models (Lambda NFS)
@@ -768,5 +871,5 @@ Gen4 Script:  dark_halo_scope/models/gen4_hardneg/phase5_train_gen4_hardneg.py
 ---
 
 *Document created: 2026-01-31*  
-*Last updated: 2026-02-02*  
+*Last updated: 2026-02-03*  
 *This is a living document - update as new models are trained.*

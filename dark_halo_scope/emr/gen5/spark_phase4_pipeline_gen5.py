@@ -649,6 +649,39 @@ def deflection_shear(x: np.ndarray, y: np.ndarray,
 # MAIN RENDERING FUNCTION (Correct magnification behavior)
 # =========================================================================
 
+def mask_core_flux(img: np.ndarray, core_radius_pix: int) -> np.ndarray:
+    """
+    Zero out flux in the central circular region of an image.
+    
+    This prevents injected arc flux from contributing to core brightness,
+    mitigating the core brightness shortcut in lens classification where
+    a simple logistic regression on central pixels can achieve high AUC.
+    
+    Args:
+        img: 2D image array (e.g., rendered lensed arc)
+        core_radius_pix: Radius in pixels to mask (0 = no masking)
+        
+    Returns:
+        Image with central pixels zeroed out
+        
+    Note:
+        Apply AFTER PSF convolution to ensure no PSF-spread light enters core.
+        At 0.262 arcsec/pixel: 5 pixels = 1.3 arcsec, 10 pixels = 2.6 arcsec.
+    """
+    if core_radius_pix <= 0:
+        return img
+    
+    ny, nx = img.shape
+    center_y, center_x = ny // 2, nx // 2
+    y, x = np.ogrid[:ny, :nx]
+    r2 = (x - center_x)**2 + (y - center_y)**2
+    core_mask = r2 < core_radius_pix**2
+    
+    img_masked = img.copy()
+    img_masked[core_mask] = 0.0
+    return img_masked
+
+
 def render_lensed_source(
     stamp_size: int,
     pixscale_arcsec: float,
@@ -2632,6 +2665,10 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                                 band=b,
                             )
                             
+                            # Apply core mask if enabled (mitigates core brightness shortcut)
+                            if args.core_mask_radius > 0:
+                                add_b = mask_core_flux(add_b, args.core_mask_radius)
+                            
                             imgs[b] = (imgs[b] + add_b).astype(np.float32)
                             
                             if b == "r":
@@ -2678,6 +2715,10 @@ def stage_4c_inject_cutouts(spark: SparkSession, args: argparse.Namespace) -> No
                                 moffat_beta=args.moffat_beta,
                                 psf_apply=True,
                             )
+                            
+                            # Apply core mask if enabled (mitigates core brightness shortcut)
+                            if args.core_mask_radius > 0:
+                                add_b = mask_core_flux(add_b, args.core_mask_radius)
                             
                             imgs[b] = (imgs[b] + add_b).astype(np.float32)
                             
@@ -3097,6 +3138,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="PSF model used for injected source convolution. 'moffat' is more realistic for DECaLS-like PSF wings.")
     p.add_argument("--moffat-beta", type=float, default=3.5,
                    help="Moffat beta parameter (typical 3.0-4.5). Only used when --psf-model=moffat.")
+    
+    # Core brightness shortcut mitigation
+    p.add_argument("--core-mask-radius", type=int, default=0,
+                   help="Radius in pixels to zero out from injected arc center (0=disabled). "
+                        "Use 5-10 to mitigate core brightness shortcut where LR on core pixels "
+                        "can classify lens/non-lens. Recommended: 5 (1.3 arcsec at 0.262\"/pix).")
 
     # Gen5: COSMOS source integration
     p.add_argument("--config", help="Path to JSON config file (local or s3://). Overrides other args.")

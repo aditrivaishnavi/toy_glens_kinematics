@@ -84,10 +84,21 @@ def ddp_cleanup():
 
 
 def decode_stamp_npz(npz_bytes: bytes) -> np.ndarray:
+    """Decode stamp NPZ bytes to (3, H, W) array.
+    
+    Expects image_g, image_r, image_z keys for grz bandset.
+    Raises ValueError if any band is missing (caller should filter by bandset).
+    """
     if npz_bytes is None:
         raise ValueError("stamp_npz is None")
     bio = io.BytesIO(npz_bytes)
     with np.load(bio) as npz:
+        keys = list(npz.keys())
+        # Validate all 3 bands exist
+        required = {"image_g", "image_r", "image_z"}
+        missing = required - set(keys)
+        if missing:
+            raise ValueError(f"stamp_npz missing bands: {missing} (has: {keys})")
         g = npz["image_g"].astype(np.float32)
         r = npz["image_r"].astype(np.float32)
         z = npz["image_z"].astype(np.float32)
@@ -342,6 +353,13 @@ class ParquetStreamDataset(IterableDataset):
                     if "cutout_ok" in colmap:
                         ok = colmap["cutout_ok"][i].as_py()
                         if ok is None or int(ok) != 1:
+                            continue
+                    
+                    # bandset gate: only process grz stamps (3-band)
+                    if "bandset" in colmap:
+                        bandset = colmap["bandset"][i].as_py()
+                        if bandset != "grz":
+                            skip_count += 1
                             continue
 
                     is_ctrl = int(colmap["is_control"][i].as_py())
@@ -661,7 +679,8 @@ def main():
                             f"Forbidden columns: {sorted(FORBIDDEN_META)}")
 
     # Note: region_split is a virtual Hive partition column - don't include in fragment reads
-    base_cols = ["stamp_npz", "is_control", "cutout_ok", "theta_e_arcsec", "psf_fwhm_used_r", "psfsize_r", "arc_snr"]
+    # Include bandset to filter for grz-only (3-band stamps required for decode_stamp_npz)
+    base_cols = ["stamp_npz", "is_control", "cutout_ok", "bandset", "theta_e_arcsec", "psf_fwhm_used_r", "psfsize_r", "arc_snr"]
     cols = [c for c in base_cols if c in dataset.schema.names]
 
     train_cfg = StreamConfig(
