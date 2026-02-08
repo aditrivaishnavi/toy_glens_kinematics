@@ -14,8 +14,8 @@ from typing import Dict, List, Optional, Tuple, Any
 # CONSTANTS
 # =============================================================================
 
-# Galaxy types for Pool N1
-VALID_TYPES_N1 = {"SER", "DEV", "REX", "EXP"}
+# Galaxy types for Pool N1 (Paper IV parity: SER/DEV/REX only, EXP excluded)
+VALID_TYPES_N1 = {"SER", "DEV", "REX"}
 
 # nobs_z bin edges: [1-2], [3-5], [6-10], [11+]
 NOBS_Z_BINS = [(1, 2), (3, 5), (6, 10), (11, 999)]

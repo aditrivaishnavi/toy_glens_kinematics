@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-EMR Launch Script for Negative Sampling Job
+EMR Launch Script for Positive Catalog Crossmatch Job
 
-This script launches the negative sampling Spark job on EMR.
+This script launches the crossmatch Spark job on EMR to match the 5,104
+positive lens candidates with the DR10 manifest to obtain observing conditions.
 
 Prerequisites:
 1. AWS CLI configured with valid credentials
@@ -10,19 +11,17 @@ Prerequisites:
 3. S3 bucket access configured
 
 Usage:
-    # Small test run (2 partitions)
-    python emr/launch_negative_sampling.py --test
+    # Mini test (sample 1% of manifest)
+    python emr/launch_crossmatch_positives.py --test
     
     # Full run
-    python emr/launch_negative_sampling.py --full
+    python emr/launch_crossmatch_positives.py --full
     
     # Check status
-    python emr/launch_negative_sampling.py --status --cluster-id j-XXXXX
+    python emr/launch_crossmatch_positives.py --status --cluster-id j-XXXXX
 
-Lessons Applied:
-- L6.1: Local testing before EMR
-- L6.2: Verify S3 uploads
-- L5.1: Don't declare victory prematurely
+Author: Generated for stronglens_calibration project
+Date: 2026-02-08
 """
 import argparse
 import hashlib
@@ -45,16 +44,18 @@ S3_BUCKET = os.environ.get("S3_BUCKET", "darkhaloscope")
 
 # S3 Paths
 S3_CODE_PREFIX = "stronglens_calibration/emr/code"
-S3_CONFIG_PREFIX = "stronglens_calibration/configs"
-S3_OUTPUT_PREFIX = "stronglens_calibration/manifests"
+S3_OUTPUT_PREFIX = "stronglens_calibration/positives_with_dr10"
 S3_LOGS_PREFIX = "stronglens_calibration/emr/logs"
-S3_CHECKPOINT_PREFIX = "stronglens_calibration/checkpoints"
+
+# Default paths
+DEFAULT_MANIFEST_PATH = "s3://darkhaloscope/stronglens_calibration/manifests/20260208_074343/"
+DEFAULT_POSITIVES_PATH = "s3://darkhaloscope/stronglens_calibration/configs/positives/desi_candidates.csv"
 
 # EMR Configuration
 EMR_RELEASE_LABEL = "emr-7.0.0"
-EMR_SUBNET_ID = os.environ.get("EMR_SUBNET_ID", "")  # Must be set
+EMR_SUBNET_ID = os.environ.get("EMR_SUBNET_ID", "")
 
-# Instance Configuration
+# Instance Configuration - smaller since this is a simple join
 INSTANCE_PRESETS = {
     "test": {
         "name": "test",
@@ -65,24 +66,24 @@ INSTANCE_PRESETS = {
         "timeout_hours": 1,
     },
     "medium": {
-        "name": "medium", 
+        "name": "medium",
+        "master_type": "m5.xlarge",
+        "worker_type": "m5.2xlarge",
+        "worker_count": 5,
+        "executor_memory": "8g",
+        "timeout_hours": 2,
+    },
+    "large": {
+        "name": "large",
         "master_type": "m5.xlarge",
         "worker_type": "m5.2xlarge",
         "worker_count": 10,
         "executor_memory": "8g",
         "timeout_hours": 4,
     },
-    "large": {
-        "name": "large",
-        "master_type": "m5.xlarge", 
-        "worker_type": "m5.2xlarge",
-        "worker_count": 25,
-        "executor_memory": "8g",
-        "timeout_hours": 8,
-    },
 }
 
-# Project root - the directory containing this script
+# Project root
 EMR_DIR = Path(__file__).parent.resolve()
 PROJECT_ROOT = EMR_DIR.parent
 
@@ -118,9 +119,6 @@ def check_aws_credentials() -> bool:
         return False
     except Exception as e:
         print(f"ERROR: AWS credentials invalid: {e}")
-        print("\nTo fix:")
-        print("  1. Run: aws configure")
-        print("  2. Or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY")
         return False
 
 
@@ -140,22 +138,43 @@ def upload_to_s3(local_path: Path, s3_key: str) -> str:
     return s3_uri
 
 
-def verify_s3_upload(s3_uri: str) -> bool:
-    """Verify file exists in S3."""
+def verify_inputs_exist() -> bool:
+    """Verify that required input files exist in S3."""
     import boto3
     
     s3 = boto3.client("s3", region_name=AWS_REGION)
     
-    # Parse S3 URI
-    if s3_uri.startswith("s3://"):
-        s3_uri = s3_uri[5:]
-    bucket, key = s3_uri.split("/", 1)
+    # Check manifest
+    manifest_bucket = DEFAULT_MANIFEST_PATH.replace("s3://", "").split("/")[0]
+    manifest_key = "/".join(DEFAULT_MANIFEST_PATH.replace("s3://", "").split("/")[1:])
     
     try:
-        s3.head_object(Bucket=bucket, Key=key)
-        return True
-    except:
+        # List to check if directory has content
+        response = s3.list_objects_v2(
+            Bucket=manifest_bucket,
+            Prefix=manifest_key,
+            MaxKeys=1
+        )
+        if response.get("KeyCount", 0) == 0:
+            print(f"ERROR: Manifest not found at {DEFAULT_MANIFEST_PATH}")
+            return False
+        print(f"✓ Manifest found at {DEFAULT_MANIFEST_PATH}")
+    except Exception as e:
+        print(f"ERROR checking manifest: {e}")
         return False
+    
+    # Check positives
+    positives_bucket = DEFAULT_POSITIVES_PATH.replace("s3://", "").split("/")[0]
+    positives_key = "/".join(DEFAULT_POSITIVES_PATH.replace("s3://", "").split("/")[1:])
+    
+    try:
+        s3.head_object(Bucket=positives_bucket, Key=positives_key)
+        print(f"✓ Positives found at {DEFAULT_POSITIVES_PATH}")
+    except Exception as e:
+        print(f"ERROR: Positives not found at {DEFAULT_POSITIVES_PATH}: {e}")
+        return False
+    
+    return True
 
 
 # =============================================================================
@@ -163,11 +182,7 @@ def verify_s3_upload(s3_uri: str) -> bool:
 # =============================================================================
 
 def prepare_and_upload_code() -> Dict[str, str]:
-    """
-    Upload code, config, and bootstrap script to S3.
-    
-    Returns dict of S3 URIs.
-    """
+    """Upload code to S3."""
     print("\n[1/4] Preparing and uploading code...")
     
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
@@ -175,14 +190,15 @@ def prepare_and_upload_code() -> Dict[str, str]:
     
     uploads = {}
     
-    # Upload bootstrap script (needed for cluster creation)
+    # Upload bootstrap script
     bootstrap_path = EMR_DIR / "bootstrap.sh"
-    s3_key = f"{S3_CODE_PREFIX}/{timestamp}_{git_commit}/bootstrap.sh"
-    uploads["bootstrap"] = upload_to_s3(bootstrap_path, s3_key)
+    if bootstrap_path.exists():
+        s3_key = f"{S3_CODE_PREFIX}/{timestamp}_{git_commit}/bootstrap.sh"
+        uploads["bootstrap"] = upload_to_s3(bootstrap_path, s3_key)
     
     # Upload main script
-    script_path = EMR_DIR / "spark_negative_sampling.py"
-    s3_key = f"{S3_CODE_PREFIX}/{timestamp}_{git_commit}/spark_negative_sampling.py"
+    script_path = EMR_DIR / "spark_crossmatch_positives.py"
+    s3_key = f"{S3_CODE_PREFIX}/{timestamp}_{git_commit}/spark_crossmatch_positives.py"
     uploads["script"] = upload_to_s3(script_path, s3_key)
     
     # Upload utilities
@@ -190,58 +206,24 @@ def prepare_and_upload_code() -> Dict[str, str]:
     s3_key = f"{S3_CODE_PREFIX}/{timestamp}_{git_commit}/sampling_utils.py"
     uploads["utils"] = upload_to_s3(utils_path, s3_key)
     
-    # Upload sweep utilities
-    sweep_utils_path = EMR_DIR / "sweep_utils.py"
-    if sweep_utils_path.exists():
-        s3_key = f"{S3_CODE_PREFIX}/{timestamp}_{git_commit}/sweep_utils.py"
-        uploads["sweep_utils"] = upload_to_s3(sweep_utils_path, s3_key)
-    
-    # Upload config - check both locations
-    config_path = EMR_DIR / "configs" / "negative_sampling_v1.yaml"
-    if not config_path.exists():
-        config_path = PROJECT_ROOT / "configs" / "negative_sampling_v1.yaml"
-    s3_key = f"{S3_CONFIG_PREFIX}/{timestamp}/negative_sampling_v1.yaml"
-    if config_path.exists():
-        uploads["config"] = upload_to_s3(config_path, s3_key)
-    else:
-        print(f"  WARNING: Config not found at {config_path}")
-    
-    # Upload positive catalog for exclusion - optional
-    positive_path = EMR_DIR / "data" / "positives" / "desi_candidates.csv"
-    if not positive_path.exists():
-        positive_path = PROJECT_ROOT / "data" / "positives" / "desi_candidates.csv"
-    if positive_path.exists():
-        s3_key = f"{S3_CONFIG_PREFIX}/positives/desi_candidates.csv"
-        uploads["positives"] = upload_to_s3(positive_path, s3_key)
-    else:
-        print(f"  NOTE: Positive catalog not found (optional)")
-    
     print(f"  Uploaded {len(uploads)} files")
     
     return uploads
 
 
 def launch_emr_cluster(preset: str, uploads: Dict[str, str]) -> str:
-    """
-    Launch EMR cluster with bootstrap action and return cluster ID.
-    
-    Args:
-        preset: Instance preset name (test, medium, large)
-        uploads: Dict of S3 URIs including bootstrap script
-    """
+    """Launch EMR cluster and return cluster ID."""
     import boto3
     
     config = INSTANCE_PRESETS[preset]
     print(f"\n[2/4] Launching EMR cluster (preset: {preset})...")
     print(f"  Master:  1x {config['master_type']}")
     print(f"  Workers: {config['worker_count']}x {config['worker_type']}")
-    print(f"  Bootstrap: {uploads.get('bootstrap', 'NOT PROVIDED')}")
     
     emr = boto3.client("emr", region_name=AWS_REGION)
     
-    # Build cluster configuration
     cluster_config = {
-        "Name": f"stronglens-negative-sampling-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}",
+        "Name": f"stronglens-crossmatch-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}",
         "ReleaseLabel": EMR_RELEASE_LABEL,
         "LogUri": f"s3://{S3_BUCKET}/{S3_LOGS_PREFIX}/",
         "Applications": [
@@ -265,7 +247,7 @@ def launch_emr_cluster(preset: str, uploads: Dict[str, str]) -> str:
                     "InstanceCount": config["worker_count"],
                 },
             ],
-            "KeepJobFlowAliveWhenNoSteps": True,  # Keep alive for step submission (terminate manually)
+            "KeepJobFlowAliveWhenNoSteps": True,
             "TerminationProtected": False,
         },
         "VisibleToAllUsers": True,
@@ -297,7 +279,6 @@ def launch_emr_cluster(preset: str, uploads: Dict[str, str]) -> str:
         ],
     }
     
-    # Add bootstrap action to install dependencies
     if "bootstrap" in uploads:
         cluster_config["BootstrapActions"] = [
             {
@@ -307,11 +288,7 @@ def launch_emr_cluster(preset: str, uploads: Dict[str, str]) -> str:
                 },
             },
         ]
-        print(f"  Bootstrap action configured")
-    else:
-        print("  WARNING: No bootstrap script - dependencies may not be installed!")
     
-    # Add subnet if specified
     if EMR_SUBNET_ID:
         cluster_config["Instances"]["Ec2SubnetId"] = EMR_SUBNET_ID
     
@@ -323,7 +300,7 @@ def launch_emr_cluster(preset: str, uploads: Dict[str, str]) -> str:
     return cluster_id
 
 
-def wait_for_cluster(cluster_id: str, timeout_minutes: int = 25) -> bool:
+def wait_for_cluster(cluster_id: str, timeout_minutes: int = 20) -> bool:
     """Wait for cluster to be ready."""
     import boto3
     
@@ -356,9 +333,10 @@ def wait_for_cluster(cluster_id: str, timeout_minutes: int = 25) -> bool:
 def submit_spark_step(
     cluster_id: str,
     uploads: Dict[str, str],
-    sweep_input: str,
+    manifest_path: str,
+    positives_path: str,
     output_path: str,
-    test_limit: Optional[int] = None,
+    sample_frac: Optional[float] = None,
 ) -> str:
     """Submit Spark step and return step ID."""
     import boto3
@@ -367,35 +345,24 @@ def submit_spark_step(
     
     emr = boto3.client("emr", region_name=AWS_REGION)
     
-    # Collect all Python dependency files
-    py_files = [uploads["utils"]]
-    if "sweep_utils" in uploads:
-        py_files.append(uploads["sweep_utils"])
-    py_files_str = ",".join(py_files)
-    
-    # Build step arguments
     step_args = [
         "spark-submit",
         "--deploy-mode", "cluster",
-        "--py-files", py_files_str,
+        "--py-files", uploads["utils"],
         uploads["script"],
-        "--config", uploads["config"],
-        "--sweep-input", sweep_input,
+        "--manifest", manifest_path,
+        "--positives", positives_path,
         "--output", output_path,
     ]
     
-    # Only add --positive-catalog if we have a catalog
-    if uploads.get("positives"):
-        step_args.extend(["--positive-catalog", uploads["positives"]])
-    
-    if test_limit:
-        step_args.extend(["--test-limit", str(test_limit)])
+    if sample_frac:
+        step_args.extend(["--sample-frac", str(sample_frac)])
     
     response = emr.add_job_flow_steps(
         JobFlowId=cluster_id,
         Steps=[
             {
-                "Name": "NegativeSampling",
+                "Name": "CrossmatchPositives",
                 "ActionOnFailure": "CONTINUE",
                 "HadoopJarStep": {
                     "Jar": "command-runner.jar",
@@ -411,7 +378,7 @@ def submit_spark_step(
     return step_id
 
 
-def monitor_step(cluster_id: str, step_id: str, timeout_hours: int = 4) -> bool:
+def monitor_step(cluster_id: str, step_id: str, timeout_hours: int = 2) -> bool:
     """Monitor step until completion."""
     import boto3
     
@@ -433,7 +400,6 @@ def monitor_step(cluster_id: str, step_id: str, timeout_hours: int = 4) -> bool:
             return True
         elif status in ("FAILED", "CANCELLED"):
             print(f"\n  Step failed with status: {status}")
-            # Print failure reason
             if "FailureDetails" in response["Step"]["Status"]:
                 details = response["Step"]["Status"]["FailureDetails"]
                 print(f"  Reason: {details.get('Reason', 'Unknown')}")
@@ -444,7 +410,7 @@ def monitor_step(cluster_id: str, step_id: str, timeout_hours: int = 4) -> bool:
             print(f"\n  Timeout after {timeout_hours} hours")
             return False
         
-        time.sleep(60)
+        time.sleep(30)
 
 
 # =============================================================================
@@ -452,10 +418,10 @@ def monitor_step(cluster_id: str, step_id: str, timeout_hours: int = 4) -> bool:
 # =============================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description="Launch EMR negative sampling job")
+    parser = argparse.ArgumentParser(description="Launch EMR crossmatch job")
     
     parser.add_argument("--test", action="store_true",
-                        help="Run small test (2 partitions)")
+                        help="Run test with 1%% manifest sample")
     parser.add_argument("--full", action="store_true",
                         help="Run full job")
     parser.add_argument("--status", action="store_true",
@@ -470,9 +436,10 @@ def main():
     parser.add_argument("--preset", type=str, default="test",
                         choices=list(INSTANCE_PRESETS.keys()),
                         help="Instance preset")
-    parser.add_argument("--sweep-input", type=str,
-                        default="s3://darkhaloscope/dr10/sweeps/",
-                        help="S3 path to sweep files")
+    parser.add_argument("--manifest", type=str, default=DEFAULT_MANIFEST_PATH,
+                        help="S3 path to manifest")
+    parser.add_argument("--positives", type=str, default=DEFAULT_POSITIVES_PATH,
+                        help="S3 path to positive catalog")
     
     args = parser.parse_args()
     
@@ -510,6 +477,10 @@ def main():
         print(f"Terminating cluster: {args.cluster_id}")
         sys.exit(0)
     
+    # Verify inputs exist
+    if not verify_inputs_exist():
+        sys.exit(1)
+    
     # Run job
     if not args.test and not args.full:
         print("ERROR: Specify --test or --full")
@@ -534,14 +505,16 @@ def main():
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     output_path = f"s3://{S3_BUCKET}/{S3_OUTPUT_PREFIX}/{timestamp}/"
     
-    test_limit = 2 if args.test else None
+    # For test, sample 1% of manifest
+    sample_frac = 0.01 if args.test else None
     
     step_id = submit_spark_step(
         cluster_id=cluster_id,
         uploads=uploads,
-        sweep_input=args.sweep_input,
+        manifest_path=args.manifest,
+        positives_path=args.positives,
         output_path=output_path,
-        test_limit=test_limit,
+        sample_frac=sample_frac,
     )
     
     # Monitor
@@ -553,9 +526,8 @@ def main():
         print("\nTo verify output:")
         print(f"  aws s3 ls {output_path}")
     
-    # Don't auto-terminate to allow debugging
     print(f"\nCluster ID: {cluster_id}")
-    print("To terminate: python emr/launch_negative_sampling.py --terminate --cluster-id " + cluster_id)
+    print("To terminate: python emr/launch_crossmatch_positives.py --terminate --cluster-id " + cluster_id)
     
     sys.exit(0 if success else 1)
 

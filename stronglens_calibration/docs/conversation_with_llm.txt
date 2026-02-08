@@ -1611,4 +1611,1170 @@ If you want this turned into an execution checklist (commands, expected artifact
 ===============
 
 
+## Follow-up: Code Audit Against Paper IV - Discrepancy Resolution
+
+After auditing our implementation against "Strong Lens Discoveries in DESI Legacy Imaging Surveys DR10 with Two Deep Learning Architectures" (Inchausti et al. 2025, aka Paper IV), we found and fixed two critical discrepancies in our negative sampling pipeline (`spark_negative_sampling.py`).
+
+### Discrepancy 1: Missing Minimum Exposure Filter
+
+**Paper IV states:**
+> "requiring at least three exposures in the g, r, and z bands"
+
+**Our original code:**
+Only used `nobs_z` for stratification binning, but did NOT enforce a minimum exposure filter for any band.
+
+**Fix applied (spark_negative_sampling.py, around line 438):**
+```python
+# 5. Minimum exposures per band (Paper IV: ≥3 in each of g, r, z)
+# "at least three exposures in the g, r, and z bands" - Inchausti et al. 2025
+MIN_EXPOSURES = 3
+nobs_ok = (nobs_g_all >= MIN_EXPOSURES) & (nobs_r_all >= MIN_EXPOSURES) & (nobs_z_all >= MIN_EXPOSURES)
+skip_reasons["insufficient_exposures"] = int(np.sum(valid_coords & in_decals & valid_types & maskbit_ok & ~nobs_ok))
+```
+
+### Discrepancy 2: Missing DECaLS Footprint Cut
+
+**Paper IV states:**
+> "The footprint of DECaLS in DR10 in the range −18◦ < δ < 32◦"
+
+**Our original code:**
+No declination filter was applied.
+
+**Fix applied (spark_negative_sampling.py, around line 421):**
+```python
+# 2. DECaLS footprint (Paper IV: δ < +32°)
+# "DECaLS in DR10 in the range −18 ◦ < δ < 32◦" - Inchausti et al. 2025
+DECALS_DEC_MAX = 32.0
+in_decals = dec_all < DECALS_DEC_MAX
+skip_reasons["outside_decals"] = int(np.sum(valid_coords & ~in_decals))
+```
+
+### Questions for Review
+
+1. **Is the exposure filter correctly applied?** We now require `nobs_g >= 3 AND nobs_r >= 3 AND nobs_z >= 3` before a source enters the negative pool. This is applied in the vectorized filtering stage before spatial exclusion.
+
+2. **Should we also enforce δ > -18°?** Paper IV mentions "−18◦ < δ < 32◦", but the southern limit is typically covered by DECam anyway. Should we add an explicit lower bound?
+
+3. **Any other filters we missed?** The paper mentions "Extragalactic sources" but we interpret this as the morphological type filter (PSF, REX, EXP, DEV, SER) already applied.
+
+Please confirm these fixes are correct and identify any remaining discrepancies.
+
+LLM: 
+
+1. Exposure filter
+
+Your interpretation matches the Paper IV sentence and the logic is correct in principle: require **nobs_g ≥ 3 AND nobs_r ≥ 3 AND nobs_z ≥ 3** before entering the negative pool.
+
+Two concrete audit points to confirm in your code (these are common pitfalls):
+
+* **Are `nobs_*_all` the correct DR10 “number of exposures” fields?** In Legacy Surveys products there are multiple related quantities (per-band nobs, per-band nobs per camera, etc.). Paper IV’s intent is the per-band exposure counts used for coadds. Make sure you are using the **same “nobs” definition** that Paper IV used (almost certainly the `nobs_g`, `nobs_r`, `nobs_z` columns in the sweeps/Tractor catalogs for the DR you are sampling from).
+* **Make the skip reason conditional consistent:** your skip count currently uses `valid_coords & in_decals & valid_types & maskbit_ok & ~nobs_ok`. Ensure `in_decals` reflects the full DECaLS footprint (see below) so you are not undercounting “insufficient_exposures” by excluding many sources earlier.
+
+Recommendation: log and persist a small table of marginal counts:
+
+* count failing each individual band: `nobs_g<3`, `nobs_r<3`, `nobs_z<3`
+* count failing any band
+  This helps spot if you accidentally used the wrong column (you will see weirdly high failures in a band that should not dominate).
+
+2. Declination lower bound (δ > −18°)
+
+Yes, enforce the lower bound explicitly if you are trying to follow Paper IV “as written.” The statement is a footprint definition, not a casual remark, and applying only δ < 32° is incomplete relative to that definition.
+
+Add:
+
+```python
+DECALS_DEC_MIN = -18.0
+in_decals = (dec_all > DECALS_DEC_MIN) & (dec_all < DECALS_DEC_MAX)
+```
+
+Why this matters even if “DECam covers the south anyway”:
+
+* DR10 includes imaging beyond DECaLS (BASS/MzLS, other regions). The lower bound is part of isolating the DECaLS region. If you do not apply it, you can leak in non-DECaLS regimes with different systematics.
+* Your negative distribution will shift and can break “fair comparison” claims versus Paper IV.
+
+3. Other likely missing filters/discrepancies to check
+
+Based on what you have described, here are the highest-probability remaining mismatches that actually change the negative pool in meaningful ways:
+
+A) Extragalactic selection is not just morphology type
+“Extragalactic sources” typically means excluding stars and stellar-contaminated entries. In Legacy Surveys catalogs, morphology type helps, but you can still pick up problematic star-like objects depending on TYPE handling (REX can be compact). Common additional filters include:
+
+* remove objects with star-like morphology if you intended “galaxies only”
+* or enforce a flux/magnitude cut consistent with the scan population used in Paper IV (they likely have magnitude limits for feasibility)
+
+Action: confirm whether Paper IV used a magnitude cut for the scanned sample and apply the same for negatives.
+
+B) Maskbits / quality cuts details
+Paper IV likely uses specific maskbits exclusions (and sometimes fitbits). If you only have a generic `maskbit_ok`, you should verify:
+
+* which maskbits are excluded
+* whether they exclude WISE brightmask regions, saturation, bleed trails, etc.
+
+Action: match their exact maskbits list if the paper specifies it. If not specified, document your choices.
+
+C) Galactic plane / high extinction cut
+“Extragalactic” often implies a Milky Way avoidance criterion:
+
+* EBV threshold (or |b| cut)
+  If Paper IV applied any of this and you did not, your negatives will include crowded/extincted fields with very different artifacts.
+
+Action: check for EBV or |b| cuts and replicate if present.
+
+D) North vs South imaging regimes
+If Paper IV restricted to DECaLS (DECam) explicitly, that is partly to avoid mixing BASS/MzLS characteristics. Your δ bounds are one step; you also need to ensure your `in_decals` definition truly isolates DECaLS footprint in DR10 (dec bounds are a proxy, but there can be edge/overlap regions).
+
+Action: prefer a footprint flag if available in the sweeps metadata; otherwise keep the dec bounds and also log camera/survey provenance if available.
+
+E) Spatial exclusion radius and lens exclusion catalog
+Make sure you are excluding known lenses/candidates from negatives using the same or stricter radius than your positives’ typical θ_E plus astrometric uncertainty. If you are comparing to Paper IV, they probably excluded known lenses and also excluded their own training positives.
+
+Action: keep your lens exclusion radius conservative and document it.
+
+Minimal recommended next audit step (fast, decisive)
+
+Produce a “Paper IV parity report” from your Spark job that prints, for a fixed sweeps shard:
+
+* starting count
+* after each filter: coords valid, decals footprint, type filter, maskbits, nobs_g/r/z>=3, any magnitude cut, any EBV cut, any star/galaxy separation cut, spatial exclusion
+* final count per stratum bin (nobs_z bin and type)
+
+If your per-stratum counts look wildly different from what Paper IV implies (or your earlier pipeline), you will spot it immediately.
+
+Summary answers
+
+1. Exposure filter: conceptually correct; verify the `nobs_*` columns are the intended ones and log per-band failure counts.
+2. Declination lower bound: yes, add δ > −18° to match Paper IV’s footprint definition.
+3. Likely remaining discrepancies: extragalactic selection details (not just TYPE), maskbits specifics, any EBV/|b| cut, any magnitude/flux cut defining the scanned population, and provenance/footprint isolation beyond a single dec bound.
+
+If you upload the exact paragraph(s) from Paper IV where they define the negative pool and scan population (or point me to the section and page in your PDF), I can turn this into an exact checklist of filters to match line-by-line.
+
+===============
+
+
+# Full Code Review Request: Strong Lens Pipeline for Paper IV Parity
+
+## Context
+
+We are building a pipeline to generate training data for strong lens detection in DESI Legacy Imaging Surveys DR10. Our goal is to match the methodology in **"Strong Lens Discoveries in DESI Legacy Imaging Surveys DR10 with Two Deep Learning Architectures"** (Inchausti et al. 2025, hereafter Paper IV).
+
+The attached `code_review_package.zip` contains all relevant code. Please review it for correctness and Paper IV compliance.
+
+---
+
+## Pipeline Overview
+
+Our pipeline has 5 main stages:
+
+1. **Positive Crossmatch** (`spark_crossmatch_positives_v2.py`): Match known lens catalogs against DR10 sweeps
+2. **Negative Sampling** (`spark_negative_sampling.py`): Sample non-lens galaxies from DR10 sweeps
+3. **Stratified Sampling** (`spark_stratified_sample.py`): Balance negatives to match positive distribution
+4. **Cutout Generation** (`spark_generate_cutouts.py`): Download 101×101 pixel g,r,z cutouts
+5. **Cutout Validation** (`spark_validate_cutouts.py`): Quality checks and shortcut detection
+
+---
+
+## Critical Code Sections for Review
+
+### 1. Negative Sampling Filters (spark_negative_sampling.py, lines 417-462)
+
+```python
+# 1. Valid coordinates
+valid_coords = np.isfinite(ra_all) & np.isfinite(dec_all)
+skip_reasons["invalid_coords"] = int(np.sum(~valid_coords))
+
+# 2. DECaLS footprint (Paper IV: −18° < δ < +32°)
+# "DECaLS in DR10 in the range −18 ◦ < δ < 32◦" - Inchausti et al. 2025
+DECALS_DEC_MIN = -18.0
+DECALS_DEC_MAX = 32.0
+in_decals = (dec_all > DECALS_DEC_MIN) & (dec_all < DECALS_DEC_MAX)
+skip_reasons["outside_decals"] = int(np.sum(valid_coords & ~in_decals))
+
+# 3. Valid galaxy types (N1 pool)
+valid_types = np.isin(types_all, list(VALID_TYPES_N1))
+skip_reasons["not_valid_type"] = int(np.sum(valid_coords & in_decals & ~valid_types))
+
+# 4. Maskbit exclusions (vectorized bitwise check)
+exclude_mask_combined = 0
+for bit in exclude_maskbits:
+    exclude_mask_combined |= (1 << bit)
+maskbit_ok = (maskbits_all & exclude_mask_combined) == 0
+skip_reasons["maskbit"] = int(np.sum(valid_coords & in_decals & valid_types & ~maskbit_ok))
+
+# 5. Minimum exposures per band (Paper IV: ≥3 in each of g, r, z)
+# "at least three exposures in the g, r, and z bands" - Inchausti et al. 2025
+MIN_EXPOSURES = 3
+nobs_g_ok = nobs_g_all >= MIN_EXPOSURES
+nobs_r_ok = nobs_r_all >= MIN_EXPOSURES
+nobs_z_ok = nobs_z_all >= MIN_EXPOSURES
+nobs_ok = nobs_g_ok & nobs_r_ok & nobs_z_ok
+
+# Per-band failure counts for diagnostics
+pre_nobs_mask = valid_coords & in_decals & valid_types & maskbit_ok
+skip_reasons["nobs_g_lt_3"] = int(np.sum(pre_nobs_mask & ~nobs_g_ok))
+skip_reasons["nobs_r_lt_3"] = int(np.sum(pre_nobs_mask & ~nobs_r_ok))
+skip_reasons["nobs_z_lt_3"] = int(np.sum(pre_nobs_mask & ~nobs_z_ok))
+skip_reasons["insufficient_exposures"] = int(np.sum(pre_nobs_mask & ~nobs_ok))
+
+# 6. Z-band magnitude limit
+with np.errstate(divide='ignore', invalid='ignore'):
+    mag_z_all = np.where(flux_z_all > 0, 22.5 - 2.5 * np.log10(flux_z_all), np.nan)
+mag_z_ok = np.isnan(mag_z_all) | (mag_z_all < z_mag_limit)
+skip_reasons["mag_z_faint"] = int(np.sum(valid_coords & in_decals & valid_types & maskbit_ok & nobs_ok & ~mag_z_ok))
+
+# Combined mask before spatial query
+pre_spatial_mask = valid_coords & in_decals & valid_types & maskbit_ok & nobs_ok & mag_z_ok
+```
+
+### 2. Galaxy Type Constants (sampling_utils.py)
+
+```python
+# Galaxy types for Pool N1
+VALID_TYPES_N1 = {"SER", "DEV", "REX", "EXP"}
+
+# nobs_z bin edges: [1-2], [3-5], [6-10], [11+]
+NOBS_Z_BINS = [(1, 2), (3, 5), (6, 10), (11, 999)]
+
+# Maskbits to exclude (from config, but hardcoded defaults)
+DEFAULT_EXCLUDE_MASKBITS = {1, 5, 6, 7, 11, 12, 13}
+```
+
+### 3. N2 Confuser Classification (sampling_utils.py, lines 177-210)
+
+```python
+def classify_pool_n2(
+    galaxy_type: str,
+    flux_r: Optional[float],
+    shape_r: Optional[float],
+    g_minus_r: Optional[float],
+    mag_r: Optional[float],
+    config: Dict[str, Any]
+) -> Optional[str]:
+    """
+    Classify galaxy into N2 confuser categories based on Tractor properties.
+    """
+    n2_config = config.get("negative_pools", {}).get("pool_n2", {}).get("tractor_criteria", {})
+    
+    # Ring proxy: DEV with bright flux
+    ring_cfg = n2_config.get("ring_proxy", {})
+    if galaxy_type == "DEV":
+        if flux_r is not None and flux_r >= ring_cfg.get("flux_r_min", 10):
+            return "ring_proxy"
+    
+    # Edge-on proxy: EXP with large half-light radius
+    edge_on_cfg = n2_config.get("edge_on_proxy", {})
+    if galaxy_type == "EXP":
+        if shape_r is not None and shape_r >= edge_on_cfg.get("shape_r_min", 2.0):
+            return "edge_on_proxy"
+    
+    # Blue clumpy proxy: blue color
+    blue_cfg = n2_config.get("blue_clumpy_proxy", {})
+    if g_minus_r is not None and g_minus_r <= blue_cfg.get("g_minus_r_max", 0.4):
+        if mag_r is not None and mag_r <= blue_cfg.get("r_mag_max", 19.0):
+            return "blue_clumpy"
+    
+    return None
+```
+
+### 4. Cutout Generation (spark_generate_cutouts.py)
+
+```python
+# Cutout parameters
+CUTOUT_SIZE = 101  # pixels
+PIXEL_SCALE = 0.262  # arcsec/pixel
+CUTOUT_ARCSEC = CUTOUT_SIZE * PIXEL_SCALE  # ~26.5 arcsec
+
+# Legacy Survey cutout service
+CUTOUT_URL_TEMPLATE = (
+    "https://www.legacysurvey.org/viewer/fits-cutout"
+    "?ra={ra}&dec={dec}&size={size}&layer=ls-dr10&pixscale={pixscale}&bands={bands}"
+)
+
+def download_cutout(...) -> Tuple[Optional[np.ndarray], Dict]:
+    # ... 
+    with fits.open(buffer) as hdul:
+        data = hdul[0].data  # Shape: (n_bands, height, width)
+        cutout = np.transpose(data, (1, 2, 0)).astype(np.float32)  # -> (H, W, 3)
+```
+
+### 5. Configuration File (negative_sampling_v1.yaml)
+
+```yaml
+negative_pools:
+  pool_n1:
+    valid_types: ["SER", "DEV", "REX", "EXP"]
+    z_mag_limit: 21.0
+    exclusion_radius_arcsec: 10.0
+    nobs_z_bins: [[1, 2], [3, 5], [6, 10], [11, null]]
+  pool_n2:
+    tractor_criteria:
+      ring_proxy:
+        flux_r_min: 10.0
+      edge_on_proxy:
+        shape_r_min: 2.0
+      blue_clumpy_proxy:
+        g_minus_r_max: 0.4
+        r_mag_max: 19.0
+```
+
+---
+
+## Direct Questions for Review
+
+### A. Footprint and Selection Filters
+
+1. **DECaLS footprint bounds**: We use `-18° < δ < 32°`. Is this the exact range Paper IV used? Should it be `≤` instead of `<` on either bound?
+
+2. **Galactic plane / extinction cut**: Paper IV mentions "extragalactic sources". Did they apply any E(B-V) threshold or |b| (Galactic latitude) cut to exclude the Galactic plane? We currently have no such filter.
+
+3. **Magnitude cut consistency**: We use `z_mag < 21.0` for the faint limit. Does Paper IV specify a magnitude limit for their scanned sample? If so, which band and what value?
+
+4. **NOBS definition**: We use `NOBS_G`, `NOBS_R`, `NOBS_Z` columns from DR10 sweeps. Are these the correct "number of exposures" fields that Paper IV refers to, or is there a different column (e.g., per-camera counts)?
+
+### B. Galaxy Type Selection
+
+5. **TYPE values**: We accept `{"SER", "DEV", "REX", "EXP"}` as valid galaxy types. Does Paper IV include or exclude any of these? Does Paper IV also include `PSF` type sources for any reason?
+
+6. **Star-galaxy separation**: Beyond TYPE filtering, did Paper IV apply any additional star-galaxy separation (e.g., using `DCHISQ` or `FRACFLUX` columns)?
+
+### C. Maskbit Handling
+
+7. **Maskbit list**: We exclude bits `{1, 5, 6, 7, 11, 12, 13}`. These correspond to:
+   - 1: BRIGHT (near bright source)
+   - 5: ALLMASK_G
+   - 6: ALLMASK_R  
+   - 7: ALLMASK_Z
+   - 11: MEDIUM (medium-bright star)
+   - 12: GALAXY (near large galaxy)
+   - 13: CLUSTER (near globular cluster)
+   
+   Does Paper IV specify their maskbit exclusions? Are we missing any critical bits (e.g., WISE-related bits)?
+
+### D. N2 Confuser Categories
+
+8. **Ring proxy criteria**: We classify `DEV` galaxies with `flux_r >= 10 nanomaggies` as ring proxies. Does Paper IV define ring galaxies differently? Should we also check ellipticity or Sersic index?
+
+9. **Edge-on proxy criteria**: We classify `EXP` galaxies with `shape_r >= 2.0 arcsec` as edge-on proxies. Does Paper IV use axis ratio (b/a) or ellipticity instead?
+
+10. **Blue clumpy criteria**: We use `g-r <= 0.4` and `r_mag <= 19.0`. What are Paper IV's thresholds for blue star-forming galaxies that can mimic arcs?
+
+11. **Missing confuser categories**: Does Paper IV identify other confuser types we should include (e.g., mergers, tidal tails, bright star artifacts)?
+
+### E. Cutout Generation
+
+12. **Cutout size**: We use 101×101 pixels at 0.262 arcsec/pixel (~26.5 arcsec). Does Paper IV use the same size and pixel scale?
+
+13. **Band ordering**: We request bands as "grz" and the FITS returns shape `(3, H, W)`. We transpose to `(H, W, 3)` with channel order [g, r, z]. Is this the correct channel ordering for Paper IV's models?
+
+14. **Normalization**: Paper IV likely applies some normalization before feeding to CNNs. What normalization scheme do they use? (asinh, percentile clipping, per-channel standardization?)
+
+### F. Spatial Exclusion
+
+15. **Exclusion radius**: We exclude negatives within 10 arcsec of known lenses. Does Paper IV use a different radius? Should it scale with Einstein radius?
+
+16. **Known lens catalog**: Which lens catalogs should be used for exclusion? (Master Lens Database, SuGOHI, our own training positives?)
+
+### G. Train/Val/Test Split
+
+17. **Spatial split method**: We use HEALPix-based spatial splitting with NSIDE=128. Does Paper IV use spatial splits or random splits?
+
+18. **Split proportions**: We use 70/15/15 for train/val/test. What proportions does Paper IV use?
+
+### H. End-to-End Consistency
+
+19. **Sample sizes**: Paper IV scanned ~43M galaxies and found ~4,000 high-confidence candidates. Our negative pool targets ~500K total. Is this ratio reasonable for a training set?
+
+20. **N1:N2 ratio**: We target 85% N1 (representative) and 15% N2 (confusers). Does Paper IV specify a similar ratio, or should we adjust?
+
+21. **Stratification**: We stratify by `(nobs_z_bin, type_bin)`. Does Paper IV stratify by additional variables (e.g., seeing, depth, magnitude)?
+
+---
+
+## Actual Pipeline Run Results (2026-02-08)
+
+We completed a full negative sampling run on DR10 sweeps. Here are the actual results:
+
+### Output Summary
+- **Total output size**: 3.3 GiB (60 parquet partitions)
+- **Rows per partition**: ~470K
+- **Estimated total rows**: ~28M negative candidates
+
+### Pool Distribution (from sample partition)
+| Pool | Count | Percentage |
+|------|-------|------------|
+| N1 (representative) | 442,359 | 94.2% |
+| N2 (confusers) | 27,427 | 5.8% |
+
+### N2 Confuser Category Breakdown
+| Category | Count | Percentage of N2 |
+|----------|-------|------------------|
+| ring_proxy | 18,318 | 66.8% |
+| edge_on_proxy | 7,840 | 28.6% |
+| blue_clumpy | 1,269 | 4.6% |
+
+### Output Schema (48 columns)
+```
+galaxy_id, brickname, objid, ra, dec, type, nobs_z, nobs_z_bin, type_bin,
+flux_g, flux_r, flux_z, flux_w1, mag_g, mag_r, mag_z, 
+g_minus_r, r_minus_z, z_minus_w1,
+psfsize_g, psfsize_r, psfsize_z, psfdepth_g, psfdepth_r, psfdepth_z,
+galdepth_g, galdepth_r, galdepth_z, ebv, maskbits, fitbits,
+mw_transmission_g, mw_transmission_r, mw_transmission_z,
+shape_r, shape_e1, shape_e2, sersic, healpix_64, healpix_128, split,
+pool, confuser_category, sweep_file, row_index, 
+pipeline_version, git_commit, extraction_timestamp
+```
+
+---
+
+## Critical Observations Requiring Clarification
+
+### Observation 1: N2 ratio is 5.8%, not 15%
+Our N2 pool is only 5.8% of total, not the 15% we targeted. This suggests either:
+- (a) Our confuser criteria are too strict
+- (b) True confusers are genuinely rare in the population
+- (c) We're missing confuser categories
+
+**Question**: Is 5.8% N2 acceptable, or should we relax thresholds to reach 15%?
+
+### Observation 2: Ring proxies dominate N2
+66.8% of N2 are ring_proxy (DEV with flux_r >= 10). Only 4.6% are blue_clumpy.
+
+**Question**: Is this distribution expected? Should we adjust thresholds to balance categories?
+
+### Observation 3: Blue clumpy threshold may be too strict
+Only 1,269 blue_clumpy objects found (g-r <= 0.4, r_mag <= 19.0).
+
+**Question**: What g-r threshold does Paper IV use for "blue star-forming" confusers? Is 0.4 too blue?
+
+---
+
+## Summary of Known Discrepancies Already Fixed
+
+1. ✅ Added `nobs_g >= 3 AND nobs_r >= 3 AND nobs_z >= 3` filter (was missing)
+2. ✅ Added `dec > -18°` lower bound (was only `dec < 32°`)
+3. ✅ Fixed FITS parsing to correctly read `hdul[0].data` with shape `(n_bands, H, W)`
+4. ✅ Added per-band nobs failure logging for diagnostics
+
+---
+
+## Additional Questions Based on Run Results
+
+### I. N2 Classification Thresholds
+
+22. **Ring proxy flux threshold**: We use `flux_r >= 10 nanomaggies` (~19.5 mag). Is this the right threshold for identifying galaxies with ring-like structure? Should we also require high ellipticity or specific Sersic index?
+
+23. **Edge-on half-light radius**: We use `shape_r >= 2.0 arcsec`. Paper IV likely uses axis ratio (b/a < 0.3?) instead. What is the correct criterion for edge-on spirals?
+
+24. **Blue clumpy color cut**: We use `g-r <= 0.4`. Should this be `g-r <= 0.6` or another value? What magnitude range?
+
+25. **Merger/interaction criteria**: We don't identify mergers. Should we add criteria based on asymmetry or multiple components?
+
+### J. Positive Sample Handling
+
+26. **Positive catalog sources**: We use 5,104 positives from DESI_master_full.csv. Does Paper IV use the same catalog, or a different/larger set?
+
+27. **Positive-negative balance**: With ~28M negatives and ~5K positives, our ratio is ~5600:1 before stratified sampling. What ratio does Paper IV use for training?
+
+28. **Grade/confidence weighting**: Should we weight positives by their confidence grade (A/B/C) during training?
+
+### K. Data Quality
+
+29. **PSF size distribution**: We store `psfsize_g/r/z` but don't filter on it. Does Paper IV require seeing < X arcsec?
+
+30. **Depth requirements**: We store `psfdepth_g/r/z` and `galdepth_g/r/z`. Does Paper IV apply minimum depth cuts?
+
+31. **E(B-V) threshold**: We store `ebv` but don't filter. Does Paper IV exclude high-extinction regions (e.g., E(B-V) > 0.1)?
+
+---
+
+## Requested Output
+
+Please provide:
+
+1. **Line-by-line filter parity check**: For each of our filters, confirm if it matches Paper IV or specify the correction needed.
+
+2. **Missing filters**: List any filters Paper IV applies that we don't have.
+
+3. **Parameter corrections**: For each configurable threshold (magnitude limits, radii, color cuts), provide the Paper IV value if different from ours.
+
+4. **N2 category definitions**: Confirm or correct our confuser classification criteria.
+
+5. **Cutout specifications**: Confirm size, pixel scale, band order, and any normalization details.
+
+6. **Priority ranking**: If multiple issues exist, rank them by impact on Paper IV parity.
+
+---
+
+## Attached Files
+
+The `code_review_package.zip` contains:
+- `spark_negative_sampling.py` - Main negative sampling job
+- `spark_generate_cutouts.py` - Cutout download job
+- `spark_validate_cutouts.py` - Quality validation job
+- `spark_stratified_sample.py` - Stratified sampling job
+- `spark_crossmatch_positives_v2.py` - Positive catalog crossmatch
+- `sampling_utils.py` - Utility functions (N2 classification, binning)
+- `negative_sampling_v1.yaml` - Configuration file
+
+LLM :
+
+## Executive verdict
+
+Your two fixes (min exposures in **g/r/z** and **DECaLS declination bounds**) are directionally correct and consistent with Paper IV. However, there are **two additional high-impact Paper IV parity gaps** in the current negative-sampling configuration:
+
+1. **Magnitude cut is wrong**: Paper IV uses **z < 20** for the nonlens sampling pool; your YAML uses **z_mag_limit: 21.0**.
+2. **TYPE set likely mismatched for the nonlens pool**: Paper IV’s nonlens selection text explicitly lists **SER/DEV/REX** (not EXP) for the pool they sample from; your N1 allows **EXP**.
+
+Everything else is either (a) not specified in Paper IV (so you cannot claim parity), or (b) a design choice you can keep, but you must label it as *your extension* (example: N2 confusers).
+
+---
+
+## 1) Line-by-line parity check of your negative filters
+
+### ✅ Filter 1: finite RA/Dec
+
+* **Your code**: `np.isfinite(ra) & np.isfinite(dec)`
+* **Paper IV parity**: Fine.
+
+### ✅ Filter 2: DECaLS footprint declination
+
+* **Your code**: `-18 < dec < 32`
+* **Paper IV**: states DECaLS footprint in DR10: **−18° < δ < 32°**
+* **Action**:
+
+  * Your current implementation is correct.
+  * Using `<` vs `<=` is negligible; keep `<` for consistency with the text.
+
+### ✅ Filter 3: min exposures in each band
+
+* **Your code**: `nobs_g >= 3 AND nobs_r >= 3 AND nobs_z >= 3`
+* **Paper IV**: “at least three exposures in the g, r, and z bands”
+* **Action**: Correct.
+
+### ⚠️ Filter 4: TYPE values (major parity risk)
+
+* **Your code**: `VALID_TYPES_N1 = {"SER","DEV","REX","EXP"}`
+* **Paper IV**: the nonlens selection description explicitly enumerates **SER, DEV, REX**.
+* **What to do** (for strict parity):
+
+  * **N1 (Paper IV parity mode)**: use **SER/DEV/REX only**.
+  * **Optional extension**: keep EXP in a separate “deployment-like” pool (call it N1b) and treat it as an ablation or robustness test, not parity.
+
+### ⚠️ Filter 5: z-band magnitude limit (major parity risk)
+
+* **Your code**:
+
+  * Computes `mag_z = 22.5 - 2.5 log10(flux_z)` (nanomaggies assumption)
+  * Applies `mag_z < z_mag_limit` where YAML has `z_mag_limit: 21.0`
+* **Paper IV**: “limiting to **z < 20**”
+* **Action**:
+
+  * Change YAML to: `z_mag_limit: 20.0`
+  * Also confirm that **flux_z is nanomaggies** in DR10 sweeps (it usually is). If you are not 100% sure, add a one-time validation: compare your computed `mag_z` distribution against a known DR10 mag column if present.
+
+### ⚠️ Maskbits (unknown parity)
+
+* **Your code**: excludes `{1,5,6,7,11,12,13}`
+* **Paper IV**: does not clearly specify maskbit exclusions in the text you quoted.
+* **Action**:
+
+  * You cannot claim parity here.
+  * Keep your maskbit exclusions as a defensible “quality screen,” but document it explicitly and run a sensitivity test: train with and without the maskbit filter and show impact on contaminants (spikes/ghosts especially).
+
+### ⚠️ “Extragalactic sources” (unknown parity)
+
+* **Your code**: no explicit |b| or E(B–V) cut
+* **Paper IV**: says “extragalactic sources” but does not (in the text you provided) spell out an EBV or Galactic latitude threshold.
+* **Action**:
+
+  * Do **not** add an EBV cut “for parity” unless you can point to an explicit statement.
+  * If you want it as an extension: implement EBV < 0.1 as an ablation and report whether it changes FPR on artifacts.
+
+---
+
+## 2) Cutout generation parity
+
+### ✅ Cutout size and pixel scale
+
+* **Your code**: 101×101 at 0.262″/pix
+* **Paper IV**: 101×101 and same instrument scale (consistent).
+
+### ✅ Band order
+
+* **Your code**: request `bands=grz`, transpose `(3,H,W)->(H,W,3)` which yields channels `[g,r,z]`
+* **Action**: Correct.
+
+### ⚠️ Normalization / scaling
+
+* **Your code**: cutout download, but no clearly enforced Paper-IV-matching normalization pipeline is visible in the snippets you showed.
+* **Paper IV**: normalization details are not in what you quoted. If Paper IV doesn’t specify it clearly, you must:
+
+  * either replicate **Paper I/II** preprocessing explicitly (if they document it),
+  * or define your own normalization and label it as your implementation choice.
+* **Practical recommendation** (robust + hard to cheat with):
+
+  * per-image, per-band: subtract median, divide by MAD (or robust std), clip to a fixed range, optionally asinh.
+
+---
+
+## 3) N2 “confuser” pool: parity vs extension
+
+Paper IV does not (in your excerpt) describe an explicit N2 confuser pool constructed from Tractor heuristics. Your N2 is therefore **not a parity requirement**; it is an **original extension**.
+
+### What your run implies
+
+* N2 is **5.8%** (not your targeted 15%)
+* N2 is dominated by `ring_proxy` under your heuristic.
+
+### Recommendation
+
+* Keep N2 as a curated/heuristic hard-negative pool, but **do not try to force it to exist naturally at 15%**.
+* Instead:
+
+  * Let N2 be whatever you can harvest cleanly,
+  * then **oversample N2 during stratified training** to reach your desired *training mix* (e.g., 10–20% of batches contain N2).
+* This avoids distorting the base population while still giving the model hard negatives.
+
+### Fixing the skew (ring_proxy domination)
+
+Your current proxies are too blunt:
+
+* `ring_proxy`: DEV + bright flux is going to scoop up many normal bright early-types.
+* `edge_on_proxy`: using size alone is not an edge-on proxy.
+* `blue_clumpy`: `g-r<=0.4` and `r<=19` is extremely restrictive.
+
+If you want N2 to behave like “things that look like arcs”:
+
+* **Edge-on**: use axis-ratio proxy if available (shape_e1/e2 → ellipticity), e.g. `e = sqrt(e1^2+e2^2)` and threshold high-e, plus EXP/REX.
+* **Blue clumpy**: relax to `g-r <= 0.7` and allow fainter, e.g. `r <= 20.5`.
+* **Ring**: require strong residual structure proxies if you have them (fitbits anomalies, high chi-sq, or multi-component flags). If not available, you cannot reliably identify rings from Tractor scalars alone.
+
+---
+
+## 4) Priority-ranked corrections (highest impact first)
+
+### P0 (must fix for Paper IV parity claims)
+
+1. **Set `z_mag_limit = 20.0`**, not 21.0.
+2. **Match nonlens TYPE set to Paper IV**:
+
+   * For strict parity: **SER/DEV/REX only** in N1.
+   * Keep EXP as a separate ablation pool if you want deployment realism.
+
+### P1 (strongly recommended, but parity-uncertain)
+
+3. Make your normalization explicit, deterministic, and logged (median/MAD + clip).
+4. Decide and document whether you apply any EBV or |b| cuts (treat as extension unless explicitly stated by Paper IV).
+
+### P2 (quality and “original extension” improvements)
+
+5. Redefine N2 confusers (or curate them from Galaxy Zoo / artifacts lists) rather than relying on weak Tractor-only heuristics.
+6. Add a “bright star artifact” mining path (spikes/ghosts) because these dominate FPR in real survey scoring.
+
+---
+
+## 5) Direct answers to your discrepancy questions
+
+### (1) Is the exposure filter correctly applied?
+
+Yes, your vectorized filter `nobs_g>=3 & nobs_r>=3 & nobs_z>=3` applied before spatial exclusion is correct.
+
+### (2) Should we enforce δ > −18° explicitly?
+
+Yes. Paper IV states −18° < δ < 32°. You have now enforced it, which is correct.
+
+### (3) Any other filters we missed?
+
+Based on what you quoted from Paper IV, the big missing one is:
+
+* **z < 20** (you currently use 21).
+  And likely:
+* **Nonlens TYPE list**: Paper IV’s nonlens selection text explicitly lists SER/DEV/REX.
+
+Everything else (maskbits, EBV/galactic plane, star-galaxy separation via DCHISQ/FRACFLUX) is not confirmed from your excerpt, so treat those as non-parity unless you can point to explicit Paper IV text.
+
+---
+
+## 6) What to change right now (concrete edits)
+
+### Update config (parity mode)
+
+```yaml
+negative_pools:
+  pool_n1:
+    valid_types: ["SER", "DEV", "REX"]   # parity mode
+    z_mag_limit: 20.0                   # Paper IV
+```
+
+### Update constants (parity mode)
+
+```python
+VALID_TYPES_N1 = {"SER", "DEV", "REX"}  # parity mode
+```
+
+### Keep EXP as optional “deployment realism ablation”
+
+* Add `pool_n1b_exp` with EXP and label it explicitly as “extension beyond Paper IV”.
+
+---
+
+## 7) About N2 being 5.8% not 15%
+
+5.8% is acceptable because you control the **training mixture** in the stratified sampler. Do **not** distort the survey distribution trying to “find” 15% N2 in the wild. If you want 15% in training batches, oversample N2 at the batch sampler level.
+
+---
+
+If you want, I can do a second-pass audit specifically on:
+
+* `spark_stratified_sample.py`: whether it truly reproduces Paper IV’s 100:1 per stratum logic.
+* `spark_validate_cutouts.py`: whether your shortcut metrics and QC flags are sufficient to prevent silent data corruption (NaNs, misordered bands, wrong HDU, etc.).
+
+=================
+
+# Second-Pass Audit Request: Stratified Sampling and Cutout Validation
+
+Following your excellent first-pass review, please audit these two additional components for correctness and Paper IV parity.
+
+---
+
+## 1. Stratified Sampling (`spark_stratified_sample.py`)
+
+### Goal
+Reproduce Paper IV's 100:1 negative:positive ratio per stratum, while maintaining 85:15 N1:N2 ratio within negatives.
+
+### Current Implementation
+
+```python
+# Constants
+NEG_POS_RATIO = 100  # 100 negatives per positive
+N1_RATIO = 0.85  # 85% from N1 pool
+N2_RATIO = 0.15  # 15% from N2 pool
+
+# Strata definitions
+NOBS_Z_BINS = ["1-2", "3-5", "6-10", "11+"]
+TYPE_BINS = ["SER", "DEV", "REX", "EXP"]  # NOTE: Should this now be ["SER", "DEV", "REX"]?
+```
+
+### Sampling Logic (lines 141-175)
+
+```python
+# Compute target counts per stratum
+target_counts = {}
+for (nobs_bin, type_bin), pos_count in pos_counts.items():
+    neg_target = pos_count * args.neg_pos_ratio
+    n1_target = int(neg_target * args.n1_ratio)
+    n2_target = neg_target - n1_target
+    target_counts[(nobs_bin, type_bin)] = {
+        "total": neg_target,
+        "n1": n1_target,
+        "n2": n2_target,
+    }
+
+# Count available negatives per stratum
+neg_stratum_counts = negatives_df.groupBy("nobs_z_bin", "type_bin", "pool").count()
+
+# Sample from each pool proportionally
+sampled_dfs = []
+for (nobs_bin, type_bin), targets in target_counts.items():
+    # Sample N1
+    n1_pool = negatives_df.filter(
+        (F.col("nobs_z_bin") == nobs_bin) &
+        (F.col("type_bin") == type_bin) &
+        (F.col("pool") == "N1")
+    )
+    n1_available = n1_pool.count()
+    n1_sample_size = min(targets["n1"], n1_available)
+    
+    if n1_sample_size > 0:
+        fraction = n1_sample_size / n1_available
+        sampled_n1 = n1_pool.sample(fraction=min(fraction * 1.1, 1.0), seed=42)
+        sampled_n1 = sampled_n1.limit(n1_sample_size)
+        sampled_dfs.append(sampled_n1)
+    
+    # Sample N2 (similar logic)
+    # If N2 insufficient, backfill from N1
+```
+
+### Questions for Stratified Sampling
+
+1. **Does Paper IV use 100:1 per stratum?** Or is it 100:1 overall with some other stratification scheme?
+
+2. **TYPE_BINS mismatch**: The code still references `["SER", "DEV", "REX", "EXP"]` but we've now excluded EXP from N1. Should TYPE_BINS be updated to `["SER", "DEV", "REX"]`?
+
+3. **Stratum granularity**: We stratify by `(nobs_z_bin, type_bin)` giving 4×4=16 strata (or 4×3=12 without EXP). Is this the right granularity? Should we add seeing or depth bins?
+
+4. **N2 backfill logic**: When N2 is insufficient for a stratum, we backfill from N1. Is this the right approach, or should we oversample N2 globally regardless of stratum?
+
+5. **Sampling seed determinism**: We use `seed=42` for reproducibility. Is this sufficient, or should we use the HEALPix-based split to ensure spatial independence?
+
+---
+
+## 2. Cutout Validation (`spark_validate_cutouts.py`)
+
+### Goal
+Detect data quality issues and shortcut features that could bias training.
+
+### Current Implementation
+
+#### Quality Validation (lines 83-130)
+
+```python
+def validate_cutout_quality(cutout: np.ndarray) -> Dict:
+    h, w, c = cutout.shape
+    
+    # Size check
+    size_ok = (h == CUTOUT_SIZE and w == CUTOUT_SIZE and c == 3)
+    
+    # NaN analysis
+    nan_mask = np.isnan(cutout)
+    total_nan_frac = np.sum(nan_mask) / cutout.size
+    
+    # Central region (50x50)
+    center = h // 2
+    margin = 25
+    central = cutout[center-margin:center+margin, center-margin:center+margin, :]
+    central_nan_frac = np.sum(np.isnan(central)) / central.size
+    
+    # Core region (16x16 around center)
+    core = cutout[center-CORE_RADIUS:center+CORE_RADIUS, 
+                  center-CORE_RADIUS:center+CORE_RADIUS, :]
+    core_nan_frac = np.sum(np.isnan(core)) / core.size
+    
+    # Bands present
+    bands_present = [not np.all(np.isnan(cutout[:, :, i])) for i in range(c)]
+    all_bands_present = all(bands_present)
+    
+    # Quality gate
+    quality_ok = (
+        size_ok and
+        central_nan_frac < MAX_NAN_FRAC_CENTER and  # 2%
+        all_bands_present
+    )
+    
+    return {
+        "size_ok": size_ok,
+        "total_nan_frac": float(total_nan_frac),
+        "central_nan_frac": float(central_nan_frac),
+        "core_nan_frac": float(core_nan_frac),
+        "has_g": bands_present[0],
+        "has_r": bands_present[1],
+        "has_z": bands_present[2],
+        "all_bands_present": all_bands_present,
+        "quality_ok": quality_ok,
+    }
+```
+
+#### Shortcut Feature Extraction (lines 133-200)
+
+```python
+def extract_shortcut_features(cutout: np.ndarray) -> Dict:
+    h, w, c = cutout.shape
+    center = h // 2
+    
+    # Use r-band (index 1) for brightness features
+    r_band = cutout[:, :, 1]
+    
+    # Create distance map from center
+    y, x = np.ogrid[:h, :w]
+    dist = np.sqrt((y - center)**2 + (x - center)**2)
+    
+    # Regions
+    core_mask = dist <= CORE_RADIUS  # 8 pixels
+    annulus_mask = (dist >= 20) & (dist <= 40)  # where arcs appear
+    outer_mask = dist >= OUTER_MARGIN  # edge pixels
+    
+    # Core brightness (shortcut: lenses have bright cores)
+    core_pixels = r_band[core_mask]
+    valid_core = core_pixels[~np.isnan(core_pixels)]
+    core_brightness = float(np.median(valid_core)) if len(valid_core) > 0 else None
+    core_max = float(np.max(valid_core)) if len(valid_core) > 0 else None
+    
+    # Annulus brightness (where lensing arcs should appear)
+    annulus_pixels = r_band[annulus_mask]
+    valid_annulus = annulus_pixels[~np.isnan(annulus_pixels)]
+    annulus_brightness = float(np.median(valid_annulus)) if len(valid_annulus) > 0 else None
+    annulus_std = float(np.std(valid_annulus)) if len(valid_annulus) > 0 else None
+    
+    # Outer background
+    outer_pixels = r_band[outer_mask]
+    valid_outer = outer_pixels[~np.isnan(outer_pixels)]
+    outer_brightness = float(np.median(valid_outer)) if len(valid_outer) > 0 else None
+    
+    # Radial gradient (shortcut: lenses have steep gradients)
+    radial_gradient = core_brightness - outer_brightness if (core_brightness and outer_brightness) else None
+    
+    # MAD for noise estimation
+    mad_r = float(np.median(np.abs(valid_core - np.median(valid_core)))) if len(valid_core) > 0 else None
+    
+    # Color features (g-r color in core vs annulus)
+    # ... similar logic for color gradient
+```
+
+#### AUC Computation for Shortcut Detection (lines 250-280)
+
+```python
+def compute_auc(pos_values: List[float], neg_values: List[float]) -> float:
+    """Compute AUC for a single feature to detect shortcuts."""
+    from sklearn.metrics import roc_auc_score
+    
+    labels = [1] * len(pos_values) + [0] * len(neg_values)
+    values = pos_values + neg_values
+    
+    # Filter NaN
+    valid = [(v, l) for v, l in zip(values, labels) if v is not None and not np.isnan(v)]
+    if len(valid) < 10:
+        return 0.5  # Not enough data
+    
+    values, labels = zip(*valid)
+    return roc_auc_score(labels, values)
+
+# Shortcut detection: flag features with AUC > 0.70
+shortcut_features = {}
+for feature in ["core_brightness", "radial_gradient", "core_max", "annulus_std"]:
+    pos_vals = [r[feature] for r in pos_results if r.get(feature) is not None]
+    neg_vals = [r[feature] for r in neg_results if r.get(feature) is not None]
+    auc = compute_auc(pos_vals, neg_vals)
+    shortcut_features[feature] = {
+        "auc": auc,
+        "is_shortcut": auc > AUC_THRESHOLD,  # 0.70
+    }
+```
+
+### Questions for Cutout Validation
+
+6. **NaN threshold**: We reject cutouts with >2% NaN in central 50×50. Is this too strict or too lenient?
+
+7. **Band ordering verification**: We assume channel order is [g, r, z]. Should we add an explicit check (e.g., verify relative brightness or WCS metadata)?
+
+8. **Core radius of 8 pixels**: This equals ~2.1 arcsec at 0.262"/pix. Is this appropriate for strong lens cores, or should it be larger (e.g., 4 arcsec)?
+
+9. **Annulus range 20-40 pixels**: This equals 5.2-10.5 arcsec. Is this the right range for detecting lensing arcs? Paper IV may use different radii.
+
+10. **AUC threshold of 0.70**: We flag features as shortcuts if AUC > 0.70. Is this threshold appropriate? Should it be 0.60 or 0.75?
+
+11. **Missing shortcut features**: Should we also check:
+    - Azimuthal symmetry (rings vs arcs)
+    - Color gradients (arcs are often blue)
+    - Edge sharpness / contrast
+    - PSF concentration
+
+12. **Normalization validation**: We don't currently validate that cutouts are consistently normalized. Should we add checks for:
+    - Consistent flux scale across bands
+    - No extreme outliers (e.g., saturated pixels)
+    - Proper background level
+
+---
+
+## Summary of Questions (Q1-12)
+
+| # | Topic | Question |
+|---|-------|----------|
+| 1 | Stratified | Does Paper IV use 100:1 per stratum? |
+| 2 | Stratified | Should TYPE_BINS exclude EXP now? |
+| 3 | Stratified | Is (nobs_z, type) the right stratification? |
+| 4 | Stratified | Is N2 backfill from N1 correct? |
+| 5 | Stratified | Is seed=42 sufficient for reproducibility? |
+| 6 | Validation | Is 2% NaN threshold appropriate? |
+| 7 | Validation | Should we verify band ordering explicitly? |
+| 8 | Validation | Is 8-pixel core radius appropriate? |
+| 9 | Validation | Is 20-40 pixel annulus range correct for arcs? |
+| 10 | Validation | Is AUC > 0.70 the right shortcut threshold? |
+| 11 | Validation | What shortcut features are we missing? |
+| 12 | Validation | Should we validate normalization consistency? |
+
+---
+
+## Requested Output
+
+1. **Stratified sampling audit**: Confirm the 100:1 logic matches Paper IV, or specify corrections.
+
+2. **TYPE_BINS fix**: Confirm whether to remove EXP from the strata list.
+
+3. **Validation thresholds**: For each threshold (NaN, core radius, annulus, AUC), confirm or provide Paper IV values.
+
+4. **Missing QC checks**: List any critical quality checks we're missing.
+
+5. **Shortcut detection improvements**: Recommend additional features to monitor.
+
+LLM:
+
+## Paper IV parity checkpoints that matter for these two modules
+
+From Paper IV (Inchausti et al. 2025), the *nonlens construction* is described as:
+
+* Require **at least 3 exposures in each of g, r, z**.
+* Restrict to the **DECam footprint** described there as **δ < +32°** (Paper IV does not clearly state a hard southern bound in the text you quoted, even if DECaLS has practical limits).
+* Use **Tractor TYPE = SER, DEV, REX** for the *nonlens* sampling procedure they describe (they explicitly mention those three types in the nonlens selection paragraph; EXP shows up for lenses but is not clearly included in the nonlens binning statement).
+
+Those points drive the key answers below.
+
+---
+
+# 1) Stratified sampling audit: `spark_stratified_sample.py`
+
+### Q1. Does Paper IV use 100:1 per stratum?
+
+Paper IV’s description supports **100:1 as the training-set class ratio** and describes **binning nonlenses by TYPE and by z-band exposure count** to control distribution shift. It does **not** (in the text) claim “100:1 inside every stratum” as a formal requirement, but your interpretation is a *reasonable operationalization* of “match the nonlens distribution to the lens distribution across those bins”.
+
+**Recommendation (parity-safe)**
+Keep “targets per (nobs_z_bin, type_bin)” as you’re doing, but treat “100:1 per stratum” as a *goal*, not a hard constraint. When a stratum cannot supply enough negatives, you should:
+
+1. record the shortfall explicitly, and
+2. decide whether to backfill from adjacent strata (same TYPE, neighboring nobs_z_bin) rather than silently changing the within-stratum composition.
+
+### Q2. TYPE_BINS mismatch: should EXP be removed?
+
+**Yes for Paper IV parity**: set `TYPE_BINS = ["SER", "DEV", "REX"]` for the stratification bins.
+
+If you keep EXP anywhere, do it knowingly and label it as a deliberate deviation. Otherwise you will fail a reviewer’s “did you actually match Paper IV?” sniff test.
+
+### Q3. Is (nobs_z, type) the right granularity? Add seeing/depth?
+
+For Paper IV parity: **(nobs_z_bin, type_bin)** is the correct minimum.
+
+For your *new* contribution: adding **PSF FWHM bin** and/or **depth bin** is defensible, but only if you can still fill bins without collapsing into low-N noise. If you add them now, do it as an **ablation**:
+
+* Baseline: stratify by (nobs_z, type) only
+* Variant: stratify by (nobs_z, type, psf_bin) or (nobs_z, type, depth_bin)
+
+### Q4. N2 backfill logic (when N2 insufficient): backfill from N1?
+
+Backfilling is fine, but the way you do it matters.
+
+**Best practice for your stated goal (“85:15 N1:N2 within negatives”)**
+
+* Treat 85:15 as a **global constraint**, not per-stratum.
+* Sample N2 wherever you can (across all strata), then allocate N1 per-stratum to hit the 100:1 ratio and distribution match.
+* If you force 15% N2 per stratum, you will either (a) fail in sparse strata or (b) end up with weird N2 criteria to “manufacture” confusers in places they do not naturally occur.
+
+Given your observed N2 rate (~5.8%), I would **not** force 15% per stratum. Make it global and report the achieved per-stratum N2 fraction.
+
+### Q5. seed=42 determinism: sufficient?
+
+Not sufficient by itself in Spark, because:
+
+* `.sample()` + `.limit()` is **not guaranteed stable** across partitioning changes.
+* repeated `.count()` calls trigger re-computation and can change sampling order if the plan changes.
+
+**Make it deterministic**:
+
+* Add a stable per-row key (you already have `galaxy_id, sweep_file, row_index`).
+* Use `rand(seed)` or a hash of (`galaxy_id`, `seed`) to define an ordering, then take the first K per group using a Window.
+
+Concretely: `row_number() over (partition by nobs_z_bin,type_bin,pool order by hash(galaxy_id, seed)) <= target`.
+
+---
+
+# 2) Cutout validation audit: `spark_validate_cutouts.py`
+
+### Q6. NaN threshold (2% in central 50×50): too strict/lenient?
+
+**2% in central 50×50 is reasonable** as a default. Two improvements:
+
+* Add a stricter condition for the core: e.g., **core NaN frac must be 0** (or <0.1%) because the core is where many shortcuts live.
+* Track *bandwise* NaN fraction; one missing band should be an automatic reject if you require grz.
+
+### Q7. Band ordering verification: add explicit check?
+
+Yes, but not by “brightness heuristics” (too unreliable). Do it by **provenance**:
+
+* Store the requested band string (“grz”) in metadata.
+* In FITS: check header keywords if present (sometimes the cutout service encodes band order).
+* Add a unit test that downloads one known cutout and asserts the channel order matches expectations.
+
+### Q8. Core radius = 8 pixels (~2.1″): appropriate?
+
+For shortcut monitoring: **8 px is fine**, but it is not enough coverage for θ_E up to 3″ if you’re trying to distinguish “core-only” vs “arc-annulus” signals.
+
+I recommend you compute features at **multiple radii**:
+
+* core r = 4 px (~1.0″)
+* core r = 8 px (~2.1″)
+* core r = 12 px (~3.1″)
+
+Then you can tell whether the “shortcut” is truly central or leaks outward.
+
+### Q9. Annulus 20–40 px (5.2–10.5″): correct for arcs?
+
+For your θ_E range (0.5″–3.0″), **20–40 px is wrong** for “where arcs appear” in most cases. It is way too far out.
+
+If you don’t have θ_E per object, use fixed radii consistent with the training support:
+
+* arc annulus: **r = 4–16 px** (1.0″–4.2″) as the primary
+* outer annulus: r = 16–28 px (4.2″–7.3″) as secondary
+
+If you *do* have θ_E for injected data (you will in injection-recovery), then define annulus relative to θ_E:
+
+* arc band: r ∈ [0.8 θ_E, 1.6 θ_E] converted to pixels, clamped to sensible bounds.
+
+### Q10. Shortcut AUC threshold 0.70: appropriate?
+
+Keep 0.70 as a **red flag**, but add a **yellow flag at 0.60**.
+
+Also: AUC point estimates will bounce with sample size. Add a cheap uncertainty:
+
+* bootstrap AUC with 200–500 resamples, store mean and 68% CI.
+  Flag “shortcut” if lower CI bound > 0.60 (yellow) or > 0.70 (red).
+
+### Q11. Missing shortcut features?
+
+Add these (high yield, low complexity):
+
+1. **High-frequency core energy** (Laplacian / DoG) in core and arc annulus (you already used this gate elsewhere; reuse it here).
+2. **Azimuthal asymmetry** after radial profile subtraction: e.g., standard deviation of residuals in angular bins (captures “inner-image asymmetry” and ring-like artifacts).
+3. **Blue-ness of arc annulus**: (g−r) and (r−z) measured in the arc annulus minus the core (blue arcs vs red LRG core).
+4. **Saturation / extreme pixel fraction**: fraction of pixels above the 99.9 percentile (detects bright-star ghosts/spikes).
+5. **Edge artifact score**: difference between border median and central background (cutout edge issues).
+
+### Q12. Normalization validation checks?
+
+Yes. You want to detect “inconsistent flux scale” early:
+
+* per-band percentiles (p1, p50, p99) and ensure they’re finite
+* per-band robust sigma (MAD)
+* clip fraction if you do clipping
+* background median in an outer annulus
+
+Store these as columns so you can later correlate model errors with normalization pathologies.
+
+---
+
+# Specific fixes to implement now (highest impact)
+
+## Priority 1 (must fix)
+
+1. **Update TYPE_BINS** in stratified sampling to `["SER","DEV","REX"]` for Paper IV parity.
+2. **Replace annulus 20–40 px** in validation with radii that actually cover θ_E support (e.g., 4–16 px).
+3. Make stratified sampling **deterministic via hash ordering + window**, not `.sample()+limit`.
+
+## Priority 2 (strongly recommended)
+
+4. Multi-radius core features (r=4/8/12) and bootstrap AUC for shortcut flags.
+5. Add high-frequency and azimuthal asymmetry features into `extract_shortcut_features`.
+
+## Priority 3 (nice-to-have)
+
+6. Add “normalization sanity stats” and band-provenance checks.
+
+---
+
+# Answering your 12 questions directly (concise)
+
+1. 100:1 per stratum: acceptable operationalization; treat as goal with explicit shortfall handling.
+2. TYPE_BINS: remove EXP for Paper IV parity.
+3. Stratification: (nobs_z,type) is minimum parity; add psf/depth only as ablation.
+4. N2 backfill: OK, but enforce 85:15 globally, not per stratum.
+5. seed=42: not enough; use stable hash ordering + window for determinism.
+6. 2% NaN central: OK; add stricter core NaN constraint and bandwise thresholds.
+7. Verify band order: yes, via provenance/header and unit test, not brightness heuristics.
+8. Core r=8 px: fine; add r=4 and r=12 variants.
+9. Annulus 20–40 px: wrong; use 4–16 px (or θ_E-relative when available).
+10. AUC>0.70: keep as red; add yellow at 0.60 and bootstrap CI.
+11. Missing shortcut features: add Laplacian/DoG energy, azimuthal asymmetry, arc-annulus color, saturation fraction, edge artifact score.
+12. Normalize validation: yes; store per-band percentiles, MAD, outer-annulus background.
+
+If you want, I can patch these two scripts in-place based on the zip you provided (deterministic stratified sampling + corrected radii and additional shortcut features) and return a new zip with the modifications.
+
+=================================
+
 

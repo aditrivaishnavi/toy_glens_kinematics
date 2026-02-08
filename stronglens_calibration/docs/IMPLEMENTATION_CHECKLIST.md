@@ -54,8 +54,8 @@
 ### 1A. Negative Pool Design
 | ID | Task | Status | File/Location | Notes |
 |----|------|--------|---------------|-------|
-| 1A.1 | Implement Pool N1: Deployment-representative sampling | ✅ DONE | `stronglens_calibration/emr/spark_negative_sampling.py` | TYPE in [SER,DEV,REX,EXP], z<20, stratified by nobs_z. Implemented 2026-02-07 |
-| 1A.2 | Implement Pool N2: Hard confuser sampling | ✅ DONE | `stronglens_calibration/emr/sampling_utils.py` | classify_pool_n2() with ring/edge-on/blue proxies. Implemented 2026-02-07 |
+| 1A.1 | Implement Pool N1: Deployment-representative sampling | ⏳ PARTIAL | `stronglens_calibration/emr/spark_negative_sampling.py` | Pool catalog exists (114M rows), but stratified sampling to ~510K NOT done. Need 100:1 per stratum. |
+| 1A.2 | Implement Pool N2: Hard confuser sampling | ❌ NOT WORKING | `stronglens_calibration/emr/sampling_utils.py` | classify_pool_n2() exists but produced 0 N2 entries. Thresholds broken or too restrictive. Audit 2026-02-08: N1=100%, N2=0%. |
 | 1A.3 | Define N1:N2 ratio in training | 📋 DECISION MADE | `configs/negative_sampling_v1.yaml` | **85:15** within negative class |
 | 1A.4 | Implement 100:1 negative:positive ratio per (nobs_z, type) bin | ⏳ IN PROGRESS | | Config ready, stratified sampling TBD |
 | 1A.5 | Define control sample handling | 📋 DECISION MADE | | **Deprecate as primary negative**, keep as diagnostic only |
@@ -311,7 +311,8 @@ All major implementation questions have been answered. Remaining work is executi
 | 2026-02-07 | **FULL AUDIT**: Verified P0.1, P0.1b, P0.2, P0.5 with file existence checks. P0.6 NOT DONE. |
 | 2026-02-07 | **MIGRATION**: Moved all docs, data, and scripts from `planc/` to `stronglens_calibration/`. Updated all paths. |
 | 2026-02-07 | **PHASE 1 IMPL**: Created `emr/spark_negative_sampling.py` with N1/N2 pools, HEALPix splits, exclusion radius, full schema. Config in `configs/negative_sampling_v1.yaml`. Unit tests passing. |
-| 2026-02-07 | **LOCAL TESTS**: All 12 unit tests (1A-1E) passing. Local pipeline test passed with 5000 rows. N1:N2 ratio 70:30, 5 quality checks passed. Ready for EMR. |
+| 2026-02-07 | **LOCAL TESTS**: All 12 unit tests (1A-1E) passing. Local pipeline test passed with 5000 rows. 5 quality checks passed. Ready for EMR. |
+| 2026-02-08 | **AUDIT CORRECTION**: N1:N2 ratio previously claimed as 70:30 was FALSE. Actual manifest audit shows N1=100%, N2=0%. classify_pool_n2() thresholds broken. Items 1A.1 and 1A.2 status corrected. |
 
 || 2026-02-07 | **EMR PLAN**: Created `docs/EMR_FULL_RUN_PLAN.md`, `scripts/preflight_check.py`, `scripts/validate_output.py`. Full runbook with dependencies, gates, and rollback. |
 
@@ -388,4 +389,50 @@ All major implementation questions have been answered. Remaining work is executi
 | `scripts/preflight_check.py` | Automated pre-flight validation (local + AWS) |
 | `scripts/validate_output.py` | Post-run output validation (local or S3) |
 | `emr/launch_negative_sampling.py` | EMR cluster launch and step submission |
+
+
+---
+
+## STEP 1 CROSSMATCH STATUS (2026-02-08) - ✅ COMPLETE
+
+### Final Results
+| Metric | Value |
+|--------|-------|
+| Total positives | 5,104 |
+| Matched | 4,788 (93.8%) |
+| Unmatched | 316 (6.2%) - outside DR10 coverage |
+| Within 1" | 4,639 (97% of matches) |
+| Within 5" | 4,788 (100% of matches) |
+| Median separation | 0.059" |
+| Mean separation | 0.157" |
+| Max separation | 4.71" |
+| Gates passed | ✅ YES (>90% match rate) |
+
+### Tier Distribution
+| Tier | Count | Description |
+|------|-------|-------------|
+| A | 389 | Confident lenses |
+| B | 4,399 | Probable lenses |
+
+### Type Distribution (Tractor morphology)
+| Type | Count | Description |
+|------|-------|-------------|
+| SER | 2,909 | Sersic profile |
+| DEV | 911 | de Vaucouleurs |
+| REX | 724 | Round exponential |
+| EXP | 200 | Exponential |
+| PSF | 35 | Point source |
+| DUP | 9 | Duplicate |
+
+### EMR Job Details
+- **Cluster**: j-1QNR9QBL0SN4R (30x m5.2xlarge workers)
+- **Runtime**: 7 minutes
+- **Output**: `s3://darkhaloscope/stronglens_calibration/positives_with_dr10/20260208_180524/`
+- **Checkpointing**: ✅ Enabled (resume-capable)
+
+### Files Created
+- `emr/spark_crossmatch_positives_v2.py` - Spark job with checkpointing
+- `emr/launch_crossmatch_positives_v2.py` - EMR launcher (boto3-based)
+- `scripts/crossmatch_positives_sweeps.py` - Local sweep crossmatch (deprecated)
+- `scripts/crossmatch_positives_local.py` - Original manifest-based (deprecated)
 

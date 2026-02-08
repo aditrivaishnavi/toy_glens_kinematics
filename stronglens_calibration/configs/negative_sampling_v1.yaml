@@ -45,8 +45,8 @@ negative_pools:
   # Pool N1: Deployment-representative sampling
   pool_n1:
     description: "Deployment-representative negatives"
-    galaxy_types: ["SER", "DEV", "REX", "EXP"]
-    z_mag_limit: 20.0  # z < 20
+    galaxy_types: ["SER", "DEV", "REX"]  # Paper IV parity (EXP excluded)
+    z_mag_limit: 20.0  # Paper IV: "limiting to z < 20"
     stratify_by: ["nobs_z_bin", "type_bin"]
     # nobs_z bins: [1-2], [3-5], [6-10], [11+]
     nobs_z_bins: [[1, 2], [3, 5], [6, 10], [11, 999]]

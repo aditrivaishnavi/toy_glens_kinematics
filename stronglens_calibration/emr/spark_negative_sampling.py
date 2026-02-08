@@ -244,7 +244,8 @@ def list_fits_files(s3_path: str, logger: logging.Logger) -> List[str]:
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
         for obj in page.get("Contents", []):
             key = obj["Key"]
-            if key.endswith(".fits"):
+            # Support both .fits and .fits.gz (gzip compressed)
+            if key.endswith(".fits") or key.endswith(".fits.gz"):
                 fits_files.append(f"s3://{bucket}/{key}")
     
     logger.info(f"Found {len(fits_files)} FITS files")
@@ -315,7 +316,13 @@ def process_fits_file(
     # Download FITS file to temp location
     s3 = boto3.client("s3", region_name="us-east-2")
     
-    with tempfile.NamedTemporaryFile(suffix=".fits", delete=False) as tmp:
+    # Preserve original suffix (.fits or .fits.gz) for astropy to detect compression
+    if s3_uri.endswith(".fits.gz"):
+        suffix = ".fits.gz"
+    else:
+        suffix = ".fits"
+    
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp_path = tmp.name
     
     try:
@@ -351,6 +358,9 @@ def process_fits_file(
         types_all = np.char.upper(types_all)
         
         # Other columns (vectorized)
+        # Paper IV requires ≥3 exposures in EACH of g, r, z bands
+        nobs_g_all = np.asarray(data["NOBS_G"], dtype=np.int32)
+        nobs_r_all = np.asarray(data["NOBS_R"], dtype=np.int32)
         nobs_z_all = np.asarray(data["NOBS_Z"], dtype=np.int32)
         maskbits_all = np.asarray(data["MASKBITS"], dtype=np.int64)
         
@@ -408,29 +418,51 @@ def process_fits_file(
         valid_coords = np.isfinite(ra_all) & np.isfinite(dec_all)
         skip_reasons["invalid_coords"] = int(np.sum(~valid_coords))
         
-        # 2. Valid galaxy types (N1 pool)
-        valid_types = np.isin(types_all, list(VALID_TYPES_N1))
-        skip_reasons["not_valid_type"] = int(np.sum(valid_coords & ~valid_types))
+        # 2. DECaLS footprint (Paper IV: −18° < δ < +32°)
+        # "DECaLS in DR10 in the range −18 ◦ < δ < 32◦" - Inchausti et al. 2025
+        DECALS_DEC_MIN = -18.0
+        DECALS_DEC_MAX = 32.0
+        in_decals = (dec_all > DECALS_DEC_MIN) & (dec_all < DECALS_DEC_MAX)
+        skip_reasons["outside_decals"] = int(np.sum(valid_coords & ~in_decals))
         
-        # 3. Maskbit exclusions (vectorized bitwise check)
+        # 3. Valid galaxy types (N1 pool)
+        valid_types = np.isin(types_all, list(VALID_TYPES_N1))
+        skip_reasons["not_valid_type"] = int(np.sum(valid_coords & in_decals & ~valid_types))
+        
+        # 4. Maskbit exclusions (vectorized bitwise check)
         exclude_mask_combined = 0
         for bit in exclude_maskbits:
             exclude_mask_combined |= (1 << bit)
         maskbit_ok = (maskbits_all & exclude_mask_combined) == 0
-        skip_reasons["maskbit"] = int(np.sum(valid_coords & valid_types & ~maskbit_ok))
+        skip_reasons["maskbit"] = int(np.sum(valid_coords & in_decals & valid_types & ~maskbit_ok))
         
-        # 4. Z-band magnitude limit
+        # 5. Minimum exposures per band (Paper IV: ≥3 in each of g, r, z)
+        # "at least three exposures in the g, r, and z bands" - Inchausti et al. 2025
+        MIN_EXPOSURES = 3
+        nobs_g_ok = nobs_g_all >= MIN_EXPOSURES
+        nobs_r_ok = nobs_r_all >= MIN_EXPOSURES
+        nobs_z_ok = nobs_z_all >= MIN_EXPOSURES
+        nobs_ok = nobs_g_ok & nobs_r_ok & nobs_z_ok
+        
+        # Per-band failure counts for diagnostics (LLM audit recommendation)
+        pre_nobs_mask = valid_coords & in_decals & valid_types & maskbit_ok
+        skip_reasons["nobs_g_lt_3"] = int(np.sum(pre_nobs_mask & ~nobs_g_ok))
+        skip_reasons["nobs_r_lt_3"] = int(np.sum(pre_nobs_mask & ~nobs_r_ok))
+        skip_reasons["nobs_z_lt_3"] = int(np.sum(pre_nobs_mask & ~nobs_z_ok))
+        skip_reasons["insufficient_exposures"] = int(np.sum(pre_nobs_mask & ~nobs_ok))
+        
+        # 6. Z-band magnitude limit
         with np.errstate(divide='ignore', invalid='ignore'):
             mag_z_all = np.where(flux_z_all > 0, 22.5 - 2.5 * np.log10(flux_z_all), np.nan)
         mag_z_ok = np.isnan(mag_z_all) | (mag_z_all < z_mag_limit)
-        skip_reasons["mag_z_faint"] = int(np.sum(valid_coords & valid_types & maskbit_ok & ~mag_z_ok))
+        skip_reasons["mag_z_faint"] = int(np.sum(valid_coords & in_decals & valid_types & maskbit_ok & nobs_ok & ~mag_z_ok))
         
         # Combined mask before spatial query
-        pre_spatial_mask = valid_coords & valid_types & maskbit_ok & mag_z_ok
+        pre_spatial_mask = valid_coords & in_decals & valid_types & maskbit_ok & nobs_ok & mag_z_ok
         n_pre_spatial = int(np.sum(pre_spatial_mask))
         print(f"[process_fits_file] Pre-spatial filter: {n_pre_spatial:,} / {n_rows:,}")
         
-        # 5. Spatial exclusion near known lenses (vectorized KD-tree)
+        # 7. Spatial exclusion near known lenses (vectorized KD-tree)
         if known_coords and HAS_KDTREE and n_pre_spatial > 0:
             t_spatial_start = time.time()
             
@@ -521,13 +553,24 @@ def process_fits_file(
             objid = int(objid_all[idx])
             galaxy_id = f"{brickname}_{objid}"
             
-            # Pool assignment (simplified - all pass N1 type filter)
-            pool = "N1"
-            confuser_category = None
-            
             # Helper for safe float output
             def safe_out(v):
                 return None if np.isnan(v) else float(v)
+            
+            # Pool assignment - check N2 confuser criteria first
+            confuser_category = classify_pool_n2(
+                galaxy_type,
+                safe_out(flux_r_all[idx]),
+                safe_out(shape_r_all[idx]),
+                safe_out(g_minus_r_all[idx]),
+                safe_out(mag_r_all[idx]),
+                config
+            )
+            
+            if confuser_category is not None:
+                pool = "N2"
+            else:
+                pool = "N1"
             
             results.append({
                 "galaxy_id": galaxy_id,
@@ -586,7 +629,7 @@ def process_fits_file(
         print(f"[process_fits_file] Skip reasons: {skip_reasons}")
         
         # Explicit memory cleanup for large numpy arrays
-        del ra_all, dec_all, types_all, nobs_z_all, maskbits_all
+        del ra_all, dec_all, types_all, nobs_g_all, nobs_r_all, nobs_z_all, maskbits_all
         del flux_g_all, flux_r_all, flux_z_all, flux_w1_all
         del shape_r_all, shape_e1_all, shape_e2_all, sersic_all
         del mag_g_all, mag_r_all, mag_z_all, mag_w1_all
@@ -1048,7 +1091,8 @@ def main():
         
         # Determine input type
         is_s3 = args.sweep_input.startswith("s3://") or args.sweep_input.startswith("s3a://")
-        is_fits_dir = not args.sweep_input.endswith(".fits") and not args.sweep_input.endswith(".parquet")
+        is_single_fits = args.sweep_input.endswith(".fits") or args.sweep_input.endswith(".fits.gz")
+        is_fits_dir = not is_single_fits and not args.sweep_input.endswith(".parquet")
         
         if is_s3 and is_fits_dir:
             # S3 directory of FITS files - use distributed processing
@@ -1068,8 +1112,8 @@ def main():
             logger.info(f"Processing {len(fits_files)} FITS files")
             
             # Distribute file processing across workers
-            # Use more partitions for better parallelism
-            num_partitions = min(len(fits_files), 100)
+            # Use 1:1 file-to-partition mapping for optimal parallelism
+            num_partitions = min(len(fits_files), 50000)
             files_rdd = spark.sparkContext.parallelize(fits_files, num_partitions)
             
             # Process files
@@ -1083,8 +1127,8 @@ def main():
             output_schema = create_output_schema()
             result_df = spark.createDataFrame(result_rdd, schema=output_schema)
             
-        elif args.sweep_input.endswith(".fits"):
-            # Single FITS file - process directly
+        elif is_single_fits:
+            # Single FITS file - process directly (supports .fits and .fits.gz)
             logger.info("Processing single FITS file...")
             from astropy.io import fits
             import pandas as pd

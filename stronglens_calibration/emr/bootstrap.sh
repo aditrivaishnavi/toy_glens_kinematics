@@ -36,7 +36,7 @@ sudo python3 -m pip install --quiet --no-cache-dir --upgrade pip 2>/dev/null || 
 # Core packages (pre-built wheels available)
 echo "  Core packages..."
 sudo python3 -m pip install --quiet --no-cache-dir \
-    numpy pandas pyarrow pyyaml boto3 scipy 2>/dev/null || true
+    numpy pandas pyarrow pyyaml boto3 scipy requests 2>/dev/null || true
 
 # Astropy (pre-built wheel available)
 echo "  Astropy..."
@@ -56,10 +56,11 @@ echo "  Done."
 # =============================================================================
 echo "[3/3] Verifying..."
 python3 -c "
-import numpy, pandas, pyarrow, yaml, boto3, astropy, scipy
+import numpy, pandas, pyarrow, yaml, boto3, astropy, scipy, requests
 print('  Core packages OK')
 from scipy.spatial import cKDTree
 print('  scipy.cKDTree OK')
+print('  requests ' + requests.__version__)
 try:
     import fitsio
     print('  fitsio OK')
