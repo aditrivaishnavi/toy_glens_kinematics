@@ -1,0 +1,329 @@
+# Negative Sampling Configuration - v1
+# IMPORTANT: This config should NEVER be edited after a run
+# To modify, create a new version (e.g., negative_sampling_v2.yaml)
+#
+# References:
+# - LLM Blueprint: docs/conversation_with_llm.txt (Sections A, 7, 11)
+# - Paper IV: 100:1 negative:positive ratio per (nobs_z, type) bin
+# - Lessons Learned: docs/lessons_learned_and_common_mistakes.md
+
+version: "1.0.0"
+created_at: "2026-02-07"
+description: "Initial negative sampling configuration following Paper IV + LLM recommendations"
+
+# =============================================================================
+# DATA SOURCES
+# =============================================================================
+data:
+  # Input: DR10 sweep files
+  sweep_source: "s3://darkhaloscope/dr10/sweeps/"  # To be filled with actual S3 path
+  
+  # Known lenses to exclude from negatives
+  positive_catalogs:
+    - path: "data/positives/desi_candidates.csv"
+      type: "desi_imaging"
+      columns: ["ra", "dec", "grading", "theta_e"]
+    - path: "data/external/desi_dr1/desi-sl-vac-v1.fits"
+      type: "desi_spectroscopic"
+      columns: ["RA", "DEC"]
+  
+  # Output paths
+  output:
+    manifest_parquet: "s3://darkhaloscope/stronglens_calibration/manifests/"
+    cutouts_npz: "s3://darkhaloscope/stronglens_calibration/cutouts/"
+
+# =============================================================================
+# NEGATIVE POOL DESIGN (from LLM Section A)
+# =============================================================================
+negative_pools:
+  # N1:N2 ratio = 85:15 within negative class
+  n1_n2_ratio: [85, 15]
+  
+  # Overall 100:1 negative:positive ratio per stratum
+  neg_pos_ratio: 100
+  
+  # Pool N1: Deployment-representative sampling
+  pool_n1:
+    description: "Deployment-representative negatives"
+    galaxy_types: ["SER", "DEV", "REX", "EXP"]
+    z_mag_limit: 20.0  # z < 20
+    stratify_by: ["nobs_z_bin", "type_bin"]
+    # nobs_z bins: [1-2], [3-5], [6-10], [11+]
+    nobs_z_bins: [[1, 2], [3, 5], [6, 10], [11, 999]]
+  
+  # Pool N2: Hard confuser sampling
+  pool_n2:
+    description: "Hard confuser negatives (rings, spirals, mergers)"
+    # Step 1: Tractor-based mining (initial candidates)
+    tractor_criteria:
+      # DEV with high n_sersic proxy (ring/elliptical candidates)
+      ring_proxy: 
+        type: "DEV"
+        flux_r_min: 10  # nMgy (visible)
+      # EXP with high b/a ratio (edge-on disk candidates)
+      edge_on_proxy:
+        type: "EXP"
+        shape_r_min: 2.0  # arcsec
+      # Blue clumpy star-formers
+      blue_clumpy_proxy:
+        g_minus_r_max: 0.4
+        r_mag_max: 19.0
+    # Step 2: Will be filtered via image scoring later (after baseline model)
+
+# =============================================================================
+# SPATIAL SPLITS (from LLM Section B)
+# =============================================================================
+spatial_splits:
+  method: "healpix"
+  nside: 128  # Recommended for publication-grade independence
+  
+  # Train/Val/Test allocation
+  allocations:
+    train: 0.70
+    val: 0.15
+    test: 0.15
+  
+  # Deterministic assignment via hash
+  hash_seed: 42
+  hash_method: "sha256_modulo"
+
+# =============================================================================
+# EXCLUSION CRITERIA (from LLM Section A3)
+# =============================================================================
+exclusion:
+  # Exclude galaxies within this radius of known/candidate lenses
+  # Formula: 5" + 2×θE_max where θE_max = 3.0"
+  known_lens_radius_arcsec: 11.0  # 5 + 2*3.0
+  
+  # Maskbit exclusion (LLM: "do not sample galaxies flagged for these")
+  exclude_maskbits:
+    - 1    # BRIGHT - bright star nearby
+    - 5    # ALLMASK_G - pixel flagged in all g epochs
+    - 6    # ALLMASK_R
+    - 7    # ALLMASK_Z
+    - 11   # MEDIUM - medium-brightness star
+    - 12   # GALAXY - large galaxy in GAIA
+    - 13   # CLUSTER - galaxy cluster
+  
+  # NaN/quality exclusion
+  max_nan_frac: 0.05  # Exclude if >5% NaN pixels
+
+# =============================================================================
+# SCHEMA DEFINITION (from LLM Section E)
+# =============================================================================
+schema:
+  level1_manifest:
+    # Core identifiers
+    - name: galaxy_id
+      type: string
+      description: "Unique ID: brickname_objid"
+      nullable: false
+    - name: brickname
+      type: string
+      nullable: false
+    - name: objid
+      type: int
+      nullable: false
+    - name: ra
+      type: float64
+      nullable: false
+    - name: dec
+      type: float64
+      nullable: false
+    - name: type
+      type: string
+      description: "Tractor morphology type"
+      nullable: false
+    
+    # Stratification columns
+    - name: nobs_z
+      type: int
+      nullable: false
+    - name: nobs_z_bin
+      type: string
+      description: "Bin label: 1-2, 3-5, 6-10, 11+"
+      nullable: false
+    - name: type_bin
+      type: string
+      description: "SER, DEV, REX, EXP, or OTHER"
+      nullable: false
+    
+    # Photometry
+    - name: flux_g
+      type: float32
+      nullable: true
+    - name: flux_r
+      type: float32
+      nullable: true
+    - name: flux_z
+      type: float32
+      nullable: true
+    - name: flux_w1
+      type: float32
+      nullable: true
+    - name: mag_g
+      type: float32
+      nullable: true
+    - name: mag_r
+      type: float32
+      nullable: true
+    - name: mag_z
+      type: float32
+      nullable: true
+    - name: g_minus_r
+      type: float32
+      nullable: true
+    - name: r_minus_z
+      type: float32
+      nullable: true
+    - name: z_minus_w1
+      type: float32
+      nullable: true
+    
+    # Observing conditions
+    - name: psfsize_g
+      type: float32
+      nullable: true
+    - name: psfsize_r
+      type: float32
+      nullable: true
+    - name: psfsize_z
+      type: float32
+      nullable: true
+    - name: psfdepth_g
+      type: float32
+      nullable: true
+    - name: psfdepth_r
+      type: float32
+      nullable: true
+    - name: psfdepth_z
+      type: float32
+      nullable: true
+    - name: galdepth_g
+      type: float32
+      nullable: true
+    - name: galdepth_r
+      type: float32
+      nullable: true
+    - name: galdepth_z
+      type: float32
+      nullable: true
+    - name: ebv
+      type: float32
+      description: "E(B-V) extinction"
+      nullable: true
+    
+    # Quality flags
+    - name: maskbits
+      type: int
+      nullable: false
+    - name: fitbits
+      type: int
+      nullable: true
+    - name: mw_transmission_g
+      type: float32
+      nullable: true
+    - name: mw_transmission_r
+      type: float32
+      nullable: true
+    - name: mw_transmission_z
+      type: float32
+      nullable: true
+    
+    # Morphology
+    - name: shape_r
+      type: float32
+      description: "Half-light radius in arcsec"
+      nullable: true
+    - name: shape_e1
+      type: float32
+      nullable: true
+    - name: shape_e2
+      type: float32
+      nullable: true
+    - name: sersic
+      type: float32
+      description: "Sersic index for SER type"
+      nullable: true
+    
+    # Spatial/splits
+    - name: healpix_64
+      type: int64
+      nullable: false
+    - name: healpix_128
+      type: int64
+      nullable: false
+    - name: split
+      type: string
+      description: "train, val, or test"
+      nullable: false
+    
+    # Pool assignment
+    - name: pool
+      type: string
+      description: "N1, N2, or positive"
+      nullable: false
+    - name: confuser_category
+      type: string
+      description: "For N2: ring, spiral, merger, edge_on, blue_clumpy, other"
+      nullable: true
+    
+    # Provenance
+    - name: sweep_file
+      type: string
+      nullable: false
+    - name: row_index
+      type: int
+      nullable: false
+    - name: pipeline_version
+      type: string
+      nullable: false
+    - name: git_commit
+      type: string
+      nullable: false
+    - name: extraction_timestamp
+      type: string
+      nullable: false
+
+# =============================================================================
+# QUALITY GATES (from LLM + lessons learned)
+# =============================================================================
+quality_gates:
+  # Gate 1: Core brightness matching (lesson 21)
+  core_brightness_check:
+    enabled: true
+    max_pos_neg_ratio: 1.1  # Positives should not be >10% brighter in core
+  
+  # Gate 2: NaN detection (lesson 4.4)
+  nan_detection:
+    enabled: true
+    max_nan_frac: 0.05
+    exclude_center_nan: true  # Exclude if any NaN in r<8 pixels
+  
+  # Gate 3: Split proportion verification (lesson 4.6)
+  split_verification:
+    enabled: true
+    tolerance: 0.02  # Allow 2% deviation from target proportions
+
+# =============================================================================
+# EMR JOB SETTINGS
+# =============================================================================
+emr:
+  # Checkpointing
+  checkpoint_enabled: true
+  checkpoint_path: "s3://darkhaloscope/stronglens_calibration/checkpoints/"
+  checkpoint_every_n_partitions: 100
+  
+  # Force rerun even if checkpoint exists
+  force_rerun: false
+  
+  # Caching strategy
+  cache_sweep_data: true
+  cache_positive_catalog: true
+  
+  # Parallelism
+  num_partitions: 500
+  
+  # Logging
+  log_level: "INFO"
+  log_sample_every_n: 10000  # Log progress every N rows
