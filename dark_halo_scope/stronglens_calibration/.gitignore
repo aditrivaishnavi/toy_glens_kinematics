@@ -1,8 +1,12 @@
-# Data files (too large for git)
+# Large data files (too big for git)
 data/negatives/
-data/external/*.fits
 data/test_output/
 data/cutouts/
+
+# Large external files
+data/external/*.fits
+
+# Keep small reference CSVs (positives and external catalogs are small)
 
 # Python
 __pycache__/
