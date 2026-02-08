@@ -17,7 +17,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Tuple
 
 import boto3
 
@@ -110,16 +110,44 @@ def prepare_and_upload_code() -> Dict[str, str]:
     return uploads
 
 
-def launch_emr_cluster(preset: str, uploads: Dict[str, str]) -> str:
-    """Launch EMR cluster."""
+def launch_emr_cluster_with_step(
+    preset: str,
+    uploads: Dict[str, str],
+    input_path: str,
+    sample_fraction: float,
+) -> Tuple[str, str]:
+    """
+    Launch EMR cluster WITH step included.
+    
+    This is more reliable than adding step after cluster creation,
+    as it avoids timeout issues with SSH connections.
+    """
     config = EMR_PRESETS[preset]
     timestamp = uploads["timestamp"]
+    output_path = f"s3://{S3_BUCKET}/{S3_VALIDATION_PREFIX}/positives/{timestamp}/"
     
-    print(f"\n[2/4] Launching EMR cluster (preset: {preset})...")
+    print(f"\n[2/3] Launching EMR cluster with step (preset: {preset})...")
     print(f"  Master:  1x {config['master_type']}")
     print(f"  Workers: {config['worker_count']}x {config['worker_type']}")
+    print(f"  Input:   {input_path}")
+    print(f"  Output:  {output_path}")
+    print(f"  Sample:  {sample_fraction}")
     
     emr = boto3.client("emr", region_name=AWS_REGION)
+    
+    # Build step arguments
+    step_args = [
+        "spark-submit",
+        "--deploy-mode", "cluster",
+        "--driver-memory", "4g",
+        "--executor-memory", "4g",
+        "--executor-cores", "2",
+        "--conf", "spark.dynamicAllocation.enabled=true",
+        uploads["script"],
+        "--input", input_path,
+        "--output", output_path,
+        "--sample-fraction", str(sample_fraction),
+    ]
     
     cluster_config = {
         "Name": f"validate-cutout-integrity-{timestamp}",
@@ -183,77 +211,8 @@ def launch_emr_cluster(preset: str, uploads: Dict[str, str]) -> str:
                 },
             },
         ],
-    }
-    
-    response = emr.run_job_flow(**cluster_config)
-    cluster_id = response["JobFlowId"]
-    
-    print(f"  Cluster ID: {cluster_id}")
-    
-    return cluster_id
-
-
-def wait_for_cluster(cluster_id: str, timeout_minutes: int = 20) -> bool:
-    """Wait for cluster to be ready."""
-    print(f"\n[3/4] Waiting for cluster to be ready...")
-    
-    emr = boto3.client("emr", region_name=AWS_REGION)
-    start_time = time.time()
-    timeout_seconds = timeout_minutes * 60
-    
-    while True:
-        response = emr.describe_cluster(ClusterId=cluster_id)
-        status = response["Cluster"]["Status"]["State"]
-        
-        print(f"  [{datetime.now().strftime('%H:%M:%S')}] Status: {status}")
-        
-        if status == "WAITING":
-            print("  Cluster ready!")
-            return True
-        elif status in ("TERMINATED", "TERMINATED_WITH_ERRORS"):
-            print(f"  ERROR: Cluster failed with status: {status}")
-            return False
-        
-        if time.time() - start_time > timeout_seconds:
-            print(f"  ERROR: Timeout waiting for cluster")
-            return False
-        
-        time.sleep(30)
-
-
-def submit_spark_step(
-    cluster_id: str,
-    uploads: Dict[str, str],
-    input_path: str,
-    sample_fraction: float,
-) -> str:
-    """Submit Spark step."""
-    timestamp = uploads["timestamp"]
-    output_path = f"s3://{S3_BUCKET}/{S3_VALIDATION_PREFIX}/positives/{timestamp}/"
-    
-    print(f"\n[4/4] Submitting Spark step...")
-    print(f"  Input: {input_path}")
-    print(f"  Output: {output_path}")
-    print(f"  Sample fraction: {sample_fraction}")
-    
-    emr = boto3.client("emr", region_name=AWS_REGION)
-    
-    step_args = [
-        "spark-submit",
-        "--deploy-mode", "cluster",
-        "--driver-memory", "4g",
-        "--executor-memory", "4g",
-        "--executor-cores", "2",
-        "--conf", "spark.dynamicAllocation.enabled=true",
-        uploads["script"],
-        "--input", input_path,
-        "--output", output_path,
-        "--sample-fraction", str(sample_fraction),
-    ]
-    
-    response = emr.add_job_flow_steps(
-        JobFlowId=cluster_id,
-        Steps=[
+        # Include step at cluster creation time - more reliable
+        "Steps": [
             {
                 "Name": "ValidateCutoutIntegrity",
                 "ActionOnFailure": "TERMINATE_CLUSTER",
@@ -263,54 +222,97 @@ def submit_spark_step(
                 },
             },
         ],
-    )
+    }
     
-    step_id = response["StepIds"][0]
-    print(f"  Step ID: {step_id}")
+    response = emr.run_job_flow(**cluster_config)
+    cluster_id = response["JobFlowId"]
     
-    return step_id
+    # Get step ID from the response
+    step_id = f"{cluster_id}-step-0"  # Will be determined by monitoring
+    
+    print(f"  Cluster ID: {cluster_id}")
+    print(f"  Step submitted with cluster creation")
+    
+    return cluster_id, output_path
 
 
-def monitor_step(cluster_id: str, step_id: str, timeout_hours: int = 4) -> bool:
-    """Monitor step until completion."""
-    print("\nMonitoring step progress...")
-    print(f"EMR Console: https://us-east-2.console.aws.amazon.com/emr/home?region=us-east-2#/clusterDetails/{cluster_id}")
+def monitor_cluster_and_step(cluster_id: str, timeout_hours: int = 4) -> bool:
+    """
+    Monitor cluster and step until completion.
+    
+    Gets the step ID from the cluster and monitors it.
+    """
+    print("\n[3/3] Monitoring cluster and step...")
     
     emr = boto3.client("emr", region_name=AWS_REGION)
     start_time = time.time()
     timeout_seconds = timeout_hours * 3600
     
+    # Wait for step to appear and get its ID
+    step_id = None
+    while step_id is None and time.time() - start_time < 300:  # 5 min max to find step
+        try:
+            steps_response = emr.list_steps(ClusterId=cluster_id)
+            if steps_response.get("Steps"):
+                step_id = steps_response["Steps"][0]["Id"]
+                print(f"  Step ID: {step_id}")
+                break
+        except Exception:
+            pass
+        time.sleep(10)
+    
+    if step_id is None:
+        print("  ERROR: Could not find step ID")
+        return False
+    
+    # Monitor the step
     while True:
         try:
-            response = emr.describe_step(ClusterId=cluster_id, StepId=step_id)
-            status = response["Step"]["Status"]["State"]
+            # Check cluster status first
+            cluster_response = emr.describe_cluster(ClusterId=cluster_id)
+            cluster_state = cluster_response["Cluster"]["Status"]["State"]
+            
+            # Check step status
+            step_response = emr.describe_step(ClusterId=cluster_id, StepId=step_id)
+            step_status = step_response["Step"]["Status"]["State"]
             
             elapsed = (time.time() - start_time) / 60
-            print(f"  [{elapsed:.0f}m] Status: {status}")
+            print(f"  [{elapsed:.0f}m] Cluster: {cluster_state}, Step: {step_status}")
             
-            if status == "COMPLETED":
+            if step_status == "COMPLETED":
                 print("\n  Step completed successfully!")
                 return True
-            elif status in ("FAILED", "CANCELLED"):
-                print(f"\n  Step failed with status: {status}")
-                if "FailureDetails" in response["Step"]["Status"]:
-                    details = response["Step"]["Status"]["FailureDetails"]
+            elif step_status in ("FAILED", "CANCELLED"):
+                print(f"\n  Step failed with status: {step_status}")
+                if "FailureDetails" in step_response["Step"]["Status"]:
+                    details = step_response["Step"]["Status"]["FailureDetails"]
                     print(f"  Reason: {details.get('Reason', 'Unknown')}")
                 return False
+            
+            # Check if cluster terminated
+            if cluster_state in ("TERMINATED", "TERMINATED_WITH_ERRORS"):
+                # Check final step status
+                if step_status == "COMPLETED":
+                    return True
+                else:
+                    print(f"\n  Cluster terminated with step status: {step_status}")
+                    return step_status == "COMPLETED"
             
             if time.time() - start_time > timeout_seconds:
                 print(f"\n  Timeout after {timeout_hours} hours")
                 return False
                 
-        except emr.exceptions.ClusterNotFound:
-            # Cluster terminated (expected with KeepJobFlowAliveWhenNoSteps=False)
-            print("\n  Cluster terminated (expected behavior)")
-            return True
         except Exception as e:
-            if "Cluster" in str(e) and "terminated" in str(e).lower():
-                print("\n  Cluster terminated (expected behavior)")
-                return True
-            raise
+            if "Cluster" in str(e) or "terminated" in str(e).lower():
+                print("\n  Cluster terminated")
+                # Try one more time to get final step status
+                try:
+                    step_response = emr.describe_step(ClusterId=cluster_id, StepId=step_id)
+                    return step_response["Step"]["Status"]["State"] == "COMPLETED"
+                except:
+                    return False
+            elapsed = (time.time() - start_time) / 60
+            print(f"  [{elapsed:.0f}m] Error checking status: {e}")
         
         time.sleep(60)
 
@@ -400,27 +402,19 @@ def main():
     # Upload code
     uploads = prepare_and_upload_code()
     
-    # Launch cluster
-    cluster_id = launch_emr_cluster(args.preset, uploads)
-    
-    # Wait for cluster
-    if not wait_for_cluster(cluster_id):
-        print("Cluster failed to start")
-        sys.exit(1)
-    
-    # Submit step
-    step_id = submit_spark_step(cluster_id, uploads, input_path, args.sample_fraction)
-    
-    output_path = f"s3://{S3_BUCKET}/{S3_VALIDATION_PREFIX}/positives/{uploads['timestamp']}/"
+    # Launch cluster WITH step (more reliable than adding step later)
+    cluster_id, output_path = launch_emr_cluster_with_step(
+        args.preset, uploads, input_path, args.sample_fraction
+    )
     
     print(f"\n" + "=" * 60)
     print(f"Cluster ID: {cluster_id}")
-    print(f"Step ID:    {step_id}")
     print(f"Output:     {output_path}")
+    print(f"Console:    https://us-east-2.console.aws.amazon.com/emr/home?region=us-east-2#/clusterDetails/{cluster_id}")
     print("=" * 60)
     
     if not args.no_monitor:
-        success = monitor_step(cluster_id, step_id)
+        success = monitor_cluster_and_step(cluster_id)
         
         if success:
             # Check results
