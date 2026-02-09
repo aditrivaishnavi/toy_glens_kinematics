@@ -5,7 +5,7 @@ EMR Launcher: Stratified Sampling for Negative Pool
 Samples ~510K negatives maintaining 100:1 per-stratum ratio with 85:15 N1:N2.
 
 Usage:
-    python emr/launch_stratified_sample.py --preset medium
+    python emr/launch_stratified_sample.py --preset medium --negatives s3://...
     python emr/launch_stratified_sample.py --preset test --negatives s3://...
 
 Author: Generated for stronglens_calibration project
@@ -20,36 +20,27 @@ from pathlib import Path
 
 import boto3
 
+# Import central constants
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from constants import (
+    AWS_REGION,
+    S3_BUCKET,
+    S3_CODE_PREFIX,
+    S3_LOGS_PREFIX,
+    S3_SAMPLED_NEGATIVES_PREFIX,
+    EMR_RELEASE,
+    EMR_PRESETS,
+)
+
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 
-AWS_REGION = "us-east-2"
-S3_BUCKET = "darkhaloscope"
-S3_CODE_PREFIX = "stronglens_calibration/emr/code"
-S3_LOGS_PREFIX = "stronglens_calibration/emr/logs"
-
-EMR_RELEASE = "emr-7.0.0"
-
-# Default paths (update after jobs complete)
-POSITIVES_PATH = "s3://darkhaloscope/stronglens_calibration/positives_with_dr10/20260208_180524/data/"
-# NEGATIVES_PATH will be set to latest manifest after N2 fix job
-
+# Use presets from constants
 PRESETS = {
-    "test": {
-        "master_type": "m5.xlarge",
-        "worker_type": "m5.xlarge",
-        "worker_count": 2,
-        "executor_memory": "4g",
-        "description": "Test with 2 workers",
-    },
-    "medium": {
-        "master_type": "m5.xlarge",
-        "worker_type": "m5.2xlarge",
-        "worker_count": 5,
-        "executor_memory": "8g",
-        "description": "Medium with 5 workers (114M rows is ~200 parquet files)",
-    },
+    name: {**cfg, "description": cfg.get("description", f"{name} preset")}
+    for name, cfg in EMR_PRESETS.items()
+    if name in ("test", "medium")
 }
 
 EMR_DIR = Path(__file__).parent.resolve()
@@ -207,7 +198,7 @@ def wait_for_cluster(cluster_id: str, timeout_minutes: int = 15):
 def submit_spark_step(cluster_id: str, uploads, negatives_path: str, positives_path: str):
     """Submit Spark step."""
     timestamp = uploads["timestamp"]
-    output_path = f"s3://{S3_BUCKET}/stronglens_calibration/sampled_negatives/{timestamp}/"
+    output_path = f"s3://{S3_BUCKET}/{S3_SAMPLED_NEGATIVES_PREFIX}/{timestamp}/"
     
     print(f"\n[4/4] Submitting Spark step...")
     print(f"  Negatives: {negatives_path}")
@@ -291,7 +282,7 @@ def main():
     parser = argparse.ArgumentParser(description="Launch stratified sampling EMR job")
     parser.add_argument("--preset", choices=list(PRESETS.keys()), default="medium")
     parser.add_argument("--negatives", required=True, help="S3 path to negative manifest")
-    parser.add_argument("--positives", default=POSITIVES_PATH)
+    parser.add_argument("--positives", required=True, help="S3 path to positives with DR10")
     parser.add_argument("--no-monitor", action="store_true")
     
     args = parser.parse_args()

@@ -21,44 +21,27 @@ from typing import Dict
 
 import boto3
 
+# Import central constants
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from constants import (
+    AWS_REGION,
+    S3_BUCKET,
+    S3_CODE_PREFIX,
+    S3_CUTOUTS_PREFIX,
+    S3_LOGS_PREFIX,
+    EMR_RELEASE,
+    EMR_PRESETS,
+)
+
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 
-AWS_REGION = "us-east-2"
-S3_BUCKET = "darkhaloscope"
-S3_CODE_PREFIX = "stronglens_calibration/emr/code"
-S3_CUTOUT_PREFIX = "stronglens_calibration/cutouts"
-S3_LOGS_PREFIX = "stronglens_calibration/emr/logs"
-
-EMR_RELEASE = "emr-7.0.0"
-
-# Input paths
-POSITIVES_INPUT = "s3://darkhaloscope/stronglens_calibration/positives_with_dr10/20260208_180524/data/"
-# Negatives input will be set after stratified sampling
-
+# Use presets from constants with added descriptions
 PRESETS = {
-    "test": {
-        "master_type": "m5.xlarge",
-        "worker_type": "m5.xlarge",
-        "worker_count": 2,
-        "executor_memory": "4g",
-        "description": "Test with 2 workers",
-    },
-    "medium": {
-        "master_type": "m5.xlarge",
-        "worker_type": "m5.2xlarge",
-        "worker_count": 10,
-        "executor_memory": "8g",
-        "description": "Medium with 10 workers",
-    },
-    "full": {
-        "master_type": "m5.xlarge",
-        "worker_type": "m5.2xlarge",
-        "worker_count": 30,
-        "executor_memory": "8g",
-        "description": "Full with 30 workers",
-    },
+    name: {**cfg, "description": cfg.get("description", f"{name} preset")}
+    for name, cfg in EMR_PRESETS.items()
+    if name in ("test", "medium", "full")
 }
 
 EMR_DIR = Path(__file__).parent.resolve()
@@ -223,7 +206,7 @@ def submit_spark_step(
 ) -> str:
     """Submit Spark step."""
     timestamp = uploads["timestamp"]
-    output_path = f"s3://{S3_BUCKET}/{S3_CUTOUT_PREFIX}/{cutout_type}s/{timestamp}/"
+    output_path = f"s3://{S3_BUCKET}/{S3_CUTOUTS_PREFIX}/{cutout_type}s/{timestamp}/"
     
     print(f"\n[4/4] Submitting Spark step...")
     print(f"  Type: {cutout_type}")
@@ -324,14 +307,11 @@ def main():
     print(f"Type: {args.type}")
     print(f"Preset: {args.preset} - {PRESETS[args.preset]['description']}")
     
-    # Determine input path
-    if args.input:
-        input_path = args.input
-    elif args.type == "positive":
-        input_path = POSITIVES_INPUT
-    else:
-        print("ERROR: --input required for negative cutouts")
+    # Determine input path (required)
+    if not args.input:
+        print("ERROR: --input is required (path to parquet with ra/dec)")
         sys.exit(1)
+    input_path = args.input
     
     print(f"Input: {input_path}")
     
@@ -361,7 +341,7 @@ def main():
     print(f"\n" + "=" * 60)
     print(f"Cluster ID: {cluster_id}")
     print(f"Step ID:    {step_id}")
-    print(f"Output:     s3://{S3_BUCKET}/{S3_CUTOUT_PREFIX}/{args.type}s/{uploads['timestamp']}/")
+    print(f"Output:     s3://{S3_BUCKET}/{S3_CUTOUTS_PREFIX}/{args.type}s/{uploads['timestamp']}/")
     print("=" * 60)
     
     if not args.no_monitor:

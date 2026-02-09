@@ -35,51 +35,33 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
+# Import central constants
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from constants import (
+    AWS_REGION,
+    S3_BUCKET,
+    S3_CODE_PREFIX,
+    S3_CONFIG_PREFIX,
+    S3_MANIFESTS_PREFIX,
+    S3_LOGS_PREFIX,
+    S3_CHECKPOINT_PREFIX,
+    EMR_RELEASE,
+    EMR_PRESETS,
+)
+
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 
-# AWS Configuration
-AWS_REGION = os.environ.get("AWS_REGION", "us-east-2")
-S3_BUCKET = os.environ.get("S3_BUCKET", "darkhaloscope")
-
-# S3 Paths
-S3_CODE_PREFIX = "stronglens_calibration/emr/code"
-S3_CONFIG_PREFIX = "stronglens_calibration/configs"
-S3_OUTPUT_PREFIX = "stronglens_calibration/manifests"
-S3_LOGS_PREFIX = "stronglens_calibration/emr/logs"
-S3_CHECKPOINT_PREFIX = "stronglens_calibration/checkpoints"
-
 # EMR Configuration
-EMR_RELEASE_LABEL = "emr-7.0.0"
-EMR_SUBNET_ID = os.environ.get("EMR_SUBNET_ID", "")  # Must be set
+EMR_RELEASE_LABEL = EMR_RELEASE
+EMR_SUBNET_ID = os.environ.get("EMR_SUBNET_ID", "")  # Optional
 
-# Instance Configuration
+# Use presets from constants with timeout additions
 INSTANCE_PRESETS = {
-    "test": {
-        "name": "test",
-        "master_type": "m5.xlarge",
-        "worker_type": "m5.xlarge",
-        "worker_count": 2,
-        "executor_memory": "4g",
-        "timeout_hours": 1,
-    },
-    "medium": {
-        "name": "medium", 
-        "master_type": "m5.xlarge",
-        "worker_type": "m5.2xlarge",
-        "worker_count": 10,
-        "executor_memory": "8g",
-        "timeout_hours": 4,
-    },
-    "large": {
-        "name": "large",
-        "master_type": "m5.xlarge", 
-        "worker_type": "m5.2xlarge",
-        "worker_count": 30,
-        "executor_memory": "8g",
-        "timeout_hours": 8,
-    },
+    "test": {**EMR_PRESETS["test"], "name": "test", "timeout_hours": 1},
+    "medium": {**EMR_PRESETS["medium"], "name": "medium", "timeout_hours": 4},
+    "large": {**EMR_PRESETS["large"], "name": "large", "timeout_hours": 8},
 }
 
 # Project root - the directory containing this script
@@ -532,7 +514,7 @@ def main():
     
     # Submit step
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    output_path = f"s3://{S3_BUCKET}/{S3_OUTPUT_PREFIX}/{timestamp}/"
+    output_path = f"s3://{S3_BUCKET}/{S3_MANIFESTS_PREFIX}/{timestamp}/"
     
     test_limit = 2 if args.test else None
     

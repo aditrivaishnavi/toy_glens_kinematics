@@ -22,36 +22,27 @@ from pathlib import Path
 
 import boto3
 
+# Import central constants
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from constants import (
+    AWS_REGION,
+    S3_BUCKET,
+    S3_CODE_PREFIX,
+    S3_LOGS_PREFIX,
+    S3_VALIDATION_PREFIX,
+    EMR_RELEASE,
+    EMR_PRESETS,
+)
+
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 
-AWS_REGION = "us-east-2"
-S3_BUCKET = "darkhaloscope"
-S3_CODE_PREFIX = "stronglens_calibration/emr/code"
-S3_LOGS_PREFIX = "stronglens_calibration/emr/logs"
-
-EMR_RELEASE = "emr-7.0.0"
-
+# Use presets from constants
 PRESETS = {
-    "test": {
-        "master_type": "m5.xlarge",
-        "worker_type": "m5.xlarge",
-        "worker_count": 2,
-        "executor_memory": "4g",
-    },
-    "medium": {
-        "master_type": "m5.xlarge",
-        "worker_type": "m5.2xlarge",
-        "worker_count": 10,
-        "executor_memory": "8g",
-    },
-    "large": {
-        "master_type": "m5.xlarge",
-        "worker_type": "m5.2xlarge",
-        "worker_count": 20,
-        "executor_memory": "8g",
-    },
+    name: {**cfg, "description": cfg.get("description", f"{name} preset")}
+    for name, cfg in EMR_PRESETS.items()
+    if name in ("test", "medium", "large")
 }
 
 EMR_DIR = Path(__file__).parent.resolve()
@@ -171,7 +162,7 @@ def wait_for_cluster(cluster_id: str, timeout_minutes: int = 15):
 
 def submit_spark_step(cluster_id: str, uploads, positives: str, negatives: str):
     timestamp = uploads["timestamp"]
-    output_path = f"s3://{S3_BUCKET}/stronglens_calibration/validation/{timestamp}/"
+    output_path = f"s3://{S3_BUCKET}/{S3_VALIDATION_PREFIX}/{timestamp}/"
     
     print(f"\n[4/4] Submitting Spark step...")
     print(f"  Output: {output_path}")
