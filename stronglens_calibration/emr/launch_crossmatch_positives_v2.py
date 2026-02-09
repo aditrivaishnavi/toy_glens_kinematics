@@ -23,17 +23,18 @@ from typing import Dict
 
 import boto3
 
+# Add parent to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from constants import (
+    AWS_REGION, S3_BUCKET, S3_CODE_PREFIX, S3_LOGS_PREFIX,
+    S3_POSITIVES_PREFIX, EMR_RELEASE, get_emr_console_url, get_emr_terminate_cmd,
+)
+
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 
-AWS_REGION = "us-east-2"
-S3_BUCKET = "darkhaloscope"
-S3_CODE_PREFIX = "stronglens_calibration/emr/code"
-S3_OUTPUT_PREFIX = "stronglens_calibration/positives_with_dr10"
-S3_LOGS_PREFIX = "stronglens_calibration/emr/logs"
-
-EMR_RELEASE = "emr-7.0.0"
+S3_OUTPUT_PREFIX = S3_POSITIVES_PREFIX
 
 # Instance presets
 PRESETS = {
@@ -150,7 +151,7 @@ def launch_emr_cluster(preset: str, uploads: Dict[str, str]) -> str:
                     "InstanceCount": config["worker_count"],
                 },
             ],
-            "KeepJobFlowAliveWhenNoSteps": True,
+            "KeepJobFlowAliveWhenNoSteps": False,  # Auto-terminate when step completes
             "TerminationProtected": False,
         },
         "VisibleToAllUsers": True,
@@ -272,7 +273,7 @@ def submit_spark_step(cluster_id: str, uploads: Dict[str, str]) -> str:
 def monitor_step(cluster_id: str, step_id: str, timeout_hours: int = 4) -> bool:
     """Monitor step until completion."""
     print("\nMonitoring step progress...")
-    print(f"EMR Console: https://us-east-2.console.aws.amazon.com/emr/home?region=us-east-2#/clusterDetails/{cluster_id}")
+    print(f"EMR Console: {get_emr_console_url(cluster_id)}")
     
     emr = boto3.client("emr", region_name=AWS_REGION)
     start_time = time.time()
@@ -363,8 +364,8 @@ def main():
         sys.exit(0 if success else 1)
     else:
         print("\nNot monitoring (--no-monitor).")
-        print(f"Check EMR console: https://us-east-2.console.aws.amazon.com/emr/home?region=us-east-2")
-        print(f"To terminate: aws emr terminate-clusters --cluster-ids {cluster_id} --region us-east-2")
+        print(f"Check EMR console: {get_emr_console_url(cluster_id)}")
+        print(f"To terminate: {get_emr_terminate_cmd(cluster_id)}")
 
 
 if __name__ == "__main__":

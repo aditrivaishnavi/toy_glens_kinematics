@@ -54,6 +54,9 @@ from pyspark.sql.window import Window
 PIPELINE_VERSION = "1.0.0"
 GIT_COMMIT = os.environ.get("GIT_COMMIT", "unknown")
 
+# AWS Configuration (environment override supported)
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-2")
+
 # Crossmatch parameters
 MAX_MATCH_RADIUS_ARCSEC = 1.0  # Maximum separation for a valid match
 HEALPIX_NSIDE = 128  # Use same nside as manifest for direct join
@@ -112,7 +115,7 @@ def load_positive_catalog_pandas(path: str, logger: logging.Logger) -> "pd.DataF
     
     # Handle S3 paths
     if path.startswith("s3://"):
-        s3 = boto3.client("s3", region_name="us-east-2")
+        s3 = boto3.client("s3", region_name=AWS_REGION)
         bucket = path.replace("s3://", "").split("/")[0]
         key = "/".join(path.replace("s3://", "").split("/")[1:])
         
@@ -421,7 +424,7 @@ def main():
         # Save validation to S3
         if args.output.startswith("s3://"):
             import boto3
-            s3 = boto3.client("s3", region_name="us-east-2")
+            s3 = boto3.client("s3", region_name=AWS_REGION)
             bucket = args.output.replace("s3://", "").split("/")[0]
             key = "/".join(args.output.replace("s3://", "").split("/")[1:]).rstrip("/") + "_validation.json"
             s3.put_object(Bucket=bucket, Key=key, Body=validation_json)

@@ -35,6 +35,9 @@ from typing import Dict, Iterator, List, Optional, Tuple, Any
 
 import numpy as np
 
+# AWS Configuration (environment override supported)
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-2")
+
 from pyspark import StorageLevel
 from pyspark.sql import SparkSession, DataFrame, Row
 from pyspark.sql import functions as F
@@ -113,7 +116,7 @@ def load_config(config_path: str) -> Dict[str, Any]:
     # Handle S3 paths
     if config_path.startswith("s3://") or config_path.startswith("s3a://"):
         import boto3
-        s3 = boto3.client("s3", region_name="us-east-2")
+        s3 = boto3.client("s3", region_name=AWS_REGION)
         
         # Parse S3 URI
         if config_path.startswith("s3a://"):
@@ -164,7 +167,7 @@ def load_known_lenses(
     
     if positive_catalog_path.startswith("s3://"):
         import boto3
-        s3 = boto3.client("s3", region_name="us-east-2")
+        s3 = boto3.client("s3", region_name=AWS_REGION)
         
         # Parse S3 URI
         s3_path = positive_catalog_path[5:]
@@ -237,7 +240,7 @@ def list_fits_files(s3_path: str, logger: logging.Logger) -> List[str]:
     
     bucket, prefix = s3_path_clean.split("/", 1)
     
-    s3 = boto3.client("s3", region_name="us-east-2")
+    s3 = boto3.client("s3", region_name=AWS_REGION)
     paginator = s3.get_paginator("list_objects_v2")
     
     fits_files = []
@@ -314,7 +317,7 @@ def process_fits_file(
     sweep_filename = os.path.basename(key)
     
     # Download FITS file to temp location
-    s3 = boto3.client("s3", region_name="us-east-2")
+    s3 = boto3.client("s3", region_name=AWS_REGION)
     
     # Preserve original suffix (.fits or .fits.gz) for astropy to detect compression
     if s3_uri.endswith(".fits.gz"):

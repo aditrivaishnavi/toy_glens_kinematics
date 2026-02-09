@@ -30,6 +30,9 @@ from typing import Dict, List, Tuple
 
 PIPELINE_VERSION = "1.0.0"
 
+# AWS Configuration (environment override supported)
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-2")
+
 # Sampling ratios (from LLM recommendations)
 NEG_POS_RATIO = 100  # 100 negatives per positive
 N1_RATIO = 0.85  # 85% from N1 pool
@@ -280,7 +283,7 @@ def main():
         
         # Save summary
         import boto3
-        s3 = boto3.client("s3", region_name="us-east-2")
+        s3 = boto3.client("s3", region_name=AWS_REGION)
         
         output_bucket = args.output.replace("s3://", "").split("/")[0]
         output_prefix = "/".join(args.output.replace("s3://", "").split("/")[1:]).rstrip("/")

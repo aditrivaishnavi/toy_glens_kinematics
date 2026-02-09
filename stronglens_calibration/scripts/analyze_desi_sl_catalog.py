@@ -202,7 +202,6 @@ def crossmatch_with_candidates(catalog: dict, candidates_path: str = None) -> di
         possible_paths = [
             project_root / 'data' / 'positives' / 'desi_candidates.csv',
             project_root / 'data' / 'positives' / 'desi_candidates_enriched.csv',
-            project_root / 'planc' / 'data' / 'positives',
         ]
         for p in possible_paths:
             if p.exists():
@@ -424,7 +423,7 @@ def main():
     report = generate_report(catalog, stats, validation, crossmatch)
     
     # Save report
-    report_path = project_root / 'planc' / 'DESI_CATALOG_ANALYSIS_REPORT.md'
+    report_path = project_root / 'docs' / 'DESI_CATALOG_ANALYSIS_REPORT.md'
     with open(report_path, 'w') as f:
         f.write(report)
     print(f"  Saved to: {report_path}")
@@ -439,7 +438,7 @@ def main():
     if 'redshift' in stats and stats['redshift']['median']:
         print(f"Median redshift: {stats['redshift']['median']:.3f}")
     print()
-    print("Report saved to: planc/DESI_CATALOG_ANALYSIS_REPORT.md")
+    print("Report saved to: docs/DESI_CATALOG_ANALYSIS_REPORT.md")
     
     return 0
 

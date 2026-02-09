@@ -35,6 +35,9 @@ import numpy as np
 
 PIPELINE_VERSION = "1.0.0"
 
+# AWS Configuration (environment override supported)
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-2")
+
 # Cutout parameters
 CUTOUT_SIZE = 101  # pixels
 PIXEL_SCALE = 0.262  # arcsec/pixel
@@ -345,7 +348,7 @@ def process_batch(
     """
     import boto3
     
-    s3 = boto3.client("s3", region_name="us-east-2")
+    s3 = boto3.client("s3", region_name=AWS_REGION)
     
     for row in rows:
         galaxy_id = row.get("galaxy_id") or row.get("pos_name", "unknown")
@@ -540,7 +543,7 @@ def main():
         
         # Save summary
         import boto3
-        s3 = boto3.client("s3", region_name="us-east-2")
+        s3 = boto3.client("s3", region_name=AWS_REGION)
         
         summary = {
             "cutout_type": args.cutout_type,

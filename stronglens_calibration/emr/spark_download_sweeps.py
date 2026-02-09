@@ -43,6 +43,9 @@ logger = logging.getLogger(__name__)
 PIPELINE_VERSION = "1.0.0"
 GIT_COMMIT = os.environ.get("GIT_COMMIT", "unknown")
 
+# AWS Configuration (environment override supported)
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-2")
+
 # Retry configuration
 MAX_RETRIES_NERSC = 5
 INITIAL_BACKOFF_SECONDS = 2.0
@@ -72,7 +75,7 @@ def get_s3_client():
         read_timeout=60,
     )
     
-    return boto3.client("s3", region_name="us-east-2", config=config)
+    return boto3.client("s3", region_name=AWS_REGION, config=config)
 
 
 def parse_s3_uri(s3_uri: str) -> Tuple[str, str]:

@@ -33,6 +33,10 @@ import pyarrow.parquet as pq
 # =============================================================================
 
 PIPELINE_VERSION = "1.0.0"
+
+# AWS Configuration (environment override supported)
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-2")
+
 # Lens system coordinates are often offset from Tractor source centroids by several arcsec
 # Using 5" radius to capture the deflector galaxy, will validate matches afterwards
 MAX_MATCH_RADIUS_ARCSEC = 5.0
@@ -80,7 +84,7 @@ def load_positives(path: str) -> pd.DataFrame:
     """Load positive catalog from CSV."""
     logger.info(f"Loading positives from: {path}")
     
-    s3 = boto3.client("s3", region_name="us-east-2")
+    s3 = boto3.client("s3", region_name=AWS_REGION)
     
     if path.startswith("s3://"):
         bucket = path.replace("s3://", "").split("/")[0]
@@ -147,7 +151,7 @@ def crossmatch_streaming(positives: pd.DataFrame, manifest_path: str) -> pd.Data
     
     logger.info(f"Match radius: {MAX_MATCH_RADIUS_ARCSEC}\" = {radius_chord:.6f} chord distance")
     
-    s3 = boto3.client("s3", region_name="us-east-2")
+    s3 = boto3.client("s3", region_name=AWS_REGION)
     
     if manifest_path.startswith("s3://"):
         bucket = manifest_path.replace("s3://", "").split("/")[0]
@@ -320,7 +324,7 @@ def save_output(df: pd.DataFrame, path: str) -> None:
     df["match_radius_arcsec"] = MAX_MATCH_RADIUS_ARCSEC
     
     if path.startswith("s3://"):
-        s3 = boto3.client("s3", region_name="us-east-2")
+        s3 = boto3.client("s3", region_name=AWS_REGION)
         bucket = path.replace("s3://", "").split("/")[0]
         key = "/".join(path.replace("s3://", "").split("/")[1:]).rstrip("/") + "/positives_with_dr10.parquet"
         
@@ -354,7 +358,7 @@ def save_validation(df: pd.DataFrame, positives_count: int, path: str) -> None:
     logger.info(f"Split distribution: {validation['split_distribution']}")
     
     if path.startswith("s3://"):
-        s3 = boto3.client("s3", region_name="us-east-2")
+        s3 = boto3.client("s3", region_name=AWS_REGION)
         bucket = path.replace("s3://", "").split("/")[0]
         key = "/".join(path.replace("s3://", "").split("/")[1:]).rstrip("/") + "/validation.json"
         s3.put_object(Bucket=bucket, Key=key, Body=json.dumps(validation, indent=2))

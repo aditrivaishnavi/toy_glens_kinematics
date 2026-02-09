@@ -43,6 +43,10 @@ import numpy as np
 # =============================================================================
 
 PIPELINE_VERSION = "2.0.0"
+
+# AWS Configuration (environment override supported)
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-2")
+
 MAX_MATCH_RADIUS_ARCSEC = 5.0
 
 TIER_WEIGHTS = {
@@ -135,7 +139,7 @@ def process_sweep_file(
     from astropy.io import fits
     
     filename = sweep_path.split("/")[-1]
-    s3 = boto3.client("s3", region_name="us-east-2")
+    s3 = boto3.client("s3", region_name=AWS_REGION)
     
     # Check if already processed (resume support)
     if check_already_processed(s3, s3_bucket, checkpoint_prefix, filename):
@@ -305,7 +309,7 @@ def main():
         
         # Load positives
         logger.info("Loading positives...")
-        s3 = boto3.client("s3", region_name="us-east-2")
+        s3 = boto3.client("s3", region_name=AWS_REGION)
         pos_bucket = args.positives.replace("s3://", "").split("/")[0]
         pos_key = "/".join(args.positives.replace("s3://", "").split("/")[1:])
         

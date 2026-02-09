@@ -168,7 +168,7 @@ def launch_emr_cluster(preset: str, uploads: Dict[str, str]) -> str:
                     "InstanceCount": config["worker_count"],
                 },
             ],
-            "KeepJobFlowAliveWhenNoSteps": True,
+            "KeepJobFlowAliveWhenNoSteps": False,  # Auto-terminate when step completes
             "TerminationProtected": False,
         },
         "JobFlowRole": "EMR_EC2_DefaultRole",

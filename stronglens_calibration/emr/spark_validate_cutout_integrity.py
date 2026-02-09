@@ -35,6 +35,9 @@ import numpy as np
 
 PIPELINE_VERSION = "1.0.0"
 
+# AWS Configuration (environment override supported)
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-2")
+
 # Cutout parameters (must match generation job)
 CUTOUT_SIZE = 101  # pixels
 PIXEL_SCALE = 0.262  # arcsec/pixel
@@ -342,7 +345,7 @@ def process_partition(
     """Process a partition of S3 keys."""
     import boto3
     
-    s3 = boto3.client("s3", region_name="us-east-2")
+    s3 = boto3.client("s3", region_name=AWS_REGION)
     
     for key in keys:
         result = validate_cutout(s3, bucket, key)
@@ -397,7 +400,7 @@ def main():
         # List all cutout files
         logger.info("Listing cutout files...")
         import boto3
-        s3 = boto3.client("s3", region_name="us-east-2")
+        s3 = boto3.client("s3", region_name=AWS_REGION)
         
         cutout_keys = []
         paginator = s3.get_paginator("list_objects_v2")

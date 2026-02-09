@@ -35,6 +35,10 @@ from astropy.io import fits
 # =============================================================================
 
 PIPELINE_VERSION = "1.1.0"
+
+# AWS Configuration (environment override supported)
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-2")
+
 MAX_MATCH_RADIUS_ARCSEC = 5.0
 HEALPIX_NSIDE = 128
 
@@ -337,7 +341,7 @@ def main():
     start_time = time.time()
     
     try:
-        s3 = boto3.client("s3", region_name="us-east-2")
+        s3 = boto3.client("s3", region_name=AWS_REGION)
         
         # Load positives
         positives = load_positives(s3, args.positives)

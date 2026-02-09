@@ -34,6 +34,7 @@ from constants import (
     EMR_RELEASE,
     EMR_PRESETS,
     s3_uri,
+    get_emr_console_url,
 )
 
 EMR_DIR = Path(__file__).parent.resolve()
@@ -410,7 +411,7 @@ def main():
     print(f"\n" + "=" * 60)
     print(f"Cluster ID: {cluster_id}")
     print(f"Output:     {output_path}")
-    print(f"Console:    https://us-east-2.console.aws.amazon.com/emr/home?region=us-east-2#/clusterDetails/{cluster_id}")
+    print(f"Console:    {get_emr_console_url(cluster_id)}")
     print("=" * 60)
     
     if not args.no_monitor:

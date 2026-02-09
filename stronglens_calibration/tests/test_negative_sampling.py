@@ -66,10 +66,12 @@ class TestTypeBinning:
     """Tests for galaxy type bin assignment."""
     
     def test_valid_types(self):
+        # Only N1 pool types return themselves
         assert get_type_bin("SER") == "SER"
         assert get_type_bin("DEV") == "DEV"
         assert get_type_bin("REX") == "REX"
-        assert get_type_bin("EXP") == "EXP"
+        # EXP is excluded from N1 pool per Paper IV, returns OTHER
+        assert get_type_bin("EXP") == "OTHER"
     
     def test_case_insensitive(self):
         assert get_type_bin("ser") == "SER"
@@ -273,11 +275,13 @@ class TestValidTypesAndBins:
     """Tests for constants."""
     
     def test_valid_types_set(self):
+        # Paper IV parity: SER, DEV, REX only (EXP excluded)
         assert "SER" in VALID_TYPES_N1
         assert "DEV" in VALID_TYPES_N1
         assert "REX" in VALID_TYPES_N1
-        assert "EXP" in VALID_TYPES_N1
-        assert len(VALID_TYPES_N1) == 4
+        # EXP is intentionally excluded per Paper IV methodology
+        assert "EXP" not in VALID_TYPES_N1
+        assert len(VALID_TYPES_N1) == 3
     
     def test_nobs_bins_coverage(self):
         # Bins should cover 1-999

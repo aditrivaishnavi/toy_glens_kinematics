@@ -104,10 +104,16 @@ S3_CHECKPOINT_PREFIX = f"{S3_BASE_PREFIX}/checkpoints"
 # CUTOUT PARAMETERS
 # =============================================================================
 
+# Downloaded cutout size (101x101 = ~26.5 arcsec at 0.262"/pixel)
+# Larger cutouts capture more context and are center-cropped to TRAIN_SIZE during training
 CUTOUT_SIZE = 101  # pixels
 PIXEL_SCALE = 0.262  # arcsec/pixel
 CUTOUT_ARCSEC = CUTOUT_SIZE * PIXEL_SCALE  # ~26.5 arcsec
 CUTOUT_BANDS = "grz"
+
+# Training image size (center-cropped from CUTOUT_SIZE during preprocessing)
+# 64x64 = ~16.8 arcsec, focused on the lens system core
+TRAIN_SIZE = 64
 
 # Legacy Survey cutout service
 CUTOUT_URL_TEMPLATE = (
@@ -161,6 +167,20 @@ EMR_PRESETS = {
         "executor_memory": "8g",
         "description": "Medium with 10 workers",
     },
+    "medium-large": {
+        "master_type": "m5.xlarge",
+        "worker_type": "m5.2xlarge",
+        "worker_count": 20,
+        "executor_memory": "8g",
+        "description": "Medium-large with 20 workers (160 vCPUs)",
+    },
+    "large-xlarge": {
+        "master_type": "m5.xlarge",
+        "worker_type": "m5.xlarge",
+        "worker_count": 30,
+        "executor_memory": "4g",
+        "description": "30x m5.xlarge workers (120 vCPUs)",
+    },
     "large": {
         "master_type": "m5.xlarge",
         "worker_type": "m5.2xlarge",
@@ -202,3 +222,13 @@ def get_cutout_url(ra: float, dec: float, size: int = CUTOUT_SIZE) -> str:
         pixscale=PIXEL_SCALE,
         bands=CUTOUT_BANDS,
     )
+
+
+def get_emr_console_url(cluster_id: str) -> str:
+    """Build AWS EMR console URL for a cluster."""
+    return f"https://{AWS_REGION}.console.aws.amazon.com/emr/home?region={AWS_REGION}#/clusterDetails/{cluster_id}"
+
+
+def get_emr_terminate_cmd(cluster_id: str) -> str:
+    """Build AWS CLI command to terminate an EMR cluster."""
+    return f"aws emr terminate-clusters --cluster-ids {cluster_id} --region {AWS_REGION}"

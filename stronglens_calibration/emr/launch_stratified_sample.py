@@ -30,6 +30,8 @@ from constants import (
     S3_SAMPLED_NEGATIVES_PREFIX,
     EMR_RELEASE,
     EMR_PRESETS,
+    get_emr_console_url,
+    get_emr_terminate_cmd,
 )
 
 # =============================================================================
@@ -121,7 +123,7 @@ def launch_emr_cluster(preset: str, uploads):
                     "InstanceCount": config["worker_count"],
                 },
             ],
-            "KeepJobFlowAliveWhenNoSteps": True,
+            "KeepJobFlowAliveWhenNoSteps": False,  # Auto-terminate when step completes
             "TerminationProtected": False,
         },
         "VisibleToAllUsers": True,
@@ -244,7 +246,7 @@ def submit_spark_step(cluster_id: str, uploads, negatives_path: str, positives_p
 def monitor_step(cluster_id: str, step_id: str, timeout_minutes: int = 60):
     """Monitor step until completion."""
     print("\nMonitoring step progress...")
-    print(f"EMR Console: https://us-east-2.console.aws.amazon.com/emr/home?region=us-east-2#/clusterDetails/{cluster_id}")
+    print(f"EMR Console: {get_emr_console_url(cluster_id)}")
     
     emr = boto3.client("emr", region_name=AWS_REGION)
     start_time = time.time()
@@ -328,7 +330,7 @@ def main():
         sys.exit(0 if success else 1)
     else:
         print("\nNot monitoring.")
-        print(f"To terminate: aws emr terminate-clusters --cluster-ids {cluster_id} --region us-east-2")
+        print(f"To terminate: {get_emr_terminate_cmd(cluster_id)}")
 
 
 if __name__ == "__main__":
