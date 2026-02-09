@@ -492,6 +492,16 @@ def main():
         total_count = input_df.count()
         logger.info(f"Total inputs: {total_count}")
         
+        # Repartition for better parallelism
+        # Target: ~2500 rows per partition for optimal HTTP request parallelism
+        # With 30 workers x 2 cores = 60 executors, use 180-240 partitions
+        num_partitions = max(180, min(total_count // 2500, 300))
+        current_partitions = input_df.rdd.getNumPartitions()
+        logger.info(f"Current partitions: {current_partitions}, repartitioning to: {num_partitions}")
+        
+        if current_partitions < num_partitions:
+            input_df = input_df.repartition(num_partitions)
+        
         # Convert to RDD of dictionaries
         rows_rdd = input_df.rdd.map(lambda row: row.asDict())
         
