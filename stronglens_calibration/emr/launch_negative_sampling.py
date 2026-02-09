@@ -203,25 +203,60 @@ def prepare_and_upload_code() -> Dict[str, str]:
     return uploads
 
 
-def launch_emr_cluster(preset: str, uploads: Dict[str, str]) -> str:
+def launch_emr_cluster_with_step(
+    preset: str,
+    uploads: Dict[str, str],
+    sweep_input: str,
+    output_path: str,
+    test_limit: Optional[int] = None,
+) -> str:
     """
-    Launch EMR cluster with bootstrap action and return cluster ID.
+    Launch EMR cluster with step included - auto-terminates when done.
     
     Args:
         preset: Instance preset name (test, medium, large)
         uploads: Dict of S3 URIs including bootstrap script
+        sweep_input: S3 path to sweep files
+        output_path: S3 path for output
+        test_limit: Optional limit for test runs
+    
+    Returns:
+        Cluster ID
     """
     import boto3
     
     config = INSTANCE_PRESETS[preset]
-    print(f"\n[2/4] Launching EMR cluster (preset: {preset})...")
+    print(f"\n[1/2] Launching EMR cluster with step (preset: {preset})...")
     print(f"  Master:  1x {config['master_type']}")
     print(f"  Workers: {config['worker_count']}x {config['worker_type']}")
     print(f"  Bootstrap: {uploads.get('bootstrap', 'NOT PROVIDED')}")
+    print(f"  Output: {output_path}")
     
     emr = boto3.client("emr", region_name=AWS_REGION)
     
-    # Build cluster configuration
+    # Build Spark step arguments
+    py_files = [uploads["utils"]]
+    if "sweep_utils" in uploads:
+        py_files.append(uploads["sweep_utils"])
+    py_files_str = ",".join(py_files)
+    
+    step_args = [
+        "spark-submit",
+        "--deploy-mode", "cluster",
+        "--py-files", py_files_str,
+        uploads["script"],
+        "--config", uploads["config"],
+        "--sweep-input", sweep_input,
+        "--output", output_path,
+    ]
+    
+    if uploads.get("positives"):
+        step_args.extend(["--positive-catalog", uploads["positives"]])
+    
+    if test_limit:
+        step_args.extend(["--test-limit", str(test_limit)])
+    
+    # Build cluster configuration with step included
     cluster_config = {
         "Name": f"stronglens-negative-sampling-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}",
         "ReleaseLabel": EMR_RELEASE_LABEL,
@@ -250,6 +285,16 @@ def launch_emr_cluster(preset: str, uploads: Dict[str, str]) -> str:
             "KeepJobFlowAliveWhenNoSteps": False,  # Auto-terminate when step completes
             "TerminationProtected": False,
         },
+        "Steps": [
+            {
+                "Name": "NegativeSampling",
+                "ActionOnFailure": "TERMINATE_CLUSTER",
+                "HadoopJarStep": {
+                    "Jar": "command-runner.jar",
+                    "Args": step_args,
+                },
+            },
+        ],
         "VisibleToAllUsers": True,
         "JobFlowRole": "EMR_EC2_DefaultRole",
         "ServiceRole": "EMR_DefaultRole",
@@ -301,6 +346,8 @@ def launch_emr_cluster(preset: str, uploads: Dict[str, str]) -> str:
     cluster_id = response["JobFlowId"]
     
     print(f"  Cluster ID: {cluster_id}")
+    print(f"  Step will run automatically when cluster is ready")
+    print(f"  Cluster will auto-terminate when step completes")
     
     return cluster_id
 
@@ -500,49 +547,37 @@ def main():
     # Upload code
     uploads = prepare_and_upload_code()
     
-    # Launch or use existing cluster
-    if args.cluster_id:
-        cluster_id = args.cluster_id
-        print(f"Using existing cluster: {cluster_id}")
-    else:
-        preset = "test" if args.test else args.preset
-        cluster_id = launch_emr_cluster(preset, uploads)
-        
-        if not wait_for_cluster(cluster_id):
-            print("ERROR: Cluster failed to start")
-            sys.exit(1)
-    
-    # Submit step
+    # Prepare output path
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     output_path = f"s3://{S3_BUCKET}/{S3_MANIFESTS_PREFIX}/{timestamp}/"
-    
     test_limit = 2 if args.test else None
+    preset = "test" if args.test else args.preset
     
-    step_id = submit_spark_step(
-        cluster_id=cluster_id,
+    # Launch cluster with step included (auto-terminates when done)
+    cluster_id = launch_emr_cluster_with_step(
+        preset=preset,
         uploads=uploads,
         sweep_input=args.sweep_input,
         output_path=output_path,
         test_limit=test_limit,
     )
     
-    # Monitor
-    config = INSTANCE_PRESETS[args.preset if not args.test else "test"]
-    success = monitor_step(cluster_id, step_id, config["timeout_hours"])
+    # Print monitoring info and exit
+    print(f"\n[2/2] Cluster launched successfully!")
+    print(f"  Cluster ID: {cluster_id}")
+    print(f"  Output path: {output_path}")
+    print(f"\nThe cluster will:")
+    print(f"  1. Provision EC2 instances (~5-10 min)")
+    print(f"  2. Run bootstrap to install dependencies")
+    print(f"  3. Execute the Spark job")
+    print(f"  4. Auto-terminate when complete")
+    print(f"\nMonitor with:")
+    print(f"  aws emr describe-cluster --cluster-id {cluster_id} --query 'Cluster.Status'")
+    print(f"  aws emr list-steps --cluster-id {cluster_id}")
+    print(f"\nCheck output when done:")
+    print(f"  aws s3 ls {output_path}")
     
-    if success:
-        print(f"\nOutput: {output_path}")
-        print("\nTo verify output:")
-        print(f"  aws s3 ls {output_path}")
-    
-    # Auto-terminate cluster after step completion
-    print(f"\nTerminating cluster: {cluster_id}")
-    import boto3
-    emr = boto3.client("emr", region_name=AWS_REGION)
-    emr.terminate_job_flows(JobFlowIds=[cluster_id])
-    print("Cluster termination initiated.")
-    
-    sys.exit(0 if success else 1)
+    sys.exit(0)
 
 
 if __name__ == "__main__":
