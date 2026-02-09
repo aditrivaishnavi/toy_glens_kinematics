@@ -52,22 +52,38 @@ negative_pools:
     nobs_z_bins: [[1, 2], [3, 5], [6, 10], [11, 999]]
   
   # Pool N2: Hard confuser sampling
+  # Target: 10-20% of negatives should be N2 (hard confusers)
+  # Thresholds calibrated against actual DR10 distributions (2026-02-09)
+  # Initial thresholds gave 37.8%, tightened to hit ~15% target
   pool_n2:
-    description: "Hard confuser negatives (rings, spirals, mergers)"
+    description: "Hard confuser negatives (rings, edge-on disks, blue clumpy, large galaxies)"
     # Step 1: Tractor-based mining (initial candidates)
     tractor_criteria:
-      # DEV with high n_sersic proxy (ring/elliptical candidates)
+      # Ring proxy: Ellipticals that might have ring features
       ring_proxy: 
-        type: "DEV"
-        flux_r_min: 10  # nMgy (visible)
-      # EXP with high b/a ratio (edge-on disk candidates)
+        types: ["DEV", "SER"]       # DEV always qualifies, SER needs high sersic
+        flux_r_min: 5.0             # nMgy (~mag 20.8) - tightened from 3.0
+        sersic_min: 4.0             # Very high concentration (SER only)
+      
+      # Edge-on proxy: Elongated galaxies that could look like arcs
       edge_on_proxy:
-        type: "EXP"
-        shape_r_min: 2.0  # arcsec
-      # Blue clumpy star-formers
+        types: ["EXP", "SER", "DEV"]
+        ellipticity_min: 0.50       # sqrt(e1^2 + e2^2) >= 0.50 (LLM: loosened for 2-4% target)
+        shape_r_min: 0.6            # At least moderately resolved
+        shape_r_min_legacy: 1.8     # Fallback if ellipticity unavailable (loosened)
+      
+      # Blue clumpy star-formers with knots that could look like lensed sources
       blue_clumpy_proxy:
-        g_minus_r_max: 0.4
-        r_mag_max: 19.0
+        g_minus_r_max: 0.4          # Very blue (tightened from 0.5)
+        r_mag_max: 20.5             # Reasonably bright (tightened from 21.0)
+      
+      # Large extended galaxies with visible structure (spiral arms, etc.)
+      large_galaxy_proxy:
+        shape_r_min: 2.0            # arcsec - extended (tightened from 1.5)
+        flux_r_min: 3.0             # nMgy - visible (tightened from 2.0)
+      
+      # bright_core_proxy removed - redundant with ring_proxy
+    
     # Step 2: Will be filtered via image scoring later (after baseline model)
 
 # =============================================================================

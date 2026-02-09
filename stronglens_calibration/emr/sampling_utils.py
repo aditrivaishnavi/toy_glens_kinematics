@@ -91,18 +91,26 @@ def assign_split(healpix_idx: int, allocations: Dict[str, float], seed: int = 42
     Assign train/val/test split based on HEALPix index.
     
     Uses deterministic hash to ensure reproducibility.
+    
+    IMPORTANT: Allocation order is explicitly defined as [train, val, test]
+    to avoid bugs from lexicographic sorting (test < train < val alphabetically).
     """
     # Create deterministic hash
     hash_input = f"{healpix_idx}_{seed}"
     hash_bytes = hashlib.sha256(hash_input.encode()).digest()
     hash_value = int.from_bytes(hash_bytes[:4], "big") / (2**32)
     
-    # Assign based on cumulative thresholds
+    # FIXED: Use explicit ordering instead of sorted() which sorts alphabetically
+    # This ensures train comes before val comes before test
+    SPLIT_ORDER = ["train", "val", "test"]
+    
+    # Assign based on cumulative thresholds in explicit order
     cumulative = 0.0
-    for split, proportion in sorted(allocations.items()):
-        cumulative += proportion
-        if hash_value < cumulative:
-            return split
+    for split in SPLIT_ORDER:
+        if split in allocations:
+            cumulative += allocations[split]
+            if hash_value < cumulative:
+                return split
     
     return "train"  # Default fallback
 
@@ -174,7 +182,119 @@ def is_near_known_lens(
 # POOL CLASSIFICATION
 # =============================================================================
 
+# Default N2 thresholds calibrated for ~15% N2 rate in DR10
+# Based on actual DR10 Tractor catalog distributions:
+#   - flux_r: log-normal, median ~3-5 nMgy (mag ~20-21)
+#   - shape_r: log-normal, median ~0.5-1.0 arcsec
+#   - g-r: Gaussian, median ~0.65, std ~0.25
+#   - ellipticity: sqrt(e1^2 + e2^2), range 0-0.7
+#
+# Calibration notes (2026-02-09):
+#   - Initial thresholds gave 37.8% N2, too high
+#   - Tightened to target 10-20% range
+#   - Removed bright_core (redundant with ring_proxy)
+DEFAULT_N2_THRESHOLDS = {
+    "ring_proxy": {
+        "types": ["DEV", "SER"],  # DEV always qualifies, SER needs high sersic
+        "flux_r_min": 5.0,        # ~mag 20.8 (tightened from 3.0)
+        "sersic_min": 4.0,        # Very high concentration (for SER only)
+    },
+    "edge_on_proxy": {
+        "types": ["EXP", "SER", "DEV"],  # Any extended galaxy
+        "ellipticity_min": 0.50,  # High ellipticity (LLM: loosened from 0.55 to get 2-4% edge-on)
+        "shape_r_min": 0.6,       # At least moderately resolved
+        "shape_r_min_legacy": 1.8,  # Fallback if no ellipticity (loosened from 2.0)
+    },
+    "blue_clumpy_proxy": {
+        "g_minus_r_max": 0.4,     # Very blue (tightened from 0.5)
+        "r_mag_max": 20.5,        # Reasonably bright (tightened from 21.0)
+    },
+    "large_galaxy_proxy": {
+        "shape_r_min": 2.0,       # Large half-light radius (tightened from 1.5)
+        "flux_r_min": 3.0,        # Visible (tightened from 2.0)
+    },
+    # bright_core_proxy removed - redundant with ring_proxy
+}
+
+
 def classify_pool_n2(
+    galaxy_type: str,
+    flux_r: Optional[float],
+    shape_r: Optional[float],
+    g_minus_r: Optional[float],
+    mag_r: Optional[float],
+    config: Dict[str, Any],
+    ellipticity: Optional[float] = None,
+    sersic: Optional[float] = None,
+) -> Optional[str]:
+    """
+    Classify galaxy into N2 confuser categories based on Tractor properties.
+    
+    N2 "hard confusers" are galaxies that might look like lenses:
+    - ring_proxy: Ellipticals with ring-like features
+    - edge_on_proxy: Edge-on disks (elongated, could look like arcs)
+    - blue_clumpy_proxy: Blue star-forming with clumps
+    - large_galaxy_proxy: Extended galaxies with structure
+    - bright_core_proxy: Bright concentrated cores
+    
+    Target: ~15% of galaxies should be classified as N2.
+    
+    Returns confuser category or None if not a confuser.
+    """
+    # Get config thresholds, falling back to calibrated defaults
+    n2_config = config.get("negative_pools", {}).get("pool_n2", {}).get("tractor_criteria", {})
+    
+    # Normalize type
+    galaxy_type = galaxy_type.strip().upper() if galaxy_type else ""
+    
+    # --- Category 1: Ring proxy ---
+    # DEV galaxies (de Vaucouleurs, n=4) - ellipticals that might have ring features
+    ring_cfg = {**DEFAULT_N2_THRESHOLDS["ring_proxy"], **n2_config.get("ring_proxy", {})}
+    ring_types = ring_cfg.get("types", ["DEV"])
+    if galaxy_type in ring_types:
+        if flux_r is not None and flux_r >= ring_cfg.get("flux_r_min", 5.0):
+            # DEV is always n=4, so it qualifies if bright enough
+            if galaxy_type == "DEV":
+                return "ring_proxy"
+            # For SER, require very high Sersic index
+            elif galaxy_type == "SER" and sersic is not None:
+                if sersic >= ring_cfg.get("sersic_min", 4.0):
+                    return "ring_proxy"
+    
+    # --- Category 2: Edge-on proxy ---
+    # Elongated galaxies that could look like arcs
+    edge_cfg = {**DEFAULT_N2_THRESHOLDS["edge_on_proxy"], **n2_config.get("edge_on_proxy", {})}
+    edge_types = edge_cfg.get("types", ["EXP", "SER", "DEV"])
+    if galaxy_type in edge_types:
+        # Check ellipticity if available
+        if ellipticity is not None and ellipticity >= edge_cfg.get("ellipticity_min", 0.50):
+            if shape_r is not None and shape_r >= edge_cfg.get("shape_r_min", 0.6):
+                return "edge_on_proxy"
+        # Fallback to shape_r for extended galaxies (legacy behavior)
+        elif ellipticity is None and shape_r is not None:
+            if shape_r >= edge_cfg.get("shape_r_min_legacy", 1.8):
+                return "edge_on_proxy"
+    
+    # --- Category 3: Blue clumpy proxy ---
+    # Blue star-forming galaxies with clumpy structure
+    blue_cfg = {**DEFAULT_N2_THRESHOLDS["blue_clumpy_proxy"], **n2_config.get("blue_clumpy_proxy", {})}
+    if g_minus_r is not None and g_minus_r <= blue_cfg.get("g_minus_r_max", 0.4):
+        if mag_r is not None and mag_r <= blue_cfg.get("r_mag_max", 20.5):
+            return "blue_clumpy"
+    
+    # --- Category 4: Large galaxy proxy ---
+    # Extended galaxies with visible structure (spiral arms, etc.)
+    large_cfg = {**DEFAULT_N2_THRESHOLDS["large_galaxy_proxy"], **n2_config.get("large_galaxy_proxy", {})}
+    if shape_r is not None and shape_r >= large_cfg.get("shape_r_min", 2.0):
+        if flux_r is not None and flux_r >= large_cfg.get("flux_r_min", 3.0):
+            return "large_galaxy"
+    
+    # bright_core category removed - redundant with ring_proxy
+    
+    return None
+
+
+def classify_pool_n2_simple(
     galaxy_type: str,
     flux_r: Optional[float],
     shape_r: Optional[float],
@@ -183,31 +303,21 @@ def classify_pool_n2(
     config: Dict[str, Any]
 ) -> Optional[str]:
     """
-    Classify galaxy into N2 confuser categories based on Tractor properties.
+    Simplified N2 classification without ellipticity/sersic.
     
-    Returns confuser category or None if not a confuser.
+    For backward compatibility with existing Spark jobs that don't 
+    extract ellipticity and sersic columns.
     """
-    n2_config = config.get("negative_pools", {}).get("pool_n2", {}).get("tractor_criteria", {})
-    
-    # Ring proxy: DEV with bright flux
-    ring_cfg = n2_config.get("ring_proxy", {})
-    if galaxy_type == "DEV":
-        if flux_r is not None and flux_r >= ring_cfg.get("flux_r_min", 10):
-            return "ring_proxy"
-    
-    # Edge-on proxy: EXP with large half-light radius
-    edge_on_cfg = n2_config.get("edge_on_proxy", {})
-    if galaxy_type == "EXP":
-        if shape_r is not None and shape_r >= edge_on_cfg.get("shape_r_min", 2.0):
-            return "edge_on_proxy"
-    
-    # Blue clumpy proxy: blue color
-    blue_cfg = n2_config.get("blue_clumpy_proxy", {})
-    if g_minus_r is not None and g_minus_r <= blue_cfg.get("g_minus_r_max", 0.4):
-        if mag_r is not None and mag_r <= blue_cfg.get("r_mag_max", 19.0):
-            return "blue_clumpy"
-    
-    return None
+    return classify_pool_n2(
+        galaxy_type=galaxy_type,
+        flux_r=flux_r,
+        shape_r=shape_r,
+        g_minus_r=g_minus_r,
+        mag_r=mag_r,
+        config=config,
+        ellipticity=None,
+        sersic=None,
+    )
 
 
 # =============================================================================
