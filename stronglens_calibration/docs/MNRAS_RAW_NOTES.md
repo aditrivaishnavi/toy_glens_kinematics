@@ -1,8 +1,8 @@
 # MNRAS Paper Raw Notes: Selection Functions and Failure Modes of CNN-Based Strong Lens Finders in DESI DR10
 
 **Status**: Draft raw notes for paper preparation  
-**Last updated**: 2026-02-11 (manifest rebuild after batch 2 cutout sync)  
-**Training status**: Restarting (manifest corrected with batch 2 cutouts; ratio 93.3:1)
+**Last updated**: 2026-02-11 (evaluation pipeline, meta-learner, negative cleaning, selection function code ready)  
+**Training status**: In progress on two parallel GPUs (lambda1: EfficientNetV2-S, lambda2: ResNet-18)
 
 ---
 
@@ -460,26 +460,41 @@ stronglens_calibration/
 │   ├── train.py                # Training loop with gradient accumulation
 │   ├── data.py                 # Dataset loading (file_manifest mode)
 │   ├── preprocess.py           # Image preprocessing (raw_robust normalization)
+│   ├── calibration.py          # ECE, MCE, reliability curves
 │   ├── transforms.py           # Data augmentation
 │   ├── constants.py            # Global constants
 │   ├── utils.py                # Utility functions
 │   └── scripts/
 │       ├── run_experiment.py   # Main training entry point
 │       └── run_evaluation.py   # Evaluation script
+├── scripts/                    # Analysis and pipeline scripts
+│   ├── evaluate_parity.py      # ** Paper IV parity evaluation (AUC, ECE, MCE, FPR, bootstrap CIs)
+│   ├── meta_learner.py         # ** 1-layer NN meta-learner (Coscrato et al. 2020, 300 hidden)
+│   ├── negative_cleaning_scorer.py  # ** Score negatives, flag p>0.4 for cleaning
+│   ├── selection_function_grid.py   # ** Injection-recovery completeness C(θ_E, PSF, depth)
+│   ├── make_parity_manifest.py      # Generate 70/30 and 70/15/15 manifests
+│   ├── validate_stratified_output.py
+│   ├── verify_splits.py
+│   ├── bootstrap_eval.py
+│   └── ...
+├── common/                     # Shared utilities
+│   ├── manifest_utils.py       # Manifest column constants, load/save
+│   └── ...
+├── tests/                      # Test suite
+│   ├── test_preprocess_regression.py  # ** Preprocessing checksum lock (21 tests)
+│   └── ...
 ├── emr/                        # AWS EMR Spark jobs
 │   ├── spark_stratified_sample.py
 │   ├── launch_stratified_sample.py
 │   ├── launch_cutout_generation.py
 │   └── ...
-├── scripts/                    # Utility scripts
-│   ├── make_parity_manifest.py
-│   ├── validate_stratified_output.py
-│   ├── verify_splits.py
-│   ├── bootstrap_eval.py
-│   └── ...
 ├── docs/                       # Documentation
-└── requirements.txt            # Pinned dependencies
+│   ├── MNRAS_RAW_NOTES.md      # This file (current ground truth)
+│   └── ...
+└── requirements.txt            # Pinned dependencies for reproducibility
 ```
+
+** = newly added scripts (2026-02-11), ready for use when training completes
 
 ### 10.2 Key Dependencies
 
@@ -529,15 +544,19 @@ Each training run produces `run_info.json` containing:
 - **Status**: Starting
 - **Config**: `configs/paperIV_efficientnet_v2_s.yaml`
 
-### 11.2 ResNet-18
+### 11.2 ResNet-18 (Run 2, Current — lambda2)
 
-Queued. Will start automatically after EfficientNetV2-S completes.
+- **Manifest**: `training_parity_70_30_v1.parquet` (batch 1 + batch 2, 451,681 rows, 93.3:1 ratio)
+- **Status**: Training in parallel on separate GPU instance (lambda2)
+- **Config**: `configs/paperIV_resnet18.yaml`
+- **Hardware**: NVIDIA GH200, Lambda Cloud (lambda2)
 
 ### 11.3 Estimated Timeline
 
-- EfficientNetV2-S: ~400s/epoch × 160 epochs ≈ 17.8 hours
-- ResNet-18: ~250s/epoch × 160 epochs ≈ 11.1 hours (estimated, smaller model)
-- Total: ~29 hours from restart
+- EfficientNetV2-S (lambda1): ~495s/epoch × 160 epochs ≈ 22 hours
+- ResNet-18 (lambda2): ~628s/epoch × 160 epochs ≈ 28 hours
+- Both running in parallel since 2026-02-11
+- **All evaluation code is ready** (`scripts/evaluate_parity.py`, `scripts/meta_learner.py`, etc.)
 
 ---
 
@@ -574,12 +593,18 @@ Queued. Will start automatically after EfficientNetV2-S completes.
 | Data pipeline (EMR) | COMPLETE | — |
 | Batch 2 cutout sync | COMPLETE | 2026-02-11 |
 | Manifest rebuild (93.3:1 ratio) | COMPLETE | 2026-02-11 |
-| EfficientNetV2-S training (160 ep) | RESTARTING | ~Feb 12, 16:00 UTC |
-| ResNet-18 training (160 ep) | QUEUED | ~Feb 13, 03:00 UTC |
-| Evaluation + metrics | NOT STARTED | After training |
-| Meta-learner | NOT STARTED | After both models |
-| Negative cleaning (optional 2nd pass) | NOT STARTED | After first-pass models |
-| Selection function | NOT STARTED | After evaluation |
+| EfficientNetV2-S training (160 ep) | IN PROGRESS (lambda1) | ~Feb 12 |
+| ResNet-18 training (160 ep) | IN PROGRESS (lambda2) | ~Feb 12 |
+| Evaluation pipeline code | COMPLETE | `scripts/evaluate_parity.py` ready |
+| Meta-learner code | COMPLETE | `scripts/meta_learner.py` ready |
+| Negative cleaning scorer | COMPLETE | `scripts/negative_cleaning_scorer.py` ready |
+| Selection function scaffolding | COMPLETE | `scripts/selection_function_grid.py` ready |
+| Preprocessing regression tests | COMPLETE | `tests/test_preprocess_regression.py` (21 tests, all pass) |
+| Requirements pinning | COMPLETE | `requirements.txt` with versions |
+| Run evaluation (both models) | BLOCKED | Waiting for training to finish |
+| Train meta-learner | BLOCKED | Needs both models' predictions |
+| Negative cleaning (optional 2nd pass) | BLOCKED | After first-pass models |
+| Run selection function grid | BLOCKED | After evaluation |
 | Paper draft | NOT STARTED | After all results |
 
 ---
