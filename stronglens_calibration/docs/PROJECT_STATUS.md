@@ -1,7 +1,7 @@
 # Plan C: Complete Project Status
 
-**Last Updated:** 2026-02-11 02:00 UTC  
-**Status:** Week 3 - Training complete, evaluation verified, selection function (initial run) complete. Paper readiness items addressed.
+**Last Updated:** 2026-02-11 06:00 UTC  
+**Status:** Week 3 - Training complete, evaluation verified, selection function (initial run) complete. Paper IV parity course correction plan created. LLM code pack audited (13 issues found, 3 critical). Integration phase next.
 
 ---
 
@@ -663,6 +663,31 @@ Key methodological anchors we copy:
 3. 100:1 nonlens:lens ratio per bin
 4. 101×101 pixel cutouts
 5. High threshold (top 0.01%) for discovery
+
+### 10.5 Paper IV Parity Course Correction
+
+**File:** `docs/PAPER_IV_FULL_PARITY_COURSE_CORRECTION.md`
+
+Complete plan for achieving Level 2 comparability with Paper IV. Key changes:
+- Train on 101×101 (no crop to 64×64)
+- 160 epochs with no early stopping
+- StepLR (halve at epoch 80 for ResNet, 130 for EfficientNet)
+- Gradient accumulation for effective batch 2048/512
+- Unweighted loss baseline
+- Bottlenecked ResNet (~0.2-1M params) + EfficientNetV2-S (~21.5M params)
+- Meta-learner: 1-layer NN with 300 nodes
+- Two-manifest strategy (70/30 for parity, 70/15/15 for audit)
+
+### 10.6 LLM Code Pack Audit
+
+**File:** `docs/LLM_CODE_PACK_AUDIT.md`
+
+13 issues found in the LLM-provided parity code pack:
+- 3 CRITICAL: Wrong EfficientNet (V1 not V2), weighted loss for parity, no 70/30 manifest
+- 6 IMPORTANT: MAD scaling mismatch, no AMP, wrong meta-learner, data leakage, Adam not AdamW, missing scripts
+- 4 MINOR: StepLR off-by-one, non-reproducible augmentation, no cutout_path in preds, final-epoch preds
+
+All issues to be fixed during integration into stronglens_calibration/dhs/.
 
 ---
 

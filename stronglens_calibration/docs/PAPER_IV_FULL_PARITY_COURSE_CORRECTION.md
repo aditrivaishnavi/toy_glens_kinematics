@@ -82,6 +82,38 @@ Standalone cross-check reference:
 
 ---
 
+## Phase 1.5: LLM Code Pack Review & Integration
+
+The LLM provided a code pack (`paperIV_parity_course_correction/`) with 13 files. A thorough audit identified 13 issues (3 critical, 6 important, 4 minor) that must be fixed before integration into `stronglens_calibration/dhs/`.
+
+### Critical Fixes Required
+
+1. **EfficientNet is V1, not V2**: Code uses `efficientnet_b0` (~5.3M params). Must change to `efficientnet_v2_s` (~21.5M params) to match Paper IV's 20.5M.
+2. **Loss is weighted for parity**: Uses `weighted_bce_loss` with `sample_weight`. Paper IV uses unweighted CE. Need `--unweighted` flag or manifest with all weights=1.0.
+3. **No 70/30 manifest**: Training loads split=="train" (70%) and split=="val" (15%), ignoring test (15%). Need to merge val+test for 70/30 parity.
+
+### Important Fixes Required
+
+4. **Preprocessing MAD factor mismatch**: LLM code scales MAD by 1.4826; our existing code does not. Must remove factor to match existing normalization.
+5. **No AMP/mixed precision**: Need to add `torch.cuda.amp` for practical training speed on single GPU with 101x101.
+6. **Meta-learner architecture wrong**: Code uses LogisticRegression (3 params). Paper IV specifies 1-layer NN with 300 nodes.
+7. **Meta-learner trains+evaluates on same data**: Must train on training predictions, evaluate on validation predictions.
+8. **Adam without weight_decay**: Should use AdamW with weight_decay=1e-4 for regularization.
+9. **Missing scripts**: No negative cleaning, no manifest generation, no bottlenecked ResNet.
+
+### Minor Issues
+
+10. StepLR possible off-by-one (epoch 81 vs 80 for halving)
+11. Non-reproducible augmentation (global np.random state vs seeded RNG)
+12. No cutout_path in prediction outputs (fragile row-order alignment for meta-learner)
+13. Final-epoch predictions saved instead of best-epoch predictions
+
+### Integration Strategy
+
+Fix all issues and merge into `stronglens_calibration/dhs/` -- one unified codebase.
+
+---
+
 ## Phase 2: Code Changes for Parity Training
 
 ### 2a. Resolution support

@@ -1,7 +1,7 @@
 # Implementation Checklist - Strong Lens Calibration
 
 **Created**: 2026-02-05  
-**Last Updated**: 2026-02-07 (migrated to stronglens_calibration/)  
+**Last Updated**: 2026-02-11 (Paper IV parity course correction and LLM code pack audit)  
 **Purpose**: Track every suggestion from the LLM conversation to ensure complete implementation  
 **Status Legend**: ☐ PENDING | ⏳ IN PROGRESS | ✅ DONE | ❌ BLOCKED | ⚠️ NEEDS CLARIFICATION | 📋 DECISION MADE
 
@@ -172,9 +172,9 @@
 
 | ID | Task | Status | File/Location | Notes |
 |----|------|--------|---------------|-------|
-| 4.1 | Choose primary architecture | 📋 DECISION MADE | | **ResNet18 first**; add EfficientNet-B0 only if time allows and shows gain |
-| 4.2 | Define minimum epochs | 📋 DECISION MADE | | **20-40 epochs with cosine schedule**, early stopping on spatial-val set |
-| 4.3 | Define batch size | 📋 DECISION MADE | | **256 for 64×64**, **128-192 for 101×101**, use AMP |
+| 4.1 | Choose primary architecture | 📋 UPDATED | | **Paper IV parity**: bottlenecked ResNet (~0.2-1M params) + EfficientNetV2-S (~21.5M params) + standard ResNet18 for comparison. See PAPER_IV_FULL_PARITY_COURSE_CORRECTION.md |
+| 4.2 | Define minimum epochs | 📋 UPDATED | | **Paper IV parity**: 160 epochs, NO early stopping. StepLR halve@80 (ResNet), @130 (EfficientNet) |
+| 4.3 | Define batch size | 📋 UPDATED | | **Paper IV parity**: effective 2048 (ResNet) / 512 (EfficientNet) via gradient accumulation. Micro-batch 128/64. |
 | 4.4 | Train baseline with clean splits | ✅ DONE | `checkpoints/resnet18_baseline_v1/` (Lambda NFS); see MODELS_PERFORMANCE.md | Trained 2026-02-10; 16 epochs (early stop), best val AUC 0.9592. Manifest: training_v1.parquet. |
 | 4.5 | Implement calibration curves by stratum | ✅ DONE | `dhs/calibration.py`, `dhs/scripts/run_evaluation.py` | Run on Lambda 2026-02-10. Overall ECE 0.0027, MCE 0.0156. Results in `docs/EVALUATION_4.5_4.6_LLM_REVIEW.md`. |
 | 4.6 | Evaluate on independent validation set (spectroscopic) | ✅ DONE | Same script, Tier-A = independent set | Tier-A n=48, recall @ 0.5 = 0.6042. Results in EVALUATION_4.5_4.6_LLM_REVIEW.md; second LLM to review. |
@@ -320,6 +320,7 @@ All major implementation questions have been answered. Remaining work is executi
 
 | 2026-02-07 | **EMR PLAN**: Created `docs/EMR_FULL_RUN_PLAN.md`, `scripts/preflight_check.py`, `scripts/validate_output.py`. Full runbook with dependencies, gates, and rollback. |
 | 2026-02-11 | **LLM REVIEW REMEDIATION**: (1) Split disjointness verified: 0 overlaps across all split pairs (verify_splits.py). (2) Bootstrap CIs computed on full 62,760 test set. (3) SPLIT_ASSIGNMENT.md written. (4) run_info.json created in checkpoint dir. (5) requirements.txt pinned to Lambda versions. (6) Sanitized eval JSON for supplement. (7) FPR by N2 confuser category computed: edge_on dominates. (8) Selection function run: 385 cells, 242 sufficient, correct thetaE/PSF trends. (9) Fixed psfdepth_r to magnitude conversion bug in run_selection_function.py. (10) MODELS_PERFORMANCE.md fully verified. Cross-checks X.1-X.4, X.6, X.8-X.9, X.11-X.12 verified. |
+| 2026-02-11 | **PAPER IV PARITY COURSE CORRECTION**: (1) Full discrepancy audit vs Paper IV (arXiv:2508.20087v1). (2) Created PAPER_IV_FULL_PARITY_COURSE_CORRECTION.md with Level 2 comparability plan. (3) LLM-provided parity code pack audited: 13 issues (3 critical, 6 important, 4 minor). (4) Created LLM_CODE_PACK_AUDIT.md with full findings. (5) Updated plan with integration/fix tasks. Architecture items 4.1-4.3 updated. |
 
 ---
 
