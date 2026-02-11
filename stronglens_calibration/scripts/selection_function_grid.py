@@ -72,7 +72,7 @@ import torch.nn as nn
 from dhs.model import build_model
 from dhs.data import load_cutout_from_file
 from dhs.preprocess import preprocess_stack
-from dhs.constants import CUTOUT_SIZE
+from dhs.constants import CUTOUT_SIZE, STAMP_SIZE
 
 
 # ---------------------------------------------------------------------------
@@ -384,7 +384,7 @@ def run_selection_function(
         host_groups[(float(pb), float(db))] = g[CUTOUT_PATH_COL].to_numpy(object)
 
     # Determine input size from preprocessing config
-    input_size = CUTOUT_SIZE if not crop else 64  # 101 for parity, 64 for legacy
+    input_size = CUTOUT_SIZE if not crop else STAMP_SIZE  # 101 for parity, 64 for legacy
 
     # Run grid
     print(f"\nRunning injection-recovery grid...")

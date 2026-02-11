@@ -57,6 +57,7 @@ import torch.nn as nn
 from dhs.model import build_model
 from dhs.data import load_cutout_from_file
 from dhs.preprocess import preprocess_stack
+from dhs.constants import STAMP_SIZE, CUTOUT_SIZE
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +115,9 @@ def score_negatives(
     scores = np.zeros(n, dtype=np.float64)
     model.eval()
 
+    # Determine expected output spatial size for fallback zeros
+    fallback_size = STAMP_SIZE if crop else CUTOUT_SIZE  # 64 if crop, 101 otherwise
+
     n_errors = 0
     for start in range(0, n, batch_size):
         end = min(start + batch_size, n)
@@ -125,7 +129,7 @@ def score_negatives(
                 img = preprocess_stack(img, mode=preprocessing, crop=crop, clip_range=10.0)
                 imgs.append(img)
             except Exception:
-                imgs.append(np.zeros((3, 101, 101), dtype=np.float32))
+                imgs.append(np.zeros((3, fallback_size, fallback_size), dtype=np.float32))
                 n_errors += 1
 
         batch = np.stack(imgs, axis=0)

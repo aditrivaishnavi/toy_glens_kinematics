@@ -48,21 +48,20 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from sklearn.metrics import roc_auc_score, roc_curve
-from torch.utils.data import DataLoader
+from sklearn.metrics import roc_auc_score
 
 # dhs imports (PYTHONPATH must include repo root)
 from dhs.model import build_model
 from dhs.data import load_cutout_from_file
 from dhs.preprocess import preprocess_stack
 from dhs.calibration import compute_ece, compute_mce, reliability_curve
+from dhs.constants import STAMP_SIZE, CUTOUT_SIZE
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +144,9 @@ def run_inference(
     scores = np.zeros(n, dtype=np.float64)
     model.eval()
 
+    # Determine expected output spatial size for fallback zeros
+    fallback_size = STAMP_SIZE if crop else CUTOUT_SIZE  # 64 if crop, 101 otherwise
+
     for start in range(0, n, batch_size):
         end = min(start + batch_size, n)
         batch_paths = cutout_paths[start:end]
@@ -157,7 +159,7 @@ def run_inference(
             except Exception as e:
                 # On error, use zeros (will produce ~0.5 score)
                 print(f"  WARNING: Failed to load {p}: {e}", file=sys.stderr)
-                imgs.append(np.zeros((3, 101, 101), dtype=np.float32))
+                imgs.append(np.zeros((3, fallback_size, fallback_size), dtype=np.float32))
         batch = np.stack(imgs, axis=0)
         x = torch.from_numpy(batch).float().to(device)
         logits = model(x).squeeze(1).cpu().numpy()
@@ -220,19 +222,22 @@ def compute_fpr_by_confuser(
     """
     results = {}
 
-    # Overall N1 vs N2
-    for pool_val in ["N1", "N2"]:
-        mask = (df[LABEL_COL] == 0) & (df[POOL_COL] == pool_val)
-        if mask.sum() == 0:
-            continue
-        s = scores[mask.values]
-        fp = int((s >= threshold).sum())
-        n = int(mask.sum())
-        results[f"pool_{pool_val}"] = {
-            "fpr": fp / n if n > 0 else float("nan"),
-            "n_false_positive": fp,
-            "n_total": n,
-        }
+    # Overall N1 vs N2 (skip pool-level if column absent)
+    if POOL_COL not in df.columns:
+        print(f"  WARNING: Column '{POOL_COL}' not in manifest; skipping pool-level FPR.", file=sys.stderr)
+    else:
+        for pool_val in ["N1", "N2"]:
+            mask = (df[LABEL_COL] == 0) & (df[POOL_COL] == pool_val)
+            if mask.sum() == 0:
+                continue
+            s = scores[mask.values]
+            fp = int((s >= threshold).sum())
+            n = int(mask.sum())
+            results[f"pool_{pool_val}"] = {
+                "fpr": fp / n if n > 0 else float("nan"),
+                "n_false_positive": fp,
+                "n_total": n,
+            }
 
     # By specific confuser category (N2 subtypes)
     if CONFUSER_COL in df.columns:
@@ -524,9 +529,8 @@ def evaluate(
         print(f"  Paper IV within 95% CI: {comparison['within_bootstrap_ci']}")
 
     # --- Config hash for reproducibility ---
-    ckpt_hash = hashlib.sha256(
-        open(effective_ckpt, "rb").read()[:4096]
-    ).hexdigest()[:16]
+    with open(effective_ckpt, "rb") as f:
+        ckpt_hash = hashlib.sha256(f.read(4096)).hexdigest()[:16]
 
     # --- Assemble results ---
     results = {
@@ -569,10 +573,11 @@ def evaluate(
     # --- Export predictions ---
     if export_predictions:
         print(f"\nExporting predictions to: {export_predictions}")
+        scores_clipped = np.clip(scores, 1e-15, 1.0 - 1e-15)
         pred_df = pd.DataFrame({
             CUTOUT_PATH_COL: df_eval[CUTOUT_PATH_COL].values,
             "score": scores,
-            "logit": np.log(scores / (1.0 - np.clip(scores, 1e-15, 1 - 1e-15))),
+            "logit": np.log(scores_clipped / (1.0 - scores_clipped)),
             LABEL_COL: y_true,
         })
         # Include tier and pool for meta-learner and downstream analysis
