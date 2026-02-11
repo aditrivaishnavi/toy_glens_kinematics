@@ -127,18 +127,18 @@ aws sts get-caller-identity
 # Expected: Account ID, ARN
 
 # 2. Verify S3 access
-aws s3 ls s3://darkhaloscope/ --region us-west-2
+aws s3 ls s3://darkhaloscope/ --region us-east-2
 # Expected: List of prefixes
 
 # 3. Verify EMR permissions
-aws emr list-clusters --region us-west-2 --active
+aws emr list-clusters --region us-east-2 --active
 # Expected: Empty list or existing clusters
 
 # 4. Check EC2 quota
 aws service-quotas get-service-quota \
   --service-code ec2 \
   --quota-code L-1216C47A \
-  --region us-west-2
+  --region us-east-2
 # Expected: Value >= 280
 ```
 
@@ -146,7 +146,7 @@ aws service-quotas get-service-quota \
 
 ```bash
 # 1. Check sweep files exist in S3
-aws s3 ls s3://darkhaloscope/dr10/sweeps/ --region us-west-2 | head -10
+aws s3 ls s3://darkhaloscope/dr10/sweeps/ --region us-east-2 | head -10
 # Expected: List of sweep-*.fits files
 
 # If sweep files not in S3, check alternative sources:
@@ -356,7 +356,7 @@ aws emr create-cluster \
   --use-default-roles \
   --log-uri s3://darkhaloscope/stronglens_calibration/logs/ \
   --bootstrap-actions Path=s3://darkhaloscope/stronglens_calibration/bootstrap/emr_bootstrap.sh \
-  --region us-west-2
+  --region us-east-2
 
 # 2. Wait for WAITING state
 aws emr describe-cluster --cluster-id j-XXXXX --query 'Cluster.Status.State'
@@ -569,7 +569,7 @@ EOF
 ### Emergency Termination
 ```bash
 # Force terminate cluster
-aws emr terminate-job-flows --job-flow-ids j-XXX --region us-west-2
+aws emr terminate-job-flows --job-flow-ids j-XXX --region us-east-2
 
 # Verify termination
 aws emr describe-cluster --cluster-id j-XXX --query 'Cluster.Status.State'

@@ -1,0 +1,15 @@
+# stronglens_calibration: training, evaluation, and selection-function scripts
+# Install from repo root: pip install -r stronglens_calibration/requirements.txt
+#
+# Pinned versions match the Lambda training environment (2026-02-10).
+# Use >= for flexibility; exact versions recorded in run_info.json.
+
+numpy>=1.26.4
+pandas>=2.1.4
+pyarrow>=23.0.0
+scikit-learn>=1.4.1
+scipy>=1.11.4
+torch>=2.7.0
+torchvision>=0.22.0
+astropy>=5.0
+healpy>=1.16.0

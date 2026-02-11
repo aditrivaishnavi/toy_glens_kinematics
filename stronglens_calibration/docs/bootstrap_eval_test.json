@@ -1,0 +1,213 @@
+{
+  "by_tier": {
+    "A": {
+      "bootstrap": {
+        "auc_68": [
+          NaN,
+          NaN
+        ],
+        "auc_95": [
+          NaN,
+          NaN
+        ],
+        "iters": 2000,
+        "precision_68": [
+          1.0,
+          1.0
+        ],
+        "precision_95": [
+          1.0,
+          1.0
+        ],
+        "recall_68": [
+          0.5416666666666666,
+          0.6666666666666666
+        ],
+        "recall_95": [
+          0.4583333333333333,
+          0.75
+        ]
+      },
+      "metrics": {
+        "auc": NaN,
+        "fn": 19,
+        "fp": 0,
+        "n": 48,
+        "neg": 0,
+        "pos": 48,
+        "precision": 1.0,
+        "recall": 0.6041666666666666,
+        "tn": 0,
+        "tp": 29
+      }
+    },
+    "B": {
+      "bootstrap": {
+        "auc_68": [
+          NaN,
+          NaN
+        ],
+        "auc_95": [
+          NaN,
+          NaN
+        ],
+        "iters": 2000,
+        "precision_68": [
+          1.0,
+          1.0
+        ],
+        "precision_95": [
+          1.0,
+          1.0
+        ],
+        "recall_68": [
+          0.403125,
+          0.4421875
+        ],
+        "recall_95": [
+          0.3859375,
+          0.4578125
+        ]
+      },
+      "metrics": {
+        "auc": NaN,
+        "fn": 369,
+        "fp": 0,
+        "n": 640,
+        "neg": 0,
+        "pos": 640,
+        "precision": 1.0,
+        "recall": 0.4234375,
+        "tn": 0,
+        "tp": 271
+      }
+    },
+    "N1": {
+      "bootstrap": {
+        "auc_68": [
+          NaN,
+          NaN
+        ],
+        "auc_95": [
+          NaN,
+          NaN
+        ],
+        "iters": 2000,
+        "precision_68": [
+          0.0,
+          0.0
+        ],
+        "precision_95": [
+          0.0,
+          0.0
+        ],
+        "recall_68": [
+          NaN,
+          NaN
+        ],
+        "recall_95": [
+          NaN,
+          NaN
+        ]
+      },
+      "metrics": {
+        "auc": NaN,
+        "fn": 0,
+        "fp": 41,
+        "n": 52670,
+        "neg": 52670,
+        "pos": 0,
+        "precision": 0.0,
+        "recall": NaN,
+        "tn": 52629,
+        "tp": 0
+      }
+    },
+    "N2": {
+      "bootstrap": {
+        "auc_68": [
+          NaN,
+          NaN
+        ],
+        "auc_95": [
+          NaN,
+          NaN
+        ],
+        "iters": 2000,
+        "precision_68": [
+          0.0,
+          0.0
+        ],
+        "precision_95": [
+          0.0,
+          0.0
+        ],
+        "recall_68": [
+          NaN,
+          NaN
+        ],
+        "recall_95": [
+          NaN,
+          NaN
+        ]
+      },
+      "metrics": {
+        "auc": NaN,
+        "fn": 0,
+        "fp": 51,
+        "n": 9402,
+        "neg": 9402,
+        "pos": 0,
+        "precision": 0.0,
+        "recall": NaN,
+        "tn": 9351,
+        "tp": 0
+      }
+    }
+  },
+  "manifest": "/lambda/nfs/darkhaloscope-training-dc/stronglens_calibration/manifests/training_v1.parquet",
+  "n_manifest": 416449,
+  "n_merged": 62760,
+  "overall": {
+    "auc": 0.9578858698787904,
+    "fn": 388,
+    "fp": 92,
+    "n": 62760,
+    "neg": 62072,
+    "pos": 688,
+    "precision": 0.7653061224489796,
+    "recall": 0.436046511627907,
+    "tn": 61980,
+    "tp": 300
+  },
+  "overall_bootstrap": {
+    "auc_68": [
+      0.9539907406621897,
+      0.9615221874770769
+    ],
+    "auc_95": [
+      0.9503101961275636,
+      0.96513417208426
+    ],
+    "iters": 2000,
+    "precision_68": [
+      0.7450415841584158,
+      0.7859258887326772
+    ],
+    "precision_95": [
+      0.7211789802021036,
+      0.8051282051282052
+    ],
+    "recall_68": [
+      0.41750358680057387,
+      0.45430239904379743
+    ],
+    "recall_95": [
+      0.3972026338147834,
+      0.4725144749499812
+    ]
+  },
+  "preds": "/lambda/nfs/darkhaloscope-training-dc/stronglens_calibration/results/test_predictions_full.csv",
+  "split": "test",
+  "threshold": 0.5
+}

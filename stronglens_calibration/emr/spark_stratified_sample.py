@@ -92,9 +92,11 @@ def main():
     start_time = time.time()
     
     try:
-        # Load positives
+        # Load positives (use data/ subdirectory with parquet filter)
         logger.info("\nLoading positives...")
-        positives_df = spark.read.parquet(args.positives)
+        positives_path = args.positives.rstrip('/') + "/data/*.parquet"
+        logger.info(f"Positives path: {positives_path}")
+        positives_df = spark.read.parquet(positives_path)
         
         # Map positive types to type_bin if needed
         if "type_bin" not in positives_df.columns and "match_type" in positives_df.columns:
@@ -124,9 +126,10 @@ def main():
         for (nobs_bin, type_bin), count in sorted(pos_counts.items()):
             logger.info(f"  ({nobs_bin}, {type_bin}): {count}")
         
-        # Load negatives
+        # Load negatives (filter for parquet files to avoid any JSON metadata)
         logger.info("\nLoading negative pool...")
-        negatives_df = spark.read.parquet(args.negatives)
+        negatives_path = args.negatives.rstrip('/') + "/*.parquet"
+        negatives_df = spark.read.parquet(negatives_path)
         total_negatives = negatives_df.count()
         logger.info(f"Total negatives in pool: {total_negatives}")
         

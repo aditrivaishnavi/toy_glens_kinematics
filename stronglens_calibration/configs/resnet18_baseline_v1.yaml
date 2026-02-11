@@ -1,0 +1,33 @@
+# ResNet-18 Baseline Training Configuration
+# Pre-training experiment v1.0.0
+# Date: 2026-02-10
+#
+# Dataset: 416,449 samples (4,788 positives, 411,661 negatives)
+# Ratio: 86:1 (negative to positive)
+# Uses tier-based sample weights for positives (Tier-A=1.0, Tier-B=0.5)
+
+dataset:
+  parquet_path: ""  # Not used in file_manifest mode
+  manifest_path: /lambda/nfs/darkhaloscope-training-dc/stronglens_calibration/manifests/training_v1.parquet
+  mode: file_manifest
+  preprocessing: raw_robust
+  label_col: label
+  cutout_path_col: cutout_path
+  sample_weight_col: sample_weight
+  seed: 1337
+
+augment:
+  hflip: true
+  vflip: true
+  rot90: true
+
+train:
+  epochs: 50
+  batch_size: 256  # Larger batch for stable gradients with imbalanced data
+  lr: 0.0003  # 3e-4, slightly higher with larger batch
+  weight_decay: 0.0001
+  num_workers: 8
+  device: cuda
+  early_stopping_patience: 10
+  out_dir: /lambda/nfs/darkhaloscope-training-dc/stronglens_calibration/checkpoints/resnet18_baseline_v1
+  mixed_precision: true

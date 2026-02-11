@@ -1,0 +1,22 @@
+dataset:
+  parquet_path: s3://darkhaloscope/phase4_pipeline/phase4c/v5_cosmos_paired/
+  mode: unpaired_manifest
+  manifest_path: ./manifests/unpaired_matched.parquet
+  preprocessing: residual_radial_profile
+  seed: 1337
+
+augment:
+  core_dropout_prob: 0.0
+  az_shuffle_prob: 0.3
+  az_shuffle_rmax: 32
+
+train:
+  epochs: 50
+  batch_size: 128
+  lr: 1e-4
+  weight_decay: 1e-4
+  num_workers: 6
+  device: cuda
+  early_stopping_patience: 10
+  out_dir: ./runs/R6_unpaired_matched_residual_hardneg
+  mixed_precision: true

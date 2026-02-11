@@ -87,16 +87,33 @@ def prepare_and_upload_code():
     return uploads
 
 
-def launch_emr_cluster(preset: str, uploads):
-    """Launch EMR cluster."""
+def launch_emr_cluster_with_step(preset: str, uploads, negatives_path: str, positives_path: str):
+    """Launch EMR cluster with step included (for auto-termination)."""
     config = PRESETS[preset]
     timestamp = uploads["timestamp"]
+    output_path = f"s3://{S3_BUCKET}/{S3_SAMPLED_NEGATIVES_PREFIX}/{timestamp}/"
     
-    print(f"\n[2/4] Launching EMR cluster (preset: {preset})...")
+    print(f"\n[2/3] Launching EMR cluster with step (preset: {preset})...")
     print(f"  Master:  1x {config['master_type']}")
     print(f"  Workers: {config['worker_count']}x {config['worker_type']}")
+    print(f"  Output: {output_path}")
     
     emr = boto3.client("emr", region_name=AWS_REGION)
+    
+    # Build step args
+    step_args = [
+        "spark-submit",
+        "--deploy-mode", "cluster",
+        "--driver-memory", "4g",
+        "--executor-memory", "8g",
+        "--executor-cores", "2",
+        "--conf", "spark.dynamicAllocation.enabled=true",
+        "--conf", "spark.sql.shuffle.partitions=200",
+        uploads["script"],
+        "--negatives", negatives_path,
+        "--positives", positives_path,
+        "--output", output_path,
+    ]
     
     cluster_config = {
         "Name": f"stratified-sample-{timestamp}",
@@ -105,6 +122,16 @@ def launch_emr_cluster(preset: str, uploads):
         "Applications": [
             {"Name": "Spark"},
             {"Name": "Hadoop"},
+        ],
+        "Steps": [
+            {
+                "Name": "StratifiedSample",
+                "ActionOnFailure": "TERMINATE_CLUSTER",
+                "HadoopJarStep": {
+                    "Jar": "command-runner.jar",
+                    "Args": step_args,
+                },
+            },
         ],
         "Instances": {
             "InstanceGroups": [
@@ -166,81 +193,9 @@ def launch_emr_cluster(preset: str, uploads):
     cluster_id = response["JobFlowId"]
     
     print(f"  Cluster ID: {cluster_id}")
-    
-    return cluster_id
-
-
-def wait_for_cluster(cluster_id: str, timeout_minutes: int = 15):
-    """Wait for cluster to be ready."""
-    print(f"\n[3/4] Waiting for cluster to be ready...")
-    
-    emr = boto3.client("emr", region_name=AWS_REGION)
-    start_time = time.time()
-    
-    while True:
-        response = emr.describe_cluster(ClusterId=cluster_id)
-        status = response["Cluster"]["Status"]["State"]
-        
-        print(f"  [{datetime.now().strftime('%H:%M:%S')}] Status: {status}")
-        
-        if status == "WAITING":
-            print("  Cluster ready!")
-            return True
-        elif status in ("TERMINATED", "TERMINATED_WITH_ERRORS"):
-            print(f"  Cluster failed: {status}")
-            return False
-        
-        if time.time() - start_time > timeout_minutes * 60:
-            print("  Timeout!")
-            return False
-        
-        time.sleep(30)
-
-
-def submit_spark_step(cluster_id: str, uploads, negatives_path: str, positives_path: str):
-    """Submit Spark step."""
-    timestamp = uploads["timestamp"]
-    output_path = f"s3://{S3_BUCKET}/{S3_SAMPLED_NEGATIVES_PREFIX}/{timestamp}/"
-    
-    print(f"\n[4/4] Submitting Spark step...")
-    print(f"  Negatives: {negatives_path}")
-    print(f"  Positives: {positives_path}")
     print(f"  Output: {output_path}")
     
-    emr = boto3.client("emr", region_name=AWS_REGION)
-    
-    step_args = [
-        "spark-submit",
-        "--deploy-mode", "cluster",
-        "--driver-memory", "4g",
-        "--executor-memory", "8g",
-        "--executor-cores", "2",
-        "--conf", "spark.dynamicAllocation.enabled=true",
-        "--conf", "spark.sql.shuffle.partitions=200",
-        uploads["script"],
-        "--negatives", negatives_path,
-        "--positives", positives_path,
-        "--output", output_path,
-    ]
-    
-    response = emr.add_job_flow_steps(
-        JobFlowId=cluster_id,
-        Steps=[
-            {
-                "Name": "StratifiedSample",
-                "ActionOnFailure": "CONTINUE",
-                "HadoopJarStep": {
-                    "Jar": "command-runner.jar",
-                    "Args": step_args,
-                },
-            },
-        ],
-    )
-    
-    step_id = response["StepIds"][0]
-    print(f"  Step ID: {step_id}")
-    
-    return step_id, output_path
+    return cluster_id, output_path
 
 
 def monitor_step(cluster_id: str, step_id: str, timeout_minutes: int = 60):
@@ -308,29 +263,20 @@ def main():
     # Upload
     uploads = prepare_and_upload_code()
     
-    # Launch
-    cluster_id = launch_emr_cluster(args.preset, uploads)
-    
-    # Wait
-    if not wait_for_cluster(cluster_id):
-        sys.exit(1)
-    
-    # Submit
-    step_id, output_path = submit_spark_step(cluster_id, uploads, args.negatives, args.positives)
+    # Launch cluster with step (auto-terminates when done)
+    cluster_id, output_path = launch_emr_cluster_with_step(
+        args.preset, uploads, args.negatives, args.positives
+    )
     
     print(f"\n" + "=" * 60)
     print(f"Cluster ID: {cluster_id}")
-    print(f"Step ID:    {step_id}")
     print(f"Output:     {output_path}")
     print("=" * 60)
-    
-    if not args.no_monitor:
-        success = monitor_step(cluster_id, step_id)
-        terminate_cluster(cluster_id)
-        sys.exit(0 if success else 1)
-    else:
-        print("\nNot monitoring.")
-        print(f"To terminate: {get_emr_terminate_cmd(cluster_id)}")
+    print(f"\nCluster will auto-terminate after step completes.")
+    print(f"EMR Console: {get_emr_console_url(cluster_id)}")
+    print(f"\nMonitor with:")
+    print(f"  aws emr describe-cluster --cluster-id {cluster_id} --region {AWS_REGION}")
+    print(f"  aws emr list-steps --cluster-id {cluster_id} --region {AWS_REGION}")
 
 
 if __name__ == "__main__":

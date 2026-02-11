@@ -31,11 +31,21 @@ class DatasetConfig:
     label_col: str = "label"
     seed: int = SEED_DEFAULT
     manifest_path: Optional[str] = None
+    cutout_path_col: str = "cutout_path"  # For file_manifest mode
+    sample_weight_col: Optional[str] = "sample_weight"  # For weighted loss
 
 @dataclass
 class SplitConfig:
     split_col: str = "split"
     split_value: str = "train"
+
+def load_cutout_from_file(path: str) -> np.ndarray:
+    """Load cutout from local .npz file. Returns (H, W, 3) array in CHW format after transpose."""
+    with np.load(path, allow_pickle=True) as data:
+        cutout = data["cutout"]  # Shape: (101, 101, 3) in HWC format
+        # Transpose to CHW for PyTorch
+        return cutout.transpose(2, 0, 1).astype(np.float32)
+
 
 class LensDataset:
     def __init__(self, dcfg: DatasetConfig, scfg: SplitConfig, aug: AugmentConfig):
@@ -45,6 +55,11 @@ class LensDataset:
         elif dcfg.mode == "unpaired_manifest":
             if not dcfg.manifest_path:
                 raise ValueError("manifest_path required for unpaired_manifest")
+            df = _read_parquet_any(dcfg.manifest_path)
+        elif dcfg.mode == "file_manifest":
+            # New mode: load from local file paths
+            if not dcfg.manifest_path:
+                raise ValueError("manifest_path required for file_manifest mode")
             df = _read_parquet_any(dcfg.manifest_path)
         else:
             raise ValueError(f"Unknown mode {dcfg.mode}")
@@ -63,14 +78,31 @@ class LensDataset:
             return row["ctrl_stamp_npz"], 0
         return row["blob"], int(row[self.dcfg.label_col])
 
+    def _get_file_and_label(self, i: int):
+        """For file_manifest mode: return file path and label."""
+        row = self.df.iloc[i]
+        path = row[self.dcfg.cutout_path_col]
+        label = int(row[self.dcfg.label_col])
+        weight = float(row.get(self.dcfg.sample_weight_col, 1.0)) if self.dcfg.sample_weight_col else 1.0
+        return path, label, weight
+
     def __getitem__(self, i: int):
-        blob, y = self._get_blob_and_label(i)
-        dec = decode_npz_blob(blob)
-        img3 = stack_from_npz(dec)
-        img3 = preprocess_stack(img3, mode=self.dcfg.preprocessing)
-        seed = (self.dcfg.seed * 1000003 + i) & 0x7fffffff
-        img3 = random_augment(img3, seed=seed, cfg=self.aug)
-        return img3, np.int64(y)
+        if self.dcfg.mode == "file_manifest":
+            # Load from local file
+            path, y, weight = self._get_file_and_label(i)
+            img3 = load_cutout_from_file(path)  # Already CHW
+            img3 = preprocess_stack(img3, mode=self.dcfg.preprocessing)
+            seed = (self.dcfg.seed * 1000003 + i) & 0x7fffffff
+            img3 = random_augment(img3, seed=seed, cfg=self.aug)
+            return img3, np.int64(y), np.float32(weight)
+        else:
+            blob, y = self._get_blob_and_label(i)
+            dec = decode_npz_blob(blob)
+            img3 = stack_from_npz(dec)
+            img3 = preprocess_stack(img3, mode=self.dcfg.preprocessing)
+            seed = (self.dcfg.seed * 1000003 + i) & 0x7fffffff
+            img3 = random_augment(img3, seed=seed, cfg=self.aug)
+            return img3, np.int64(y)
 
 def build_unpaired_manifest(
     parquet_path: str,

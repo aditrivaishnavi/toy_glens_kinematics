@@ -1,0 +1,30 @@
+{
+  "duplicate_rows_within_split": {
+    "test": 0,
+    "train": 0,
+    "val": 0
+  },
+  "label_counts": {
+    "0": 411661,
+    "1": 4788
+  },
+  "manifest": "/lambda/nfs/darkhaloscope-training-dc/stronglens_calibration/manifests/training_v1.parquet",
+  "overlaps": {
+    "cutout_path": {
+      "train_test": 0,
+      "train_val": 0,
+      "val_test": 0
+    },
+    "galaxy_id": {
+      "train_test": 0,
+      "train_val": 0,
+      "val_test": 0
+    }
+  },
+  "row_count": 416449,
+  "split_counts": {
+    "test": 62760,
+    "train": 291509,
+    "val": 62180
+  }
+}

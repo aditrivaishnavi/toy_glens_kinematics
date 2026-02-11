@@ -27,13 +27,15 @@ def center_crop(img: np.ndarray, target_size: int) -> np.ndarray:
         raise ValueError(f"Unexpected ndim={img.ndim}")
 
 
-def preprocess_stack(img3: np.ndarray, mode: str, crop: bool = True) -> np.ndarray:
+def preprocess_stack(img3: np.ndarray, mode: str, crop: bool = True, 
+                     clip_range: float = 10.0) -> np.ndarray:
     """Preprocess a 3-band image stack.
     
     Args:
         img3: (3, H, W) array with g, r, z bands
         mode: Preprocessing mode ('raw_robust' or 'residual_radial_profile')
         crop: If True, center crop to STAMP_SIZE (64x64)
+        clip_range: Clip normalized values to [-clip_range, clip_range]
         
     Returns:
         Preprocessed (3, STAMP_SIZE, STAMP_SIZE) array
@@ -47,6 +49,12 @@ def preprocess_stack(img3: np.ndarray, mode: str, crop: bool = True) -> np.ndarr
     out = []
     for b in range(3):
         x = img3[b].astype(np.float32)
+        
+        # Handle NaN values - replace with 0 before normalization
+        nan_mask = np.isnan(x)
+        if nan_mask.any():
+            x = np.where(nan_mask, 0.0, x)
+        
         if mode == "raw_robust":
             x = normalize_outer_annulus(x)
         elif mode == "residual_radial_profile":
@@ -55,5 +63,13 @@ def preprocess_stack(img3: np.ndarray, mode: str, crop: bool = True) -> np.ndarr
             x = (xn - model).astype(np.float32)
         else:
             raise ValueError(f"Unknown preprocessing mode: {mode}")
+        
+        # Final NaN check - set any remaining NaN to 0
+        if np.isnan(x).any():
+            x = np.nan_to_num(x, nan=0.0)
+        
+        # Clip extreme values to prevent gradient explosion
+        x = np.clip(x, -clip_range, clip_range)
+        
         out.append(x)
     return np.stack(out, axis=0).astype(np.float32)

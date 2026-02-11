@@ -21,14 +21,22 @@ def radial_mask(H: int, W: int, r_in: float, r_out: float) -> np.ndarray:
     return (r >= r_in) & (r < r_out)
 
 def robust_median_mad(x: np.ndarray, eps: float = 1e-8):
-    med = float(np.median(x))
-    mad = float(np.median(np.abs(x - med))) + eps
+    # Use nanmedian to handle NaN values
+    med = float(np.nanmedian(x))
+    mad = float(np.nanmedian(np.abs(x - med))) + eps
+    # Handle case where all values are NaN
+    if np.isnan(med):
+        med = 0.0
+    if np.isnan(mad) or mad < eps:
+        mad = eps
     return med, mad
 
 def normalize_outer_annulus(img: np.ndarray, r_in: float = 20, r_out: float = 32) -> np.ndarray:
     H, W = img.shape
     m = radial_mask(H, W, r_in, r_out)
-    med, mad = robust_median_mad(img[m])
+    masked_vals = img[m]
+    # Filter NaN values for robust stats
+    med, mad = robust_median_mad(masked_vals)
     return (img - med) / mad
 
 def azimuthal_median_profile(img: np.ndarray, r_max: int = 32) -> np.ndarray:

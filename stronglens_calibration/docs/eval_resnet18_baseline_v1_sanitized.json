@@ -1,0 +1,83 @@
+{
+  "config_path": "configs/resnet18_baseline_v1.yaml",
+  "checkpoint_path": "checkpoints/resnet18_baseline_v1/best.pt",
+  "split": "test",
+  "n_samples": 62760,
+  "timestamp_utc": "2026-02-11T01:34:13.984334+00:00",
+  "overall": {
+    "auc": 0.9578858698787904,
+    "recall_at_0.5": 0.436046511627907,
+    "precision_at_0.5": 0.7653061224489796,
+    "ece": 0.002734853427712854,
+    "mce": 0.015610404312610626,
+    "n_bins": 15
+  },
+  "reliability_curve": {
+    "bin_edges": [
+      0.0, 3.943e-06, 7.234e-06, 1.132e-05, 1.699e-05,
+      2.434e-05, 3.500e-05, 4.978e-05, 7.173e-05, 1.061e-04,
+      1.638e-04, 2.695e-04, 4.869e-04, 1.068e-03, 4.124e-03, 1.0
+    ],
+    "bin_acc": [
+      0.0, 0.0, 0.0, 0.000239, 0.000239,
+      0.000717, 0.000478, 0.000956, 0.000717, 0.000956,
+      0.003107, 0.003585, 0.006453, 0.011711, 0.135277
+    ],
+    "bin_conf": [
+      2.463e-06, 5.504e-06, 9.173e-06, 1.404e-05, 2.046e-05,
+      2.937e-05, 4.187e-05, 5.995e-05, 8.768e-05, 1.324e-04,
+      2.115e-04, 3.626e-04, 7.235e-04, 2.080e-03, 0.119667
+    ],
+    "bin_counts": [
+      4184, 4184, 4184, 4184, 4184,
+      4184, 4184, 4184, 4184, 4184,
+      4184, 4184, 4184, 4184, 4184
+    ]
+  },
+  "by_stratum": {
+    "tier_A": {
+      "n": 48,
+      "n_pos": 48,
+      "n_neg": 0,
+      "auc": null,
+      "recall_at_0.5": 0.6041666666666666,
+      "precision_at_0.5": 1.0,
+      "ece": null,
+      "mce": null,
+      "ece_mce_note": "Not reported: stratum is single-class (ECE/MCE not meaningful)."
+    },
+    "tier_B": {
+      "n": 640,
+      "n_pos": 640,
+      "n_neg": 0,
+      "auc": null,
+      "recall_at_0.5": 0.4234375,
+      "precision_at_0.5": 1.0,
+      "ece": null,
+      "mce": null,
+      "ece_mce_note": "Not reported: stratum is single-class (ECE/MCE not meaningful)."
+    }
+  },
+  "held_out_tier_a_evaluation": {
+    "n": 48,
+    "n_pos": 48,
+    "n_neg": 0,
+    "auc": null,
+    "recall_at_0.5": 0.6041666666666666,
+    "precision_at_0.5": 1.0,
+    "ece": null,
+    "mce": null,
+    "ece_mce_note": "Not reported: stratum is single-class (ECE/MCE not meaningful).",
+    "description": "Held-out Tier-A (confident lenses with DR10 match, test split only). Not from a separate spectroscopic-search catalog; same imaging-candidate source, held out from training."
+  },
+  "bootstrap_intervals": {
+    "source": "docs/bootstrap_eval_test.json",
+    "n_test": 62760,
+    "iterations": 2000,
+    "overall_auc_95ci": [0.950, 0.965],
+    "overall_recall_at_0.5_95ci": [0.397, 0.473],
+    "overall_precision_at_0.5_95ci": [0.721, 0.805],
+    "tier_a_recall_at_0.5_95ci": [0.458, 0.750],
+    "tier_b_recall_at_0.5_95ci": [0.386, 0.458]
+  }
+}

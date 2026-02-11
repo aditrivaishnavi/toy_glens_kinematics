@@ -89,16 +89,39 @@ def prepare_and_upload_code() -> Dict[str, str]:
     return uploads
 
 
-def launch_emr_cluster(preset: str, uploads: Dict[str, str]) -> str:
-    """Launch EMR cluster."""
+def launch_emr_cluster_with_step(
+    preset: str,
+    uploads: Dict[str, str],
+    cutout_type: str,
+    input_path: str,
+) -> tuple:
+    """Launch EMR cluster with step included (for auto-termination)."""
     config = PRESETS[preset]
     timestamp = uploads["timestamp"]
+    output_path = f"s3://{S3_BUCKET}/{S3_CUTOUTS_PREFIX}/{cutout_type}s/{timestamp}/"
     
-    print(f"\n[2/4] Launching EMR cluster (preset: {preset})...")
+    print(f"\n[2/3] Launching EMR cluster with step (preset: {preset})...")
     print(f"  Master:  1x {config['master_type']}")
     print(f"  Workers: {config['worker_count']}x {config['worker_type']}")
+    print(f"  Type: {cutout_type}")
+    print(f"  Input: {input_path}")
+    print(f"  Output: {output_path}")
     
     emr = boto3.client("emr", region_name=AWS_REGION)
+    
+    # Build step args
+    step_args = [
+        "spark-submit",
+        "--deploy-mode", "cluster",
+        "--driver-memory", "4g",
+        "--executor-memory", "8g",
+        "--executor-cores", "2",
+        "--conf", "spark.dynamicAllocation.enabled=true",
+        uploads["script"],
+        "--input", input_path,
+        "--output", output_path,
+        "--cutout-type", cutout_type,
+    ]
     
     cluster_config = {
         "Name": f"cutout-generation-{timestamp}",
@@ -107,6 +130,16 @@ def launch_emr_cluster(preset: str, uploads: Dict[str, str]) -> str:
         "Applications": [
             {"Name": "Spark"},
             {"Name": "Hadoop"},
+        ],
+        "Steps": [
+            {
+                "Name": f"GenerateCutouts-{cutout_type}",
+                "ActionOnFailure": "TERMINATE_CLUSTER",
+                "HadoopJarStep": {
+                    "Jar": "command-runner.jar",
+                    "Args": step_args,
+                },
+            },
         ],
         "Instances": {
             "InstanceGroups": [
@@ -169,85 +202,7 @@ def launch_emr_cluster(preset: str, uploads: Dict[str, str]) -> str:
     
     print(f"  Cluster ID: {cluster_id}")
     
-    return cluster_id
-
-
-def wait_for_cluster(cluster_id: str, timeout_minutes: int = 20) -> bool:
-    """Wait for cluster to be ready."""
-    print(f"\n[3/4] Waiting for cluster to be ready...")
-    
-    emr = boto3.client("emr", region_name=AWS_REGION)
-    start_time = time.time()
-    timeout_seconds = timeout_minutes * 60
-    
-    while True:
-        response = emr.describe_cluster(ClusterId=cluster_id)
-        status = response["Cluster"]["Status"]["State"]
-        
-        print(f"  [{datetime.now().strftime('%H:%M:%S')}] Status: {status}")
-        
-        if status == "WAITING":
-            print("  Cluster ready!")
-            return True
-        elif status in ("TERMINATED", "TERMINATED_WITH_ERRORS"):
-            print(f"  ERROR: Cluster failed with status: {status}")
-            return False
-        
-        if time.time() - start_time > timeout_seconds:
-            print(f"  ERROR: Timeout waiting for cluster")
-            return False
-        
-        time.sleep(30)
-
-
-def submit_spark_step(
-    cluster_id: str,
-    uploads: Dict[str, str],
-    cutout_type: str,
-    input_path: str,
-) -> str:
-    """Submit Spark step."""
-    timestamp = uploads["timestamp"]
-    output_path = f"s3://{S3_BUCKET}/{S3_CUTOUTS_PREFIX}/{cutout_type}s/{timestamp}/"
-    
-    print(f"\n[4/4] Submitting Spark step...")
-    print(f"  Type: {cutout_type}")
-    print(f"  Input: {input_path}")
-    print(f"  Output: {output_path}")
-    
-    emr = boto3.client("emr", region_name=AWS_REGION)
-    
-    step_args = [
-        "spark-submit",
-        "--deploy-mode", "cluster",
-        "--driver-memory", "4g",
-        "--executor-memory", "8g",
-        "--executor-cores", "2",
-        "--conf", "spark.dynamicAllocation.enabled=true",
-        uploads["script"],
-        "--input", input_path,
-        "--output", output_path,
-        "--cutout-type", cutout_type,
-    ]
-    
-    response = emr.add_job_flow_steps(
-        JobFlowId=cluster_id,
-        Steps=[
-            {
-                "Name": f"GenerateCutouts-{cutout_type}",
-                "ActionOnFailure": "CONTINUE",
-                "HadoopJarStep": {
-                    "Jar": "command-runner.jar",
-                    "Args": step_args,
-                },
-            },
-        ],
-    )
-    
-    step_id = response["StepIds"][0]
-    print(f"  Step ID: {step_id}")
-    
-    return step_id
+    return cluster_id, output_path
 
 
 def monitor_step(cluster_id: str, step_id: str, timeout_hours: int = 8) -> bool:
@@ -329,30 +284,20 @@ def main():
     # Upload code
     uploads = prepare_and_upload_code()
     
-    # Launch cluster
-    cluster_id = launch_emr_cluster(args.preset, uploads)
-    
-    # Wait for cluster
-    if not wait_for_cluster(cluster_id):
-        print("Cluster failed to start")
-        sys.exit(1)
-    
-    # Submit step
-    step_id = submit_spark_step(cluster_id, uploads, args.type, input_path)
+    # Launch cluster with step (auto-terminates when done)
+    cluster_id, output_path = launch_emr_cluster_with_step(
+        args.preset, uploads, args.type, input_path
+    )
     
     print(f"\n" + "=" * 60)
     print(f"Cluster ID: {cluster_id}")
-    print(f"Step ID:    {step_id}")
-    print(f"Output:     s3://{S3_BUCKET}/{S3_CUTOUTS_PREFIX}/{args.type}s/{uploads['timestamp']}/")
+    print(f"Output:     {output_path}")
     print("=" * 60)
-    
-    if not args.no_monitor:
-        success = monitor_step(cluster_id, step_id)
-        terminate_cluster(cluster_id)
-        sys.exit(0 if success else 1)
-    else:
-        print("\nNot monitoring (--no-monitor).")
-        print(f"To terminate: {get_emr_terminate_cmd(cluster_id)}")
+    print(f"\nCluster will auto-terminate after step completes.")
+    print(f"EMR Console: {get_emr_console_url(cluster_id)}")
+    print(f"\nMonitor with:")
+    print(f"  aws emr describe-cluster --cluster-id {cluster_id} --region {AWS_REGION}")
+    print(f"  aws emr list-steps --cluster-id {cluster_id} --region {AWS_REGION}")
 
 
 if __name__ == "__main__":

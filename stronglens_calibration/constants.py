@@ -122,6 +122,15 @@ CUTOUT_URL_TEMPLATE = (
 )
 
 # =============================================================================
+# DR10 PHOTOMETRY (Injection / flux calibration)
+# =============================================================================
+# Legacy Survey coadds use nanomaggies; 1 nanomaggy = flux of a mag 22.5 source (AB).
+# To convert magnitude to flux: flux_nMgy = 10^(-0.4 * (mag - 22.5))
+# Used for injection realism (Phase 4c) and any flux-calibrated simulation.
+# Reference: Paper IV; stronglens_calibration is self-contained (no dark_halo_scope dependency).
+AB_ZEROPOINT_MAG = 22.5  # AB zero-point for nanomaggies (DR10)
+
+# =============================================================================
 # DR10 SURVEY PARAMETERS
 # =============================================================================
 
