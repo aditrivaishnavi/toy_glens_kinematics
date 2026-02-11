@@ -28,23 +28,30 @@ def center_crop(img: np.ndarray, target_size: int) -> np.ndarray:
 
 
 def preprocess_stack(img3: np.ndarray, mode: str, crop: bool = True, 
+                     crop_size: int | None = None,
                      clip_range: float = 10.0) -> np.ndarray:
     """Preprocess a 3-band image stack.
     
     Args:
         img3: (3, H, W) array with g, r, z bands
         mode: Preprocessing mode ('raw_robust' or 'residual_radial_profile')
-        crop: If True, center crop to STAMP_SIZE (64x64)
+        crop: If True, center crop to crop_size (default STAMP_SIZE=64).
+              For Paper IV parity, set crop=False to keep 101x101.
+        crop_size: Target crop size. None defaults to STAMP_SIZE (64).
+                   Set to 0 or None with crop=False to skip cropping.
         clip_range: Clip normalized values to [-clip_range, clip_range]
         
     Returns:
-        Preprocessed (3, STAMP_SIZE, STAMP_SIZE) array
+        Preprocessed (3, target_size, target_size) array
     """
     assert img3.ndim == 3 and img3.shape[0] == 3
     
-    # Apply center crop first if needed (101x101 -> 64x64)
-    if crop and img3.shape[1] != STAMP_SIZE:
-        img3 = center_crop(img3, STAMP_SIZE)
+    # Determine target crop size
+    target = crop_size if crop_size is not None else STAMP_SIZE
+    
+    # Apply center crop first if needed (101x101 -> target)
+    if crop and target > 0 and img3.shape[1] != target:
+        img3 = center_crop(img3, target)
     
     out = []
     for b in range(3):

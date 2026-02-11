@@ -22,13 +22,13 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 # =============================================================================
 # CONSTANTS
 # =============================================================================
 
-PIPELINE_VERSION = "1.0.0"
+PIPELINE_VERSION = "1.1.0"
 
 # AWS Configuration (environment override supported)
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-2")
@@ -66,6 +66,10 @@ def main():
                        help="Negative:positive ratio per stratum")
     parser.add_argument("--n1-ratio", type=float, default=N1_RATIO,
                        help="N1 ratio within negatives (0.85 = 85%)")
+    parser.add_argument("--test-limit", type=int, default=0,
+                       help="Limit negative pool to N rows for testing (0 = no limit)")
+    parser.add_argument("--force", action="store_true",
+                       help="Force reprocessing, ignore existing checkpoints/output")
     
     args = parser.parse_args()
     
@@ -73,12 +77,17 @@ def main():
     from pyspark.sql import SparkSession
     import pyspark.sql.functions as F
     from pyspark.sql.window import Window
+    from pyspark import StorageLevel
     
     spark = SparkSession.builder \
         .appName("StratifiedNegativeSampling") \
         .config("spark.sql.adaptive.enabled", "true") \
         .config("spark.sql.shuffle.partitions", "200") \
         .getOrCreate()
+    
+    # Set checkpoint directory for fault tolerance (S3-based)
+    checkpoint_dir = args.output.rstrip("/") + "/checkpoints/"
+    spark.sparkContext.setCheckpointDir(checkpoint_dir)
     
     logger.info("=" * 60)
     logger.info("Starting Stratified Sampling")
@@ -88,10 +97,31 @@ def main():
     logger.info(f"Output: {args.output}")
     logger.info(f"Neg:Pos ratio: {args.neg_pos_ratio}")
     logger.info(f"N1:N2 ratio: {args.n1_ratio}:{1-args.n1_ratio}")
+    logger.info(f"Test limit: {args.test_limit if args.test_limit > 0 else 'None (full run)'}")
+    logger.info(f"Force reprocess: {args.force}")
+    logger.info(f"Checkpoint dir: {checkpoint_dir}")
     
     start_time = time.time()
     
     try:
+        # ----------------------------------------------------------
+        # Check for existing output (skip if exists and not --force)
+        # ----------------------------------------------------------
+        output_data_path = args.output.rstrip("/") + "/data/"
+        if not args.force:
+            try:
+                import boto3  # Import inside function (lesson 1.1)
+                s3_check = boto3.client("s3", region_name=AWS_REGION)
+                output_bucket = args.output.replace("s3://", "").split("/")[0]
+                output_prefix = "/".join(args.output.replace("s3://", "").split("/")[1:]).rstrip("/") + "/data/"
+                resp = s3_check.list_objects_v2(Bucket=output_bucket, Prefix=output_prefix, MaxKeys=1)
+                if resp.get("KeyCount", 0) > 0:
+                    logger.info(f"Output already exists at {output_data_path}")
+                    logger.info("Use --force to override. Exiting.")
+                    sys.exit(0)
+            except Exception as e:
+                logger.warning(f"Could not check existing output (proceeding): {e}")
+        
         # Load positives (use data/ subdirectory with parquet filter)
         logger.info("\nLoading positives...")
         positives_path = args.positives.rstrip('/') + "/data/*.parquet"
@@ -130,6 +160,25 @@ def main():
         logger.info("\nLoading negative pool...")
         negatives_path = args.negatives.rstrip('/') + "/*.parquet"
         negatives_df = spark.read.parquet(negatives_path)
+        
+        # ----------------------------------------------------------
+        # Test-limit: restrict to N rows for small-scale testing
+        # Note: .limit() still scans all data (lesson 4.2), but for
+        # testing correctness it's acceptable. For speed tests, use
+        # partition pruning instead.
+        # ----------------------------------------------------------
+        if args.test_limit > 0:
+            logger.info(f"TEST MODE: Limiting negatives to {args.test_limit} rows")
+            negatives_df = negatives_df.limit(args.test_limit)
+        
+        # ----------------------------------------------------------
+        # Repartition by (nobs_z_bin, type_bin) to distribute work
+        # evenly across all workers and avoid data skew during
+        # per-stratum sampling. 200 partitions for 30 workers.
+        # ----------------------------------------------------------
+        logger.info("Repartitioning negatives by (nobs_z_bin, type_bin)...")
+        negatives_df = negatives_df.repartition(200, "nobs_z_bin", "type_bin")
+        
         total_negatives = negatives_df.count()
         logger.info(f"Total negatives in pool: {total_negatives}")
         
@@ -174,6 +223,16 @@ def main():
             "_sample_hash",
             F.abs(F.hash(F.col("galaxy_id"), F.lit(SEED)))
         )
+        
+        # ----------------------------------------------------------
+        # Persist to avoid recomputation during per-stratum sampling.
+        # DISK_ONLY to avoid OOM on large pools (114M rows).
+        # ----------------------------------------------------------
+        logger.info("Persisting negatives DataFrame (DISK_ONLY)...")
+        negatives_df = negatives_df.persist(StorageLevel.DISK_ONLY)
+        # Force materialization so persist happens before the loop
+        neg_partition_count = negatives_df.rdd.getNumPartitions()
+        logger.info(f"Negatives persisted across {neg_partition_count} partitions")
         
         sampled_dfs = []
         actual_counts = {"n1": 0, "n2": 0, "total": 0}
@@ -269,6 +328,10 @@ def main():
             logger.error("No samples collected!")
             sys.exit(1)
         
+        # Unpersist the large negatives DataFrame now that sampling is done
+        negatives_df.unpersist()
+        logger.info("Unpersisted negatives DataFrame")
+        
         # Add sampling metadata
         sampled_df = sampled_df.withColumn(
             "sampling_timestamp",
@@ -278,13 +341,19 @@ def main():
             F.lit(PIPELINE_VERSION)
         )
         
+        # Repartition output to a reasonable number of files
+        # (~510K rows -> 20 partitions -> ~25K rows per file, ~reasonable file sizes)
+        output_partitions = max(10, actual_counts["total"] // 25000)
+        logger.info(f"Repartitioning output to {output_partitions} partitions...")
+        sampled_df = sampled_df.repartition(output_partitions)
+        
         # Save output
         logger.info(f"\nSaving {actual_counts['total']} sampled negatives...")
         sampled_df.write.mode("overwrite") \
             .option("compression", "gzip") \
             .parquet(args.output.rstrip("/") + "/data/")
         
-        # Save summary
+        # Save summary (import boto3 inside function -- lesson 1.1)
         import boto3
         s3 = boto3.client("s3", region_name=AWS_REGION)
         
@@ -307,6 +376,8 @@ def main():
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "pipeline_version": PIPELINE_VERSION,
             "elapsed_seconds": time.time() - start_time,
+            "test_limit": args.test_limit if args.test_limit > 0 else None,
+            "force": args.force,
         }
         
         # Gate checks

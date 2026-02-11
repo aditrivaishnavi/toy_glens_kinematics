@@ -3684,3 +3684,1005 @@ All scripts default to your verified manifest column names:
 * `label` (int64), `split` (string), `cutout_path` (string), `sample_weight` (double), `tier` (string), `galaxy_id` (string).
 
 =====================
+
+did you check the research paper where they built 2 architecture for strong lens published in August 2025 . authors from san francisco. u did review it. there they did 160 epochs and did not change resolution from 101x101 to 64x64 . as we noted above. our training stopped at epoch 16 while they went more than 100 for resnet. for efficient it was even higher . audit the training and input data from the paper. provide accurate  suggestions that should faithfully replicate. otherwise our paper may not be selected as we cannot claim matching sota on this particular survey. am i making sense. the goal is to do high quality original research which would get me selected for men’s paper. please provide full course correction with all details that i can use. provide course correction roadmap based on my current state provide full downloadable code for the data set fetching data pipeline and model training . ensure all hyperparameters parameters of the 2 models match
+
+------
+
+LLM : 
+
+Yes, you are making sense. Your current training run is **not** a faithful replication of Paper IV’s training protocol in multiple ways that matter for any “parity/SOTA on DR10” claim.
+
+Below is a concrete course-correction plan based on what Paper IV **explicitly** states, plus a drop-in code pack (download link) that updates training to match the paper’s **epochs**, **resolution**, **batch-size regime**, and **LR step schedule** as closely as practical on single-GPU.
+
+---
+
+## What Paper IV did (training + inputs) that we are not matching
+
+From **arXiv:2508.20087v1 (Aug 2025)**:
+
+### Data + cutouts
+
+* **Cutouts are 101×101** pixels (no 64×64 down-crop described).
+* **Split is 70/30 train/validation** (no separate test split described in that section).
+* Lens selection for positives includes their DR10 candidate catalog plus known lenses; negatives are built from **SER/DEV/REX** types and then **cleaned** by:
+
+  * removing “contaminant” objects using an external match (Spherimatch)
+  * removing high-probability lenses using a prior ResNet model (they then inspect images for prob > 0.4)
+
+### Training schedule
+
+* **ResNet**:
+
+  * **Batch size 2048**
+  * **Initial LR 5e-4**
+  * **LR halved at epoch 80**
+  * Training clearly extends past 100 epochs (their highest AUC was around **epoch ~126**)
+* **EfficientNet**:
+
+  * **Batch size 512**
+  * **Initial LR 3.88e-4**
+  * **LR halved at epoch 130**
+  * **Trained for 160 epochs**, best epoch around ~50 for deployment
+
+### Your current run differs materially
+
+* **101→64 crop** (Paper IV does not do this)
+* **Early stop at epoch 16** (Paper IV trains deep into 100–160 epochs)
+* **Different LR schedule** (Paper IV uses step-halving at fixed epochs)
+* **Different effective batch regime** (Paper IV uses very large batches on multi-GPU)
+
+If you claim parity without matching these, reviewers can fairly say “not comparable.”
+
+---
+
+## Course-correction roadmap (minimal changes to claim faithful replication)
+
+### Phase 0: Decide what you can claim
+
+* If you replicate the *explicit* training protocol (101, 160 epochs, step LR, large effective batch, same split), you can claim:
+  **“We replicate Paper IV’s training protocol as closely as possible under single-GPU constraints via gradient accumulation.”**
+* If you also replicate their negative “cleaning” step (contaminants removal + pre-screen with prior ResNet), you can claim stronger parity.
+
+### Phase 1: Training parity (fastest, highest leverage)
+
+1. **Stop cropping**: train on **101×101**.
+2. **Remove early stopping**: run **160 epochs**.
+3. **Match LR schedule**:
+
+   * ResNet: LR=5e-4, halve at epoch 80
+   * EffNet: LR=3.88e-4, halve at epoch 130
+4. **Match effective batch size via gradient accumulation**:
+
+   * ResNet: effective batch 2048 (example: micro-batch 128, accum 16)
+   * EffNet: effective batch 512 (example: micro-batch 64, accum 8)
+5. **Split**: switch paper-parity runs to **70/30 train/val** (keep your test split for your paper, but do not use it for “Paper IV parity” model selection).
+
+### Phase 2: Input-data parity (important for “SOTA” claim)
+
+6. Reproduce Paper IV’s **negative cleaning** (or explicitly disclose you did not, and treat as an ablation):
+
+   * contaminants removal (Spherimatch-like filtering)
+   * remove likely lenses from negatives using a prior lens model and then inspect high-score images
+7. Ensure your negative pool **types and bins** follow their described approach (SER/DEV/REX; nobs_z bins; 100:1 per bin).
+
+### Phase 3: Reporting parity correctly in your paper
+
+8. Present two runs:
+
+   * **Paper-IV-parity run** (as above) for fair comparison
+   * **Your “calibration/audit” run** (may include test split, HEALPix split, additional QC, etc.)
+9. Make clear which run supports which claim.
+
+---
+
+## Downloadable code pack (schema-aligned to `training_v1.parquet`)
+
+This zip contains full runnable code to:
+
+* verify manifest schema + split disjointness
+* train **ResNet18** and **EfficientNet-B0** with:
+
+  * **101×101 inputs** (no crop by default)
+  * **160 epochs**
+  * **step LR halving** at the paper’s epochs
+  * **effective batch sizes** matching Paper IV via gradient accumulation
+* export validation predictions for optional stacking/meta-learner
+* bootstrap AUC/recall intervals from a predictions parquet
+
+**Download:** [paperIV_parity_course_correction.zip](sandbox:/mnt/data/paperIV_parity_course_correction.zip)
+
+### Key commands (Paper IV parity defaults)
+
+**1) Verify manifest & split overlaps**
+
+```bash
+python tools/verify_manifest_and_splits.py \
+  --manifest /lambda/nfs/darkhaloscope-training-dc/stronglens_calibration/manifests/training_v1.parquet \
+  --out out/verify.json
+```
+
+**2) ResNet parity training**
+
+```bash
+python training/train_paperIV_resnet.py \
+  --manifest /lambda/nfs/darkhaloscope-training-dc/stronglens_calibration/manifests/training_v1.parquet \
+  --epochs 160 --base-lr 5e-4 --lr-step-epoch 80 \
+  --effective-batch 2048 --micro-batch 128 \
+  --outdir out/resnet18_paperIV_parity
+```
+
+**3) EfficientNet parity training**
+
+```bash
+python training/train_paperIV_efficientnet.py \
+  --manifest /lambda/nfs/darkhaloscope-training-dc/stronglens_calibration/manifests/training_v1.parquet \
+  --epochs 160 --base-lr 3.88e-4 --lr-step-epoch 130 \
+  --effective-batch 512 --micro-batch 64 \
+  --outdir out/effnetb0_paperIV_parity
+```
+
+---
+
+## Critical caveat (you must not overclaim)
+
+Paper IV’s ResNet architecture appears to be a **custom small ResNet** (the paper reports far fewer parameters than torchvision ResNet18). Their EfficientNet is consistent with EfficientNet-B0 scale.
+
+This code pack uses:
+
+* torchvision **resnet18** (closest named analogue; not guaranteed identical)
+* torchvision **efficientnet_b0** with ImageNet weights
+
+So you should phrase parity as:
+
+* “We match Paper IV’s **training protocol** (epochs, resolution, LR schedule, effective batch sizes) and use standard ResNet18/EfficientNet-B0 implementations unless otherwise stated.”
+
+If you want **true architecture parity**, you need Paper IV’s exact ResNet implementation or a fully specified layer table from the paper’s supplement/code.
+
+---
+
+## What to change immediately in your current pipeline
+
+1. **Disable 64×64 crop** for the parity run.
+2. **Run 160 epochs** (no early stopping).
+3. **Switch LR schedule to step-halving** at the paper epochs.
+4. **Use gradient accumulation** to emulate large batches.
+5. **Use 70/30 train/val** for the parity run.
+
+After those changes, your comparison to Paper IV becomes defensible.
+
+If you want, I can also generate a second zip that adds:
+
+* a **70/30 splitter** that writes a new manifest with only train/val (Paper IV parity)
+* optional **test split preservation** for your method paper (kept separate from parity runs)
+* a cleaned-negative step (placeholder hooks) so you can implement the Paper IV “contaminant removal + prescreen” once you have the exact artifact sources.
+
+================
+
+In summary, this is the discrepancy report: 
+
+Complete Discrepancy Audit (from Paper IV re-read)
+
+Architecture (FUNDAMENTAL)
+
+
+
+
+
+Paper IV ResNet: Custom "shielded" ResNet from Lanusse et al. 2018, 1x1 convolutions reducing dimensionality after each block. 194,433 parameters. TensorFlow.
+
+
+
+Our ResNet: torchvision ResNet-18 (weights=None), conv1 modified, fc -> 1. ~11.2M parameters. PyTorch.
+
+
+
+Gap: 58x more parameters. Completely different architecture. We CANNOT claim architecture parity without Lanusse et al. 2018 code.
+
+
+
+Paper IV EfficientNet: EfficientNetV2 (NOT V1), pre-trained on ImageNet, fine-tuned. 20,542,883 parameters.
+
+
+
+Our EfficientNet: Does not exist.
+
+Training Protocol
+
+
+
+
+
+
+
+Parameter
+
+
+
+Paper IV ResNet
+
+
+
+Paper IV EfficientNet
+
+
+
+Our Run
+
+
+
+
+
+Input resolution
+
+
+
+101x101
+
+
+
+101x101
+
+
+
+64x64 (cropped)
+
+
+
+
+
+Epochs
+
+
+
+160 (best@126)
+
+
+
+160 (best@50)
+
+
+
+16 (early stopped)
+
+
+
+
+
+Batch size
+
+
+
+2048
+
+
+
+512
+
+
+
+256
+
+
+
+
+
+LR
+
+
+
+5e-4
+
+
+
+3.88e-4
+
+
+
+3e-4
+
+
+
+
+
+LR schedule
+
+
+
+StepLR halve@80
+
+
+
+StepLR halve@130
+
+
+
+CosineAnnealingLR
+
+
+
+
+
+Early stopping
+
+
+
+None
+
+
+
+None
+
+
+
+patience=10
+
+
+
+
+
+Loss
+
+
+
+Unweighted CE
+
+
+
+Unweighted CE
+
+
+
+Tier-weighted BCE
+
+
+
+
+
+Optimizer
+
+
+
+Not specified
+
+
+
+Not specified
+
+
+
+AdamW
+
+
+
+
+
+Pre-training
+
+
+
+None (from scratch)
+
+
+
+ImageNet
+
+
+
+None
+
+
+
+
+
+Hardware
+
+
+
+4x A100 (TF)
+
+
+
+4x A100 (TF)
+
+
+
+1x GPU (PyTorch)
+
+Data
+
+
+
+
+
+
+
+Parameter
+
+
+
+Paper IV
+
+
+
+Ours
+
+
+
+Gap
+
+
+
+
+
+Positives
+
+
+
+1,372
+
+
+
+4,788
+
+
+
+3.5x more (includes Tier-B)
+
+
+
+
+
+Negatives
+
+
+
+134,182
+
+
+
+411,661
+
+
+
+3x more
+
+
+
+
+
+Neg:Pos ratio
+
+
+
+~100:1 per nobs_z bin
+
+
+
+~86:1 overall
+
+
+
+Different binning
+
+
+
+
+
+Split
+
+
+
+70/30 train/val
+
+
+
+70/15/15 train/val/test
+
+
+
+Different
+
+
+
+
+
+Neg types
+
+
+
+SER/DEV/REX
+
+
+
+SER/DEV/REX (config fixed)
+
+
+
+Match
+
+
+
+
+
+Neg cleaning
+
+
+
+Spherimatch + prior model p>0.4
+
+
+
+Spatial exclusion only
+
+
+
+Missing step 2
+
+
+
+
+
+Normalization
+
+
+
+Not specified in paper
+
+
+
+raw_robust (outer annulus median/MAD, clip +/-10)
+
+
+
+Unknown
+
+
+
+
+
+Augmentation
+
+
+
+Not described
+
+
+
+HFlip, VFlip, Rot90
+
+
+
+Unknown
+
+Missing Components
+
+
+
+
+
+Meta-learner: Paper IV combines ResNet + EfficientNet via 1-layer NN (300 nodes, feature weighted stacking). AUC 0.9989.
+
+
+
+EfficientNetV2: We don't have it at all.
+
+
+Can you generate the correct practical setup for the data and model parameters for Resnet and Efficinet model  which can make the  model comparable in the paper. I am not sure if it is meaningful to do exact one. For example , I dont want to change the input dataset which is bigger than those in the paper and I also want to keep some for train. Does this mean the dataset allocation I have done and dataset can be reused . What else is ok ? what should I change defintely  to make the model comparable to the one in the paper
+
+---------
+
+LLM:
+
+In summary, this is the discrepancy report: 
+
+Complete Discrepancy Audit (from Paper IV re-read)
+
+Architecture (FUNDAMENTAL)
+
+
+
+
+
+Paper IV ResNet: Custom "shielded" ResNet from Lanusse et al. 2018, 1x1 convolutions reducing dimensionality after each block. 194,433 parameters. TensorFlow.
+
+
+
+Our ResNet: torchvision ResNet-18 (weights=None), conv1 modified, fc -> 1. ~11.2M parameters. PyTorch.
+
+
+
+Gap: 58x more parameters. Completely different architecture. We CANNOT claim architecture parity without Lanusse et al. 2018 code.
+
+
+
+Paper IV EfficientNet: EfficientNetV2 (NOT V1), pre-trained on ImageNet, fine-tuned. 20,542,883 parameters.
+
+
+
+Our EfficientNet: Does not exist.
+
+Training Protocol
+
+
+
+
+
+
+
+Parameter
+
+
+
+Paper IV ResNet
+
+
+
+Paper IV EfficientNet
+
+
+
+Our Run
+
+
+
+
+
+Input resolution
+
+
+
+101x101
+
+
+
+101x101
+
+
+
+64x64 (cropped)
+
+
+
+
+
+Epochs
+
+
+
+160 (best@126)
+
+
+
+160 (best@50)
+
+
+
+16 (early stopped)
+
+
+
+
+
+Batch size
+
+
+
+2048
+
+
+
+512
+
+
+
+256
+
+
+
+
+
+LR
+
+
+
+5e-4
+
+
+
+3.88e-4
+
+
+
+3e-4
+
+
+
+
+
+LR schedule
+
+
+
+StepLR halve@80
+
+
+
+StepLR halve@130
+
+
+
+CosineAnnealingLR
+
+
+
+
+
+Early stopping
+
+
+
+None
+
+
+
+None
+
+
+
+patience=10
+
+
+
+
+
+Loss
+
+
+
+Unweighted CE
+
+
+
+Unweighted CE
+
+
+
+Tier-weighted BCE
+
+
+
+
+
+Optimizer
+
+
+
+Not specified
+
+
+
+Not specified
+
+
+
+AdamW
+
+
+
+
+
+Pre-training
+
+
+
+None (from scratch)
+
+
+
+ImageNet
+
+
+
+None
+
+
+
+
+
+Hardware
+
+
+
+4x A100 (TF)
+
+
+
+4x A100 (TF)
+
+
+
+1x GPU (PyTorch)
+
+Data
+
+
+
+
+
+
+
+Parameter
+
+
+
+Paper IV
+
+
+
+Ours
+
+
+
+Gap
+
+
+
+
+
+Positives
+
+
+
+1,372
+
+
+
+4,788
+
+
+
+3.5x more (includes Tier-B)
+
+
+
+
+
+Negatives
+
+
+
+134,182
+
+
+
+411,661
+
+
+
+3x more
+
+
+
+
+
+Neg:Pos ratio
+
+
+
+~100:1 per nobs_z bin
+
+
+
+~86:1 overall
+
+
+
+Different binning
+
+
+
+
+
+Split
+
+
+
+70/30 train/val
+
+
+
+70/15/15 train/val/test
+
+
+
+Different
+
+
+
+
+
+Neg types
+
+
+
+SER/DEV/REX
+
+
+
+SER/DEV/REX (config fixed)
+
+
+
+Match
+
+
+
+
+
+Neg cleaning
+
+
+
+Spherimatch + prior model p>0.4
+
+
+
+Spatial exclusion only
+
+
+
+Missing step 2
+
+
+
+
+
+Normalization
+
+
+
+Not specified in paper
+
+
+
+raw_robust (outer annulus median/MAD, clip +/-10)
+
+
+
+Unknown
+
+
+
+
+
+Augmentation
+
+
+
+Not described
+
+
+
+HFlip, VFlip, Rot90
+
+
+
+Unknown
+
+Missing Components
+
+
+
+
+
+Meta-learner: Paper IV combines ResNet + EfficientNet via 1-layer NN (300 nodes, feature weighted stacking). AUC 0.9989.
+
+
+
+EfficientNetV2: We don't have it at all.
+
+
+Can you generate the correct practical setup for the data and model parameters for Resnet and Efficinet model  which can make the  model comparable in the paper. I am not sure if it is meaningful to do exact one. For example , I dont want to change the input dataset which is bigger than those in the paper and I also want to keep some for train. Does this mean the dataset allocation I have done and dataset can be reused . What else is ok ? what should I change defintely  to make the model comparable to the one in the paper
+
+======================

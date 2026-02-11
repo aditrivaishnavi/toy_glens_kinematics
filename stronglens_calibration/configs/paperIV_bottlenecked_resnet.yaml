@@ -1,0 +1,39 @@
+# Paper IV Parity: Bottlenecked ResNet (Lanusse-style)
+# ~250K params, comparable to Paper IV's 194K custom ResNet
+# Protocol: 160 epochs, StepLR halve@80, effective batch 2048, unweighted CE, 101x101
+# Date: 2026-02-11
+
+dataset:
+  parquet_path: ""
+  manifest_path: /lambda/nfs/darkhaloscope-training-dc/stronglens_calibration/manifests/training_parity_v1.parquet
+  mode: file_manifest
+  preprocessing: raw_robust
+  label_col: label
+  cutout_path_col: cutout_path
+  sample_weight_col: sample_weight
+  seed: 42
+  crop: false           # Keep 101x101 for Paper IV parity
+  crop_size: 0
+
+augment:
+  hflip: true
+  vflip: true
+  rot90: true
+
+train:
+  arch: bottlenecked_resnet
+  epochs: 160
+  batch_size: 128         # Micro-batch (GPU memory)
+  effective_batch: 2048   # Gradient accumulation -> 2048/128 = 16 steps
+  lr: 0.0005              # 5e-4 per Paper IV
+  weight_decay: 0.0001
+  lr_schedule: step
+  lr_step_epoch: 80       # Halve LR at epoch 80
+  lr_gamma: 0.5
+  num_workers: 8
+  device: cuda
+  early_stopping_patience: 0   # Disabled: run all 160 epochs
+  out_dir: /lambda/nfs/darkhaloscope-training-dc/stronglens_calibration/checkpoints/paperIV_bottlenecked_resnet
+  mixed_precision: true
+  unweighted_loss: true   # Paper IV uses unweighted CE
+  pretrained: false

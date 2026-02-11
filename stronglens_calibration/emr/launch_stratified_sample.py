@@ -38,11 +38,11 @@ from constants import (
 # CONFIGURATION
 # =============================================================================
 
-# Use presets from constants
+# Use presets from constants (test, medium, large for production with 30 cores)
 PRESETS = {
     name: {**cfg, "description": cfg.get("description", f"{name} preset")}
     for name, cfg in EMR_PRESETS.items()
-    if name in ("test", "medium")
+    if name in ("test", "medium", "large")
 }
 
 EMR_DIR = Path(__file__).parent.resolve()
@@ -87,8 +87,15 @@ def prepare_and_upload_code():
     return uploads
 
 
-def launch_emr_cluster_with_step(preset: str, uploads, negatives_path: str, positives_path: str):
-    """Launch EMR cluster with step included (for auto-termination)."""
+def launch_emr_cluster_with_step(preset: str, uploads, negatives_path: str,
+                                  positives_path: str, test_limit: int = 0,
+                                  force: bool = False):
+    """Launch EMR cluster with step included (for auto-termination).
+    
+    Steps are configured at launch time. Cluster auto-terminates on
+    completion (KeepJobFlowAliveWhenNoSteps=False) and on failure
+    (ActionOnFailure=TERMINATE_CLUSTER).
+    """
     config = PRESETS[preset]
     timestamp = uploads["timestamp"]
     output_path = f"s3://{S3_BUCKET}/{S3_SAMPLED_NEGATIVES_PREFIX}/{timestamp}/"
@@ -97,6 +104,10 @@ def launch_emr_cluster_with_step(preset: str, uploads, negatives_path: str, posi
     print(f"  Master:  1x {config['master_type']}")
     print(f"  Workers: {config['worker_count']}x {config['worker_type']}")
     print(f"  Output: {output_path}")
+    if test_limit > 0:
+        print(f"  Test limit: {test_limit} rows")
+    if force:
+        print(f"  Force: overriding existing output/checkpoints")
     
     emr = boto3.client("emr", region_name=AWS_REGION)
     
@@ -105,15 +116,22 @@ def launch_emr_cluster_with_step(preset: str, uploads, negatives_path: str, posi
         "spark-submit",
         "--deploy-mode", "cluster",
         "--driver-memory", "4g",
-        "--executor-memory", "8g",
+        "--executor-memory", config["executor_memory"],
         "--executor-cores", "2",
         "--conf", "spark.dynamicAllocation.enabled=true",
+        "--conf", "spark.sql.adaptive.enabled=true",
         "--conf", "spark.sql.shuffle.partitions=200",
         uploads["script"],
         "--negatives", negatives_path,
         "--positives", positives_path,
         "--output", output_path,
     ]
+    
+    # Pass through optional args
+    if test_limit > 0:
+        step_args.extend(["--test-limit", str(test_limit)])
+    if force:
+        step_args.append("--force")
     
     cluster_config = {
         "Name": f"stratified-sample-{timestamp}",
@@ -240,6 +258,10 @@ def main():
     parser.add_argument("--preset", choices=list(PRESETS.keys()), default="medium")
     parser.add_argument("--negatives", required=True, help="S3 path to negative manifest")
     parser.add_argument("--positives", required=True, help="S3 path to positives with DR10")
+    parser.add_argument("--test-limit", type=int, default=0,
+                       help="Limit negatives to N rows for small-scale testing (0 = full run)")
+    parser.add_argument("--force", action="store_true",
+                       help="Force reprocessing, override existing checkpoints/output")
     parser.add_argument("--no-monitor", action="store_true")
     
     args = parser.parse_args()
@@ -250,6 +272,10 @@ def main():
     print(f"Preset: {args.preset} - {PRESETS[args.preset]['description']}")
     print(f"Negatives: {args.negatives}")
     print(f"Positives: {args.positives}")
+    if args.test_limit > 0:
+        print(f"Test limit: {args.test_limit} rows (small-scale test)")
+    if args.force:
+        print(f"Force: will override existing output/checkpoints")
     
     # Check AWS
     try:
@@ -260,23 +286,44 @@ def main():
         print(f"ERROR: {e}")
         sys.exit(1)
     
+    # Validate code before upload (lesson 5.3)
+    print("\n[0/4] Pre-flight: validating code...")
+    import subprocess
+    script = EMR_DIR / "spark_stratified_sample.py"
+    result = subprocess.run([sys.executable, "-m", "py_compile", str(script)],
+                           capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"  ERROR: {script.name} has syntax errors:\n{result.stderr}")
+        sys.exit(1)
+    print(f"  {script.name} syntax OK")
+    
     # Upload
     uploads = prepare_and_upload_code()
     
+    # Verify upload (lesson 6.2)
+    import hashlib
+    local_hash = hashlib.md5(script.read_bytes()).hexdigest()
+    print(f"  Local {script.name} MD5: {local_hash}")
+    
     # Launch cluster with step (auto-terminates when done)
     cluster_id, output_path = launch_emr_cluster_with_step(
-        args.preset, uploads, args.negatives, args.positives
+        args.preset, uploads, args.negatives, args.positives,
+        test_limit=args.test_limit, force=args.force
     )
     
     print(f"\n" + "=" * 60)
     print(f"Cluster ID: {cluster_id}")
     print(f"Output:     {output_path}")
     print("=" * 60)
-    print(f"\nCluster will auto-terminate after step completes.")
+    print(f"\nCluster will auto-terminate after step completes or fails.")
+    print(f"  KeepJobFlowAliveWhenNoSteps: False")
+    print(f"  ActionOnFailure: TERMINATE_CLUSTER")
     print(f"EMR Console: {get_emr_console_url(cluster_id)}")
     print(f"\nMonitor with:")
     print(f"  aws emr describe-cluster --cluster-id {cluster_id} --region {AWS_REGION}")
     print(f"  aws emr list-steps --cluster-id {cluster_id} --region {AWS_REGION}")
+    print(f"\nTerminate early with:")
+    print(f"  {get_emr_terminate_cmd(cluster_id)}")
 
 
 if __name__ == "__main__":

@@ -33,6 +33,8 @@ class DatasetConfig:
     manifest_path: Optional[str] = None
     cutout_path_col: str = "cutout_path"  # For file_manifest mode
     sample_weight_col: Optional[str] = "sample_weight"  # For weighted loss
+    crop: bool = True         # False = keep 101x101 for Paper IV parity
+    crop_size: int = 0        # 0 = default STAMP_SIZE; >0 = custom crop size
 
 @dataclass
 class SplitConfig:
@@ -87,11 +89,18 @@ class LensDataset:
         return path, label, weight
 
     def __getitem__(self, i: int):
+        # Determine crop settings from config
+        crop_kwargs = {}
+        if hasattr(self.dcfg, 'crop'):
+            crop_kwargs['crop'] = self.dcfg.crop
+        if hasattr(self.dcfg, 'crop_size') and self.dcfg.crop_size > 0:
+            crop_kwargs['crop_size'] = self.dcfg.crop_size
+
         if self.dcfg.mode == "file_manifest":
             # Load from local file
             path, y, weight = self._get_file_and_label(i)
             img3 = load_cutout_from_file(path)  # Already CHW
-            img3 = preprocess_stack(img3, mode=self.dcfg.preprocessing)
+            img3 = preprocess_stack(img3, mode=self.dcfg.preprocessing, **crop_kwargs)
             seed = (self.dcfg.seed * 1000003 + i) & 0x7fffffff
             img3 = random_augment(img3, seed=seed, cfg=self.aug)
             return img3, np.int64(y), np.float32(weight)
@@ -99,7 +108,7 @@ class LensDataset:
             blob, y = self._get_blob_and_label(i)
             dec = decode_npz_blob(blob)
             img3 = stack_from_npz(dec)
-            img3 = preprocess_stack(img3, mode=self.dcfg.preprocessing)
+            img3 = preprocess_stack(img3, mode=self.dcfg.preprocessing, **crop_kwargs)
             seed = (self.dcfg.seed * 1000003 + i) & 0x7fffffff
             img3 = random_augment(img3, seed=seed, cfg=self.aug)
             return img3, np.int64(y)
