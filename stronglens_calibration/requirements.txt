@@ -31,6 +31,13 @@ pyyaml>=6.0                 # YAML config parsing
 # awscli is typically installed system-wide; not pinned here
 # boto3>=1.34.0             # Uncomment if using AWS SDK directly
 
+# ==== Testing: injection engine cross-validation ====
+lenstronomy>=1.11.0          # Peer-reviewed lensing code; used ONLY in
+                             # tests/test_injection_engine.py to cross-validate
+                             # our SIE deflection and magnification against an
+                             # independent implementation. Tests gracefully skip
+                             # if not installed. NOT used in production pipeline.
+
 # ==== Optional: visualization (not required for training/eval) ====
 # matplotlib>=3.8.0
 # seaborn>=0.13.0
