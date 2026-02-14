@@ -1,0 +1,58 @@
+# Paper IV Parity: EfficientNetV2-S — v5-ft fine-tune from v4 with CORRECTED ANNULUS
+# ==================================================================================
+# Both independent LLM reviewers (Q1.21) recommended trying finetune-from-v4
+# as a faster diagnostic before from-scratch training.
+#
+# Strategy: Load v4's best checkpoint (AUC=0.9921), change ONLY the preprocessing
+# annulus to the corrected (32.5, 45.0) values, and finetune with low LR + cosine
+# for 60 epochs (same v4 recipe).
+#
+# If this succeeds: the annulus fix works, model adapts quickly.
+# If this fails: the feature geometry shift from the annulus change is too large
+#   and from-scratch training (v5) is needed.
+#
+# IMPORTANT: This config MUST use the corrected annulus. Do NOT mix scoring with
+# old-annulus checkpoints.
+#
+# Date: 2026-02-13 (Prompt 1 fix, Q1.21/Q1.23)
+
+dataset:
+  parquet_path: ""
+  manifest_path: /lambda/nfs/darkhaloscope-training-dc/stronglens_calibration/manifests/training_parity_70_30_v1.parquet
+  mode: file_manifest
+  preprocessing: raw_robust
+  label_col: label
+  cutout_path_col: cutout_path
+  sample_weight_col: sample_weight
+  seed: 42
+  crop: false           # Keep 101x101 for Paper IV parity
+  crop_size: 0
+  # CORRECTED annulus: from default_annulus_radii(101, 101)
+  annulus_r_in: 32.5
+  annulus_r_out: 45.0
+
+augment:
+  hflip: true
+  vflip: true
+  rot90: true
+
+train:
+  arch: efficientnet_v2_s
+  epochs: 60            # Fine-tuning run (same as v4 recipe)
+  batch_size: 64
+  effective_batch: 512
+  lr: 0.00005           # 5e-5 (same as v4 finetune)
+  weight_decay: 0.0001
+  lr_schedule: cosine   # Continuous decay from 5e-5 to ~0 over 60 epochs
+  lr_step_epoch: 130    # Ignored by cosine schedule
+  lr_gamma: 0.5         # Ignored by cosine schedule
+  num_workers: 8
+  device: cuda
+  early_stopping_patience: 0   # Run all 60 epochs
+  out_dir: /lambda/nfs/darkhaloscope-training-dc/stronglens_calibration/checkpoints/gen5b_efficientnet_annulus_ft
+  mixed_precision: true
+  unweighted_loss: true
+  pretrained: false     # NOT loading ImageNet — we load v4 weights via init_weights
+  freeze_backbone_epochs: 0    # No freezing — model is already adapted from v4
+  warmup_epochs: 3             # Brief warmup since starting from adapted weights
+  init_weights: /lambda/nfs/darkhaloscope-training-dc/stronglens_calibration/checkpoints/paperIV_efficientnet_v2_s_v4_finetune/best.pt

@@ -1,0 +1,49 @@
+# Paper IV Parity: Bottlenecked ResNet — CORRECTED ANNULUS
+# =======================================================
+# This config retrains with the corrected normalization annulus.
+# See paperIV_efficientnet_v2_s_v5_annulus_fix.yaml for context.
+#
+# Protocol: 160 epochs, StepLR halve@80, effective batch 2048,
+#           unweighted CE, 101x101, CORRECTED ANNULUS
+# Date: 2026-02-13
+
+dataset:
+  parquet_path: ""
+  manifest_path: /lambda/nfs/darkhaloscope-training-dc/stronglens_calibration/manifests/training_parity_70_30_v1.parquet
+  mode: file_manifest
+  preprocessing: raw_robust
+  label_col: label
+  cutout_path_col: cutout_path
+  sample_weight_col: sample_weight
+  seed: 42
+  crop: false
+  crop_size: 0
+  # CORRECTED annulus
+  annulus_r_in: 32.5
+  annulus_r_out: 45.0
+
+augment:
+  hflip: true
+  vflip: true
+  rot90: true
+
+train:
+  arch: bottlenecked_resnet
+  base_ch: 27
+  epochs: 160
+  batch_size: 128
+  effective_batch: 2048
+  lr: 0.0005
+  weight_decay: 0.0001
+  lr_schedule: step
+  lr_step_epoch: 80
+  lr_gamma: 0.5
+  num_workers: 8
+  device: cuda
+  early_stopping_patience: 0
+  out_dir: /lambda/nfs/darkhaloscope-training-dc/stronglens_calibration/checkpoints/paperIV_bottlenecked_resnet_v2_annulus_fix
+  mixed_precision: true
+  unweighted_loss: true
+  pretrained: false
+  freeze_backbone_epochs: 0
+  warmup_epochs: 0

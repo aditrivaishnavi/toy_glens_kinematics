@@ -205,10 +205,23 @@ Following LLM recommendations inspired by Inchausti et al. (2025):
 
 For each band independently:
 
-1. Define an annular region with inner radius $r_\mathrm{in} = 20$ pixels and outer radius $r_\mathrm{out} = 32$ pixels (centered on the 101×101 stamp)
+1. Define an annular region centered on the stamp. For 101×101 stamps, the
+   corrected annulus uses $r_\mathrm{in} = 32.5$ pixels and $r_\mathrm{out} = 45.0$ pixels
+   (65–90% of the image half-width), ensuring it lies in the sky-dominated outer
+   region. See `dhs/utils.py::default_annulus_radii()` for the formula.
 2. Compute the median $\tilde{x}$ and median absolute deviation (MAD) of pixel values within the annulus
 3. Normalize: $x_\mathrm{norm} = (x - \tilde{x}) / (\mathrm{MAD} + \epsilon)$ where $\epsilon = 10^{-8}$
 4. Clip to $[-10, +10]$
+
+**ERRATUM (2026-02-13, LLM review finding #1)**: Earlier models (v1–v4) used a
+hardcoded annulus of $(r_\mathrm{in}, r_\mathrm{out}) = (20, 32)$ pixels, which
+was originally tuned for 64×64 center-cropped stamps. When the pipeline moved to
+101×101 stamps (Paper IV parity, crop=False), this annulus was not updated. At
+(20, 32), the annulus sits at 40–63% of the image half-width, overlapping with
+galaxy light (~20% of total flux). This inflates the MAD denominator and
+suppresses arc contrast. The corrected annulus at (32.5, 45.0) places the ring
+at 65–90% of the half-width, where galaxy flux fraction is ~6%. Models v5+ use
+the corrected annulus. See `docs/RETRAIN_PLAN_ANNULUS_FIX.md` for details.
 
 **Note**: Inchausti et al. (2025) do not specify their normalization procedure. Our `raw_robust` approach is defensible as it: (a) uses sky-dominated pixels for the reference statistics, avoiding bias from the central galaxy; (b) is robust to outliers via median/MAD rather than mean/std; (c) is applied identically at train and test time.
 
@@ -572,6 +585,41 @@ Injection-based completeness measurement using physically motivated SIS+shear le
 - `dhs/selection_function_utils.py` — `m5_from_psfdepth`, `bayes_binomial_interval`, binning utilities
 
 **CRITICAL**: 8 known issues must be resolved before selection function results are used in the paper — see §7.7 for full details. Most critical: magnification bug (§7.7.1) makes current arcs 5–30× too faint.
+
+#### 9.3.1 Injection Priors (Single Source of Truth)
+
+The following table lists the **exact** parameter values used by the injection
+engine. These are the code defaults in `sample_source_params()` and
+`sample_lens_params()` in `dhs/injection_engine.py`, validated by the test
+`tests/test_injection_priors.py` against the registry file
+`configs/injection_priors.yaml`.
+
+**ERRATUM (2026-02-13)**: Earlier drafts described different values for several
+parameters (e.g., $R_e \in [0.1, 0.5]$ arcsec, $n \in [0.5, 4.0]$, uniform
+wide colors). The table below reflects what the code *actually uses*. The
+discrepancy was identified by LLM review finding #2.
+
+| Parameter | Distribution | Code default | Unit |
+|-----------|-------------|-------------|------|
+| Source $r$-mag | $\mathrm{U}(23, 26)$ | `r_mag_range = (23.0, 26.0)` | AB mag |
+| $\beta_\mathrm{frac} = \beta / \theta_E$ | Area-weighted: $\sqrt{\mathrm{U}(0.01, 1.0)}$ | `beta_frac_range = (0.1, 1.0)` | — |
+| $R_e$ (source half-light) | $\mathrm{U}(0.05, 0.25)$ | `re_arcsec_range = (0.05, 0.25)` | arcsec |
+| $n$ (Sérsic index) | $\mathrm{U}(0.7, 2.5)$ | `n_range = (0.7, 2.5)` | — |
+| $q$ (source axis ratio) | $\mathrm{U}(0.3, 1.0)$ | `q_range = (0.3, 1.0)` | — |
+| $g - r$ color | $\mathcal{N}(0.2, 0.25)$ | `g_minus_r_mu_sigma = (0.2, 0.25)` | mag |
+| $r - z$ color | $\mathcal{N}(0.1, 0.25)$ | `r_minus_z_mu_sigma = (0.1, 0.25)` | mag |
+| Clump probability | Bernoulli(0.6) | `clumps_prob = 0.6` | — |
+| $N_\mathrm{clumps}$ (if present) | integers $\{1, 2, 3\}$ | `rng.integers(1, 4)` | — |
+| Clump frac (if present) | $\mathrm{U}(0.15, 0.45)$ | `rng.uniform(0.15, 0.45)` | — |
+| External shear $|\gamma|$ | half-$\mathcal{N}(0, 0.05)$ | `shear_sigma = 0.05` | — |
+| Lens center jitter | $\mathcal{N}(0, 0.05)$ per axis | `center_sigma_arcsec = 0.05` | arcsec |
+| $q_\mathrm{lens}$ (Model 1) | $\mathrm{U}(0.5, 1.0)$ | `q_lens_range = (0.5, 1.0)` | — |
+
+**Model 2 conditioning** (`injection_model_2/host_matching.py`):
+$q_\mathrm{lens} = \mathrm{clip}(q_\mathrm{host} + \mathcal{N}(0, 0.05), 0.5, 1.0)$.
+Note: This is Gaussian **additive** scatter on the host axis ratio, NOT
+multiplicative uniform as some earlier descriptions stated. $\phi_\mathrm{lens}$
+is aligned with the host PA.
 
 ---
 

@@ -29,7 +29,9 @@ def center_crop(img: np.ndarray, target_size: int) -> np.ndarray:
 
 def preprocess_stack(img3: np.ndarray, mode: str, crop: bool = True, 
                      crop_size: int | None = None,
-                     clip_range: float = 10.0) -> np.ndarray:
+                     clip_range: float = 10.0,
+                     annulus_r_in: float | None = None,
+                     annulus_r_out: float | None = None) -> np.ndarray:
     """Preprocess a 3-band image stack.
     
     Args:
@@ -40,6 +42,11 @@ def preprocess_stack(img3: np.ndarray, mode: str, crop: bool = True,
         crop_size: Target crop size. None defaults to STAMP_SIZE (64).
                    Set to 0 or None with crop=False to skip cropping.
         clip_range: Clip normalized values to [-clip_range, clip_range]
+        annulus_r_in: Inner radius for normalization annulus. If None, uses
+                      normalize_outer_annulus default (20 px, locked to trained models).
+                      For retraining with corrected annulus, pass the output of
+                      default_annulus_radii(H, W).
+        annulus_r_out: Outer radius for normalization annulus. Same as above.
         
     Returns:
         Preprocessed (3, target_size, target_size) array
@@ -53,6 +60,25 @@ def preprocess_stack(img3: np.ndarray, mode: str, crop: bool = True,
     if crop and target > 0 and img3.shape[1] != target:
         img3 = center_crop(img3, target)
     
+    # Validate annulus radii: must be set together (Q1.6 fix)
+    if (annulus_r_in is None) != (annulus_r_out is None):
+        raise ValueError(
+            "annulus_r_in and annulus_r_out must both be set or both be None. "
+            f"Got annulus_r_in={annulus_r_in}, annulus_r_out={annulus_r_out}"
+        )
+    if annulus_r_in is not None and annulus_r_out is not None:
+        if annulus_r_in >= annulus_r_out:
+            raise ValueError(
+                f"annulus_r_in ({annulus_r_in}) must be < annulus_r_out ({annulus_r_out})"
+            )
+
+    # Build kwargs for normalize_outer_annulus
+    annulus_kwargs = {}
+    if annulus_r_in is not None:
+        annulus_kwargs["r_in"] = annulus_r_in
+    if annulus_r_out is not None:
+        annulus_kwargs["r_out"] = annulus_r_out
+    
     out = []
     for b in range(3):
         x = img3[b].astype(np.float32)
@@ -63,9 +89,9 @@ def preprocess_stack(img3: np.ndarray, mode: str, crop: bool = True,
             x = np.where(nan_mask, 0.0, x)
         
         if mode == "raw_robust":
-            x = normalize_outer_annulus(x)
+            x = normalize_outer_annulus(x, **annulus_kwargs)
         elif mode == "residual_radial_profile":
-            xn = normalize_outer_annulus(x)
+            xn = normalize_outer_annulus(x, **annulus_kwargs)
             model = radial_profile_model(xn)
             x = (xn - model).astype(np.float32)
         else:

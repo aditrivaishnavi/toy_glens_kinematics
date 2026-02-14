@@ -35,6 +35,14 @@ class DatasetConfig:
     sample_weight_col: Optional[str] = "sample_weight"  # For weighted loss
     crop: bool = True         # False = keep 101x101 for Paper IV parity
     crop_size: int = 0        # 0 = default STAMP_SIZE; >0 = custom crop size
+    # Annulus override for corrected normalization (see KNOWN ISSUE in dhs/utils.py).
+    # Q1.8: Sentinel value 0.0 means "use normalize_outer_annulus defaults (20, 32)",
+    # which are locked to all existing trained models. Negative values also default.
+    # For retraining with corrected annulus, set BOTH to default_annulus_radii output:
+    #   annulus_r_in: 32.5   annulus_r_out: 45.0  (for 101x101 stamps)
+    # Both must be set together or both left at 0.0; partial setting will raise ValueError.
+    annulus_r_in: float = 0.0   # 0.0 = use default (20 px)
+    annulus_r_out: float = 0.0  # 0.0 = use default (32 px)
 
 @dataclass
 class SplitConfig:
@@ -52,6 +60,7 @@ def load_cutout_from_file(path: str) -> np.ndarray:
 class LensDataset:
     def __init__(self, dcfg: DatasetConfig, scfg: SplitConfig, aug: AugmentConfig):
         self.dcfg, self.scfg, self.aug = dcfg, scfg, aug
+        self.epoch = 0  # Updated by training loop each epoch for augmentation diversity
         if dcfg.mode == "paired":
             df = _read_parquet_any(dcfg.parquet_path)
         elif dcfg.mode == "unpaired_manifest":
@@ -85,23 +94,38 @@ class LensDataset:
         row = self.df.iloc[i]
         path = row[self.dcfg.cutout_path_col]
         label = int(row[self.dcfg.label_col])
-        weight = float(row.get(self.dcfg.sample_weight_col, 1.0)) if self.dcfg.sample_weight_col else 1.0
+        # Q4.3 fix: explicit None check avoids semantically odd row.get(None, 1.0)
+        if self.dcfg.sample_weight_col is not None:
+            weight = float(row.get(self.dcfg.sample_weight_col, 1.0))
+        else:
+            weight = 1.0
         return path, label, weight
 
     def __getitem__(self, i: int):
-        # Determine crop settings from config
+        # Determine crop and annulus settings from config
         crop_kwargs = {}
         if hasattr(self.dcfg, 'crop'):
             crop_kwargs['crop'] = self.dcfg.crop
         if hasattr(self.dcfg, 'crop_size') and self.dcfg.crop_size > 0:
             crop_kwargs['crop_size'] = self.dcfg.crop_size
+        # Pass annulus radii if explicitly set (> 0); otherwise let
+        # normalize_outer_annulus use its hardcoded defaults (20, 32).
+        if self.dcfg.annulus_r_in > 0:
+            crop_kwargs['annulus_r_in'] = self.dcfg.annulus_r_in
+        if self.dcfg.annulus_r_out > 0:
+            crop_kwargs['annulus_r_out'] = self.dcfg.annulus_r_out
+
+        # Augmentation seed includes epoch so the model sees different
+        # augmentations each epoch while remaining deterministic/reproducible.
+        # Without epoch, every sample gets the same augmentation forever and
+        # the model memorises the fixed augmented training set.
+        seed = (self.dcfg.seed * 1000003 + i + self.epoch * len(self)) & 0x7fffffff
 
         if self.dcfg.mode == "file_manifest":
             # Load from local file
             path, y, weight = self._get_file_and_label(i)
             img3 = load_cutout_from_file(path)  # Already CHW
             img3 = preprocess_stack(img3, mode=self.dcfg.preprocessing, **crop_kwargs)
-            seed = (self.dcfg.seed * 1000003 + i) & 0x7fffffff
             img3 = random_augment(img3, seed=seed, cfg=self.aug)
             return img3, np.int64(y), np.float32(weight)
         else:
@@ -109,7 +133,6 @@ class LensDataset:
             dec = decode_npz_blob(blob)
             img3 = stack_from_npz(dec)
             img3 = preprocess_stack(img3, mode=self.dcfg.preprocessing, **crop_kwargs)
-            seed = (self.dcfg.seed * 1000003 + i) & 0x7fffffff
             img3 = random_augment(img3, seed=seed, cfg=self.aug)
             return img3, np.int64(y)
 

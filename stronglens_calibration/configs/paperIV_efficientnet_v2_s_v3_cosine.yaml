@@ -1,0 +1,50 @@
+# Paper IV Parity: EfficientNetV2-S (ImageNet pretrained) — v3 cosine LR
+# ~21.5M params, matches Paper IV's EfficientNetV2 architecture
+# Protocol: 160 epochs, COSINE LR, effective batch 512, unweighted CE, 101x101
+# Date: 2026-02-12
+#
+# Rationale for this run:
+#   v2 (step LR, step@130) peaked at val_auc=0.9915 at epoch 19, then slowly
+#   declined due to constant LR=3.88e-4 causing mild overfitting (train loss
+#   dropped to 0.002 while val AUC drifted from 0.988 to 0.980).
+#   Cosine annealing decays LR continuously, keeping the model in the
+#   generalizable regime longer. At E80, cosine LR ≈ 1.94e-4 (vs step's 3.88e-4).
+#
+# Only change vs v2: lr_schedule: cosine (instead of step)
+
+dataset:
+  parquet_path: ""
+  manifest_path: /lambda/nfs/darkhaloscope-training-dc/stronglens_calibration/manifests/training_parity_70_30_v1.parquet
+  mode: file_manifest
+  preprocessing: raw_robust
+  label_col: label
+  cutout_path_col: cutout_path
+  sample_weight_col: sample_weight
+  seed: 42
+  crop: false           # Keep 101x101 for Paper IV parity
+  crop_size: 0
+
+augment:
+  hflip: true
+  vflip: true
+  rot90: true
+
+train:
+  arch: efficientnet_v2_s
+  epochs: 160
+  batch_size: 64          # Micro-batch (EfficientNetV2-S needs more memory)
+  effective_batch: 512    # 512/64 = 8 accumulation steps
+  lr: 0.000388            # 3.88e-4 per Paper IV
+  weight_decay: 0.0001
+  lr_schedule: cosine     # <<< THE ONLY CHANGE vs v2: cosine annealing instead of step
+  lr_step_epoch: 130      # Ignored by cosine schedule, kept for documentation
+  lr_gamma: 0.5           # Ignored by cosine schedule, kept for documentation
+  num_workers: 8
+  device: cuda
+  early_stopping_patience: 0   # Run all 160 epochs
+  out_dir: /lambda/nfs/darkhaloscope-training-dc/stronglens_calibration/checkpoints/paperIV_efficientnet_v2_s_v3_cosine
+  mixed_precision: true
+  unweighted_loss: true
+  pretrained: true        # ImageNet pretrained
+  freeze_backbone_epochs: 5    # Freeze backbone for 5 epochs, train classifier head only
+  warmup_epochs: 5             # Linear LR warmup from lr/100 to lr over 5 epochs

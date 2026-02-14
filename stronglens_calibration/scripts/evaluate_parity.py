@@ -190,6 +190,32 @@ def compute_binary_metrics(
     n_neg = int((y == 0).sum())
 
     auc = float(roc_auc_score(y, y_score)) if n_pos > 0 and n_neg > 0 else float("nan")
+
+    # Partial AUC at low FPR regimes (scientifically relevant for lens finding,
+    # where FPR < 0.1% matters). Added per LLM reviewer recommendation (Q6.13).
+    pauc_001 = float("nan")  # pAUC at FPR < 0.1%
+    pauc_01 = float("nan")   # pAUC at FPR < 1%
+    if n_pos > 0 and n_neg > 0:
+        try:
+            pauc_001 = float(roc_auc_score(y, y_score, max_fpr=0.001))
+            pauc_01 = float(roc_auc_score(y, y_score, max_fpr=0.01))
+        except ValueError:
+            pass  # can fail if too few samples
+
+    # TPR at fixed FPR thresholds (LLM1+LLM2 Prompt 3 recommendation).
+    # For lens finding, the relevant operating point is FPR < 0.1%.
+    # Both reviewers: "report TPR at FPR=1e-3, not only AUC."
+    tpr_at_fpr_001 = float("nan")  # TPR at FPR = 0.1%
+    tpr_at_fpr_01 = float("nan")   # TPR at FPR = 1%
+    if n_pos > 0 and n_neg > 0:
+        try:
+            from sklearn.metrics import roc_curve
+            fpr_arr, tpr_arr, _ = roc_curve(y, y_score)
+            tpr_at_fpr_001 = float(np.interp(0.001, fpr_arr, tpr_arr))
+            tpr_at_fpr_01 = float(np.interp(0.01, fpr_arr, tpr_arr))
+        except Exception:
+            pass
+
     recall = tp / (tp + fn) if (tp + fn) > 0 else float("nan")
     precision = tp / (tp + fp) if (tp + fp) > 0 else float("nan")
     fpr = fp / (fp + tn) if (fp + tn) > 0 else float("nan")
@@ -197,6 +223,10 @@ def compute_binary_metrics(
 
     return {
         "auc": auc,
+        "pauc_fpr_0.001": pauc_001,
+        "pauc_fpr_0.01": pauc_01,
+        "tpr_at_fpr_0.001": tpr_at_fpr_001,
+        "tpr_at_fpr_0.01": tpr_at_fpr_01,
         "recall": recall,
         "precision": precision,
         "fpr": fpr,
@@ -465,6 +495,10 @@ def evaluate(
     print("\nComputing metrics...")
     core = compute_binary_metrics(y_true, scores, threshold)
     print(f"  AUC: {core['auc']:.6f}")
+    print(f"  pAUC (FPR<0.1%): {core['pauc_fpr_0.001']:.6f}")
+    print(f"  pAUC (FPR<1%):   {core['pauc_fpr_0.01']:.6f}")
+    print(f"  TPR@FPR=0.1%:    {core['tpr_at_fpr_0.001']:.4f}")
+    print(f"  TPR@FPR=1%:      {core['tpr_at_fpr_0.01']:.4f}")
     print(f"  Recall@{threshold}: {core['recall']:.4f}")
     print(f"  Precision@{threshold}: {core['precision']:.4f}")
     print(f"  FPR@{threshold}: {core['fpr']:.6f}")
@@ -474,6 +508,25 @@ def evaluate(
     mce = float(compute_mce(y_true, scores, n_bins=n_bins))
     print(f"  ECE (n_bins={n_bins}): {ece:.6f}")
     print(f"  MCE: {mce:.6f}")
+
+    # Positive-class calibration (LLM2 reviewer finding Q6.14):
+    # Overall ECE is dominated by negatives (93:1 ratio). For the positive
+    # class, assess calibration separately: among samples with p > threshold,
+    # what fraction are true positives? This is the "precision at predicted
+    # probability" — the positive predictive value stratified by score bin.
+    pos_mask = y_true == 1
+    pos_ece = float("nan")
+    pos_mce = float("nan")
+    if pos_mask.sum() > 20:
+        # Use fewer bins for positives (sparse)
+        pos_nbins = min(n_bins, max(5, int(pos_mask.sum() / 10)))
+        try:
+            pos_ece = float(compute_ece(y_true[pos_mask], scores[pos_mask], n_bins=pos_nbins))
+            pos_mce = float(compute_mce(y_true[pos_mask], scores[pos_mask], n_bins=pos_nbins))
+        except Exception:
+            pass  # graceful fallback
+    print(f"  ECE (positive-class, n_bins={pos_nbins if pos_mask.sum() > 20 else 'N/A'}): {pos_ece:.6f}")
+    print(f"  MCE (positive-class): {pos_mce:.6f}")
 
     rc = reliability_curve(y_true, scores, n_bins=n_bins)
     reliability = {
@@ -556,10 +609,14 @@ def evaluate(
         "calibration": {
             "ece": ece,
             "mce": mce,
+            "pos_ece": pos_ece,
+            "pos_mce": pos_mce,
             "n_bins": n_bins,
             "note": (
                 "ECE is dominated by the majority class (negatives). "
                 "It does NOT certify calibration on the positive class. "
+                "pos_ece/pos_mce assess calibration on positives only "
+                "(LLM2 reviewer recommendation Q6.14). "
                 "See MNRAS_RAW_NOTES.md Section 7.5."
             ),
         },
@@ -691,6 +748,10 @@ Examples:
     print(f"  Threshold:     {m['threshold']}")
     print()
     print(f"  AUC:           {o['auc']:.6f}  95% CI [{b['auc_ci95'][0]:.6f}, {b['auc_ci95'][1]:.6f}]")
+    print(f"  pAUC(FPR<0.1%): {o.get('pauc_fpr_0.001', float('nan')):.6f}")
+    print(f"  pAUC(FPR<1%):   {o.get('pauc_fpr_0.01', float('nan')):.6f}")
+    print(f"  TPR@FPR=0.1%:  {o.get('tpr_at_fpr_0.001', float('nan')):.4f}")
+    print(f"  TPR@FPR=1%:    {o.get('tpr_at_fpr_0.01', float('nan')):.4f}")
     print(f"  Recall:        {o['recall']:.4f}    95% CI [{b['recall_ci95'][0]:.4f}, {b['recall_ci95'][1]:.4f}]")
     print(f"  Precision:     {o['precision']:.4f}    95% CI [{b['precision_ci95'][0]:.4f}, {b['precision_ci95'][1]:.4f}]")
     print(f"  FPR:           {o['fpr']:.6f}")

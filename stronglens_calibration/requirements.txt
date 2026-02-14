@@ -8,8 +8,10 @@
 # Note: PyTorch/torchvision may need CUDA-specific install (see pytorch.org)
 
 # ==== Core ML ====
-torch>=2.7.0
-torchvision>=0.22.0
+# Pinned to avoid torchvision::nms operator mismatch errors (LLM1 Prompt 3).
+# Previously used >=, which allowed incompatible version combinations.
+torch==2.7.0
+torchvision==0.22.0
 
 # ==== Numerical / Data ====
 numpy>=1.26.4

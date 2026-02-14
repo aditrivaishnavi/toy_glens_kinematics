@@ -55,6 +55,15 @@ Thumbs.db
 *.log
 
 
+# Credentials (NEVER commit)
+colab-s3_accessKeys.csv
+
+# Zip archives (generated/archived, large)
+*.zip
+
+# Results (generated on Lambda3, too large for git)
+stronglens_calibration/results/
+
 # Large Phase 2 analysis files (stored on S3 instead)
 dark_halo_scope/results/phase2_analysis/*/phase2_hypergrid_bricks_merged.csv
 dark_halo_scope/lambda.pem

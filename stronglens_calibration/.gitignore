@@ -16,6 +16,9 @@ __pycache__/
 .eggs/
 *.egg
 
+# Virtual environments
+.venv*/
+
 # Jupyter
 .ipynb_checkpoints/
 

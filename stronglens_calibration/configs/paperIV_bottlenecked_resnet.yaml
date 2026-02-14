@@ -1,11 +1,12 @@
 # Paper IV Parity: Bottlenecked ResNet (Lanusse-style)
-# ~250K params, comparable to Paper IV's 194K custom ResNet
+# ~195K params with base_ch=27, matching Paper IV's 194,433 params
 # Protocol: 160 epochs, StepLR halve@80, effective batch 2048, unweighted CE, 101x101
-# Date: 2026-02-11
+# Date: 2026-02-12
+# Fix: epoch-aware augmentation (prevents memorisation of fixed augmented images)
 
 dataset:
   parquet_path: ""
-  manifest_path: /lambda/nfs/darkhaloscope-training-dc/stronglens_calibration/manifests/training_parity_v1.parquet
+  manifest_path: /lambda/nfs/darkhaloscope-training-dc/stronglens_calibration/manifests/training_parity_70_30_v1.parquet
   mode: file_manifest
   preprocessing: raw_robust
   label_col: label
@@ -22,18 +23,21 @@ augment:
 
 train:
   arch: bottlenecked_resnet
+  base_ch: 27             # Gives ~195K params, matching Paper IV's 194K
   epochs: 160
-  batch_size: 128         # Micro-batch (GPU memory)
-  effective_batch: 2048   # Gradient accumulation -> 2048/128 = 16 steps
-  lr: 0.0005              # 5e-4 per Paper IV
+  batch_size: 128         # Micro-batch
+  effective_batch: 2048   # 2048/128 = 16 accumulation steps
+  lr: 0.0005              # 5e-4
   weight_decay: 0.0001
   lr_schedule: step
-  lr_step_epoch: 80       # Halve LR at epoch 80
+  lr_step_epoch: 80
   lr_gamma: 0.5
   num_workers: 8
   device: cuda
-  early_stopping_patience: 0   # Disabled: run all 160 epochs
+  early_stopping_patience: 0   # Run all 160 epochs
   out_dir: /lambda/nfs/darkhaloscope-training-dc/stronglens_calibration/checkpoints/paperIV_bottlenecked_resnet
   mixed_precision: true
-  unweighted_loss: true   # Paper IV uses unweighted CE
+  unweighted_loss: true
   pretrained: false
+  freeze_backbone_epochs: 0    # Not pretrained, no freeze needed
+  warmup_epochs: 0             # Not pretrained, no warmup needed
