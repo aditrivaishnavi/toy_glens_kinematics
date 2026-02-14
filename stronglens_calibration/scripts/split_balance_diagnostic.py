@@ -93,26 +93,43 @@ def main() -> int:
 
     if healpix_col:
         pos_df = df[df["label"] == 1]
-        hp_counts = Counter(pos_df[healpix_col].values)
-        n_pixels = len(hp_counts)
-        counts_arr = np.array(list(hp_counts.values()))
-        top5 = hp_counts.most_common(5)
+        # Drop NaN healpix values (objects with missing ra/dec)
+        hp_vals = pos_df[healpix_col].dropna()
+        n_nan = len(pos_df) - len(hp_vals)
+        if n_nan > 0:
+            print(f"  WARNING: {n_nan} positives have NaN healpix (missing ra/dec)")
 
-        spatial = {
-            "healpix_col": healpix_col,
-            "n_unique_pixels": n_pixels,
-            "max_positives_per_pixel": int(counts_arr.max()),
-            "median_positives_per_pixel": float(np.median(counts_arr)),
-            "mean_positives_per_pixel": float(np.mean(counts_arr)),
-            "top5_pixels": [{"pixel": int(p), "count": int(c)} for p, c in top5],
-            "pct_in_top5": float(sum(c for _, c in top5) / len(pos_df) * 100),
-        }
+        if len(hp_vals) > 0:
+            hp_counts = Counter(hp_vals.values)
+            n_pixels = len(hp_counts)
+            counts_arr = np.array(list(hp_counts.values()))
+            top5 = hp_counts.most_common(5)
+
+            spatial = {
+                "healpix_col": healpix_col,
+                "n_unique_pixels": n_pixels,
+                "n_nan_healpix": n_nan,
+                "max_positives_per_pixel": int(counts_arr.max()),
+                "median_positives_per_pixel": float(np.median(counts_arr)),
+                "mean_positives_per_pixel": float(np.mean(counts_arr)),
+                "top5_pixels": [{"pixel": int(p), "count": int(c)} for p, c in top5],
+                "pct_in_top5": float(sum(c for _, c in top5) / len(pos_df) * 100),
+            }
+            print(f"  {n_pixels} unique HEALPix pixels with positives")
+            print(f"  Max positives per pixel: {counts_arr.max()}")
+            print(f"  Top 5 pixels hold {spatial['pct_in_top5']:.1f}% of all positives")
+            for p, c in top5:
+                print(f"    Pixel {p}: {c} positives")
+        else:
+            spatial = {
+                "healpix_col": healpix_col,
+                "n_unique_pixels": 0,
+                "n_nan_healpix": n_nan,
+                "note": "All positive healpix values are NaN",
+            }
+            print("  All positive healpix values are NaN — spatial analysis skipped")
+
         results["positive_spatial_distribution"] = spatial
-        print(f"  {n_pixels} unique HEALPix pixels with positives")
-        print(f"  Max positives per pixel: {counts_arr.max()}")
-        print(f"  Top 5 pixels hold {spatial['pct_in_top5']:.1f}% of all positives")
-        for p, c in top5:
-            print(f"    Pixel {p}: {c} positives")
     else:
         print("  No HEALPix column found — skipping spatial analysis")
         results["positive_spatial_distribution"] = None

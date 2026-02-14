@@ -54,7 +54,7 @@ injection model variants. Updated as new runs are added.
 
 | Run ID | Date | Scripts | Checkpoint | Results Path | Status | Key Finding |
 |--------|------|---------|------------|-------------|--------|-------------|
-| D01 | 2026-02-14 | split_balance, masked_pixel, annulus_comparison, mismatched_scoring, beta_frac, embedding_umap | gen4 | `results/D01_YYYYMMDD_pre_retrain_diagnostics/` | Pending | Pre-retrain diagnostics (Q2.1-Q2.4) |
+| D01 | 2026-02-14 | split_balance, masked_pixel, annulus_comparison, mismatched_scoring, beta_frac, embedding_umap | gen4 | `results/D01_20260214_pre_retrain_diagnostics/` | **Complete** | Annulus recall drop 3.6-3.8pp (GO). Linear probe AUC=0.991 (massive realism gap). Beta_frac cap ceiling ~35.5%. |
 
 ---
 

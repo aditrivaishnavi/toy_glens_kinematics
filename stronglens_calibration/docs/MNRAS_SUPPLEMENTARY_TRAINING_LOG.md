@@ -2141,10 +2141,115 @@ The `psfdepth` column is NOT AB magnitude depth (a common confusion).
 
 ---
 
+## 29. D01 Pre-Retrain Diagnostic Results (2026-02-14)
+
+Run on Lambda3 (GH200 480GB, Python 3.12.3, torch 2.7.0+cu128).
+Total runtime: 170 seconds. All 6 diagnostics passed.
+
+### 29.1 Gate 1: Data Quality -- PASS
+
+**Split balance (Diagnostic 1):**
+- Train: 316,100 (277 Tier-A, 3,079 Tier-B, 312,744 neg)
+- Val: 135,581 (112 Tier-A, 1,320 Tier-B, 134,149 neg)
+- PSF size KS test: p = 0.174 (no significant difference)
+- PSF depth KS test: p = 0.123 (no significant difference)
+- HEALPix: all 4,788 positives have NaN healpix (missing ra/dec in manifest)
+
+**Masked pixels (Diagnostic 2):**
+- Non-finite pixels: 0.0% mean, 0.0% max
+- Zero pixels: 0.0005% mean, 0.5% max
+- Flagged cutouts (>5%): 0 out of 1,000
+- **Conclusion:** No masking policy needed.
+
+### 29.2 Gate 2: Annulus Impact -- **GO FOR RETRAIN**
+
+**Annulus comparison (Diagnostic 3):**
+- Median normalization reference: old (20,32) = 0.000467, new (32.5,45) = 0.000340
+- KS test on medians: p = 2.3e-10 (highly significant difference)
+- KS test on MADs: p = 0.648 (no significant difference)
+- No correlation with PSF (r = -0.025) or depth (r = 0.026)
+- **Conclusion:** Annulus position shifts the normalization reference point materially.
+
+**Mismatched annulus scoring (Diagnostic 4):**
+
+| Metric | Native (20,32) | Mismatched (32.5,45) | Delta |
+|--------|----------------|---------------------|-------|
+| Recall (p>0.3) | 74.0% | 70.4% | **-3.6pp** |
+| Recall (p>0.5) | 69.8% | 66.0% | **-3.8pp** |
+| Recall (p>0.7) | 64.2% | 61.6% | -2.6pp |
+| FPR (p>0.3) | 0.20% | 0.20% | 0.0pp |
+| Median pos score | 0.943 | 0.901 | -0.042 |
+
+- **Conclusion:** Model loses 3.6-3.8pp recall when fed mismatched preprocessing.
+  This exceeds the 0.002 AUC threshold. The model IS fragile to annulus choice.
+  **GO for retrain with corrected annulus.**
+
+### 29.3 Gate 3: Geometry vs Morphology -- BORDERLINE
+
+**Beta_frac restriction (Diagnostic 5), beta_frac in [0.1, 0.55]:**
+
+| Mag bin | Detection (p>0.3) | Detection (p>0.5) | Median SNR |
+|---------|-------------------|--------------------|------------|
+| 18-19 | 17.0% | 9.0% | 1556 |
+| 19-20 | 24.5% | 18.0% | 672 |
+| 20-21 | 27.5% | 17.0% | 250 |
+| **21-22** | **35.5%** | **27.0%** | **101** |
+| 22-23 | 31.0% | 27.5% | 39 |
+| 23-24 | 24.0% | 18.5% | 16 |
+| 24-25 | 8.5% | 7.0% | 6 |
+| 25-26 | 1.0% | 0.5% | 2 |
+
+- Peak detection rate at p>0.3: 35.5% (mag 21-22), below the 40% threshold.
+- **Conclusion:** Beta_frac restriction helps (+5pp) but does NOT explain the
+  full gap. Both geometry and morphology contribute.
+- **Counterintuitive finding:** Brightest arcs (mag 18-19, SNR>1000) have the
+  LOWEST detection rate (17%). This is a strong signal that the CNN has learned
+  to reject unrealistic bright injections -- real lenses at those magnitudes
+  would look different (more complex morphology, different noise properties).
+
+### 29.4 Gate 4: Injection Realism -- MASSIVE GAP CONFIRMED
+
+**Feature space analysis (Diagnostic 6):**
+- Linear probe AUC (real Tier-A vs low-bf injections): **0.991 +/- 0.010**
+  - 5-fold CV, near-perfect separability
+  - The CNN unambiguously encodes "injection-ness" in its feature space
+- Frechet distance: real vs low-bf injections = **219.7**, real vs high-bf = **199.8**
+- Per-layer FD: grows from 0.22 (features_0) to 63.1 (features_3)
+  - Gap emerges in mid-level features, not just final layer
+  - Deeper layers (features_4-7) could not be computed (n=112 < dim)
+
+**Median scores by group:**
+
+| Group | Median Score |
+|-------|-------------|
+| Real Tier-A | 0.995 |
+| Low-bf injections | 0.107 |
+| High-bf injections | 0.017 |
+| Negatives | 0.000015 |
+
+- **Conclusion:** The CNN has learned a clear "injection detector" alongside
+  the "lens detector". Real lenses score 0.995, injections score 0.107.
+  This is the fundamental driver of the sim-to-real gap. The realism
+  limitation is NOT a code bug -- it is an inherent property of Sersic
+  parametric injections vs real lensed arc morphology.
+
+### 29.5 Overall D01 Decision
+
+```
+Gate 1 (Data Quality):    PASS -- clean data, no masking needed
+Gate 2 (Annulus):         GO   -- 3.6-3.8pp recall drop with wrong annulus
+Gate 3 (Beta_frac):       BORDERLINE -- 35.5% ceiling, below 40% threshold
+Gate 4 (Realism):         CONFIRMED -- probe AUC = 0.991, massive gap
+
+DECISION: GO for retrain (gen5a + gen5b)
+  - Annulus fix is justified (Gate 2)
+  - But expect modest gains only (Gate 4 shows fundamental realism limit)
+  - Paper should frame completeness as "injection-based lower bound"
+```
+
+---
+
 *This document was updated 2026-02-14. Sections 12 added per LLM
 Prompt 2 analysis. Sections 13-18 added per LLM Prompt 3 analysis.
-Sections 19-28 added per LLM Prompt 4 analysis, covering: experiment
-run commands, expanded success criteria, paper framing options, weighted
-loss, dual prior/ablation strategy, Model 2 contrast suppression
-hypothesis, Poisson noise limitation, MNRAS publication checklist,
-nanomaggy verification, and psfdepth resolution.*
+Sections 19-28 added per LLM Prompt 4 analysis. Section 29 added
+with D01 pre-retrain diagnostic results from Lambda3.*
