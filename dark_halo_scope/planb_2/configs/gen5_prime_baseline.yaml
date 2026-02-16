@@ -1,0 +1,202 @@
+# Gen5-Prime Baseline Configuration
+# ==================================
+# Full shortcut mitigation: paired sampling + hard negatives + core dropout
+
+experiment:
+  name: gen5_prime_baseline
+  description: "Gen5-Prime baseline with all shortcut mitigations enabled"
+  seed: 42
+  version: "1.0"
+
+# =============================================================================
+# MODEL
+# =============================================================================
+
+model:
+  arch: resnet18
+  pretrained: true
+  pretrained_weights: "IMAGENET1K_V1"
+  
+  # Input channels
+  channels: 3  # grz bands
+  
+  # Output
+  num_classes: 1  # Binary classification
+  
+  # Modifications
+  replace_first_conv: true  # Adapt for 64x64 input
+  first_conv_kernel: 3
+  first_conv_stride: 1
+
+# =============================================================================
+# DATA
+# =============================================================================
+
+data:
+  # Paths (update for your environment)
+  parquet_root: "/path/to/v5_cosmos_paired"  # UPDATE THIS
+  
+  # Split configuration
+  train_split: "train"
+  val_split: "val"
+  test_split: "test"
+  
+  # Batch configuration
+  batch_size: 128
+  num_workers: 8
+  pin_memory: true
+  
+  # Sampling
+  shuffle_train: true
+  drop_last: true
+
+# =============================================================================
+# TRAINING
+# =============================================================================
+
+training:
+  epochs: 50
+  
+  # Optimizer
+  optimizer: adamw
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  betas: [0.9, 0.999]
+  
+  # Scheduler
+  scheduler: cosine
+  scheduler_config:
+    T_max: 50  # Match epochs
+    eta_min: 1.0e-6
+  
+  # Warmup
+  warmup_epochs: 3
+  warmup_lr_start: 1.0e-6
+  
+  # Loss
+  loss: bce_with_logits
+  label_smoothing: 0.0
+  
+  # Gradient clipping
+  grad_clip_norm: 1.0
+  
+  # Mixed precision
+  mixed_precision: true
+  
+  # Early stopping
+  early_stopping:
+    enabled: true
+    patience: 15
+    metric: core_masked_auroc
+    mode: max
+
+# =============================================================================
+# MITIGATIONS (SHORTCUT BLOCKING)
+# =============================================================================
+
+mitigations:
+  # Paired sampling: use matched ctrl as negative
+  paired_sampling: true
+  
+  # Hard negatives: azimuthal-shuffle
+  hard_negative:
+    enabled: true
+    ratio: 0.4  # 40% of negatives are hard negatives
+    method: azimuthal_shuffle
+    
+  # Core dropout: randomly mask center during training
+  core_dropout:
+    enabled: true
+    prob: 0.5  # Apply to 50% of samples
+    radius: 5  # Mask r < 5 pixels
+    fill_mode: outer_median  # Fill with outer annulus median
+
+# =============================================================================
+# AUGMENTATIONS
+# =============================================================================
+
+augmentations:
+  train:
+    - name: RandomHorizontalFlip
+      p: 0.5
+    - name: RandomVerticalFlip
+      p: 0.5
+    - name: RandomRotation90
+      p: 0.5
+  
+  val: []  # No augmentation for validation
+  test: []
+
+# =============================================================================
+# NORMALIZATION
+# =============================================================================
+
+normalization:
+  method: per_sample_robust
+  
+  # Robust normalization parameters
+  outer_radius_pix: 20  # Use pixels with r > 20 for stats
+  clip_sigma: 5.0  # Clip values > 5 sigma from median
+
+# =============================================================================
+# CHECKPOINTING
+# =============================================================================
+
+checkpoints:
+  save_dir: "./checkpoints/gen5_prime_baseline"
+  save_every: 10  # Save every 10 epochs
+  keep_best: true
+  best_metric: core_masked_auroc  # Select best by this metric
+  keep_last: true
+
+# =============================================================================
+# LOGGING
+# =============================================================================
+
+logging:
+  log_every: 100  # Log every 100 batches
+  
+  wandb:
+    enabled: true
+    project: "dark-halo-scope"
+    run_name: "gen5-prime-baseline"
+    tags: ["gen5-prime", "baseline", "full-mitigation"]
+  
+  tensorboard:
+    enabled: false
+
+# =============================================================================
+# VALIDATION
+# =============================================================================
+
+validation:
+  # Run validation every N epochs
+  eval_every: 1
+  
+  # Run gate evaluation every N epochs
+  gate_eval_every: 5
+  
+  # Gates to run during training
+  gates:
+    - core_lr_auc
+    - core_masked_auroc
+    - hardneg_auroc
+
+# =============================================================================
+# MONITORING THRESHOLDS
+# =============================================================================
+# Stop and investigate if these are violated
+
+monitoring:
+  loss_nan_check: true
+  
+  # Expected ranges by epoch
+  expected_loss:
+    epoch_1: [0.3, 1.0]
+    epoch_5: [0.15, 0.5]
+    epoch_10: [0.1, 0.3]
+  
+  expected_val_auroc:
+    epoch_1: [0.55, 0.70]
+    epoch_5: [0.70, 0.85]
+    epoch_10: [0.80, 0.92]

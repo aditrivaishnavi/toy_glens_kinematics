@@ -1,0 +1,42 @@
+{
+  "phase": "2_extended",
+  "name": "Center-Masked Diagnostic with Controls",
+  "timestamp": "2026-02-05T06:29:09.507998+00:00",
+  "description": "Tests masking effect on both positives and controls",
+  "mask_radius_pixels": 10,
+  "mask_radius_arcsec": 2.62,
+  "positives": {
+    "n": 499,
+    "original_mean": 0.9199417989351466,
+    "masked_mean": 0.7866977314628756,
+    "mean_drop": 0.133244067472271,
+    "median_drop": 0.00016689300537109375,
+    "drop_percent": 14.483967097321157,
+    "frac_drop_gt_0.3": 0.19839679358717435,
+    "frac_drop_gt_0.5": 0.13627254509018036,
+    "delta_percentiles": {
+      "p10": -0.00024838447570800753,
+      "p25": -1.1920928955078125e-07,
+      "p50": 0.00016689300537109375,
+      "p75": 0.12085823714733124,
+      "p90": 0.6868404630571604
+    }
+  },
+  "controls": {
+    "n": 500,
+    "original_mean": 0.01222567781878601,
+    "masked_mean": 0.1269741860156282,
+    "mean_drop": -0.11474850819684221,
+    "median_drop": -0.033464061893027974,
+    "delta_percentiles": {
+      "p10": -0.3715830284694675,
+      "p25": -0.1445866532594664,
+      "p50": -0.033464061893027974,
+      "p75": -0.006594045934321002,
+      "p90": -0.0012429652397713644
+    }
+  },
+  "differential_drop_pct": 953.0700307715932,
+  "interpretation": "CENTER NOT A STRONG CUE",
+  "explanation": "Masking has limited effect on predictions. Model relies more on arc/outer features."
+}

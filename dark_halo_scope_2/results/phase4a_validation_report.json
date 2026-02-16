@@ -1,0 +1,303 @@
+{
+  "validation_time": "2026-01-20T03:49:09.986910",
+  "manifests_s3": "s3://darkhaloscope/phase4_pipeline/phase4a/v3_color_relaxed/manifests",
+  "stage_config": {
+    "valid": true,
+    "config": {
+      "stage": "4a",
+      "timestamp_utc": "2026-01-19T09:44:32Z",
+      "variant": "v3_color_relaxed",
+      "output_s3": "s3://darkhaloscope/phase4_pipeline",
+      "inputs": {
+        "parent_s3": "s3://darkhaloscope/phase3_pipeline/phase3p5/v3_color_relaxed/parent_compact/",
+        "bricks_with_region_s3": "s3://darkhaloscope/phase3_pipeline/phase3a/v3_color_relaxed/bricks_with_region/",
+        "region_selections_s3": "s3://darkhaloscope/phase3_pipeline/phase3b/v3_color_relaxed/region_selections/"
+      },
+      "sampling": {
+        "selection_set_ids": "*",
+        "require_lrg_flag": "is_v3_color_relaxed",
+        "psf_edges": [
+          0.7540557384490967,
+          1.2181154489517212,
+          1.301286220550537,
+          1.411108374595642,
+          1.5999999046325684
+        ],
+        "depth_edges": [
+          23.600093841552734,
+          24.212675094604492,
+          24.464431762695312,
+          25.06955909729004,
+          26.841259002685547
+        ]
+      },
+      "tiers": {
+        "debug": {
+          "grid": "grid_small",
+          "n_per_config": 5
+        },
+        "grid": {
+          "grid": "grid_medium",
+          "n_per_config": 40
+        },
+        "train": {
+          "grid": "grid_small",
+          "n_total_per_split": 200000,
+          "control_frac": 0.5
+        }
+      },
+      "stamp_sizes": [
+        64
+      ],
+      "bandsets": [
+        "grz"
+      ],
+      "replicates": 2,
+      "idempotency": {
+        "skip_if_exists": 1,
+        "force": 0
+      }
+    }
+  },
+  "experiments": {
+    "debug_stamp64_bandsgrz_gridgrid_small": {
+      "experiment_id": "debug_stamp64_bandsgrz_gridgrid_small",
+      "issues": [],
+      "warnings": [],
+      "row_count": 792192,
+      "columns": [
+        "task_id",
+        "experiment_id",
+        "selection_set_id",
+        "selection_strategy",
+        "ranking_mode",
+        "region_id",
+        "region_split",
+        "brickname",
+        "ra",
+        "dec",
+        "zmag",
+        "rmag",
+        "w1mag",
+        "rz",
+        "zw1",
+        "psfsize_r",
+        "psfdepth_r",
+        "ebv",
+        "psf_bin",
+        "depth_bin",
+        "config_id",
+        "theta_e_arcsec",
+        "src_dmag",
+        "src_reff_arcsec",
+        "src_e",
+        "shear",
+        "stamp_size",
+        "bandset",
+        "replicate"
+      ],
+      "null_counts": {
+        "task_id": 0,
+        "brickname": 0,
+        "ra": 0,
+        "dec": 0,
+        "region_split": 0
+      },
+      "ra_range": [
+        0.006708454989284777,
+        359.9948640819255
+      ],
+      "dec_range": [
+        -88.86017399398017,
+        34.58343865057441
+      ],
+      "split_distribution": {
+        "train": 249312,
+        "test": 267840,
+        "val": 275040
+      },
+      "n_selection_sets": 12,
+      "n_unique_bricks": 6331,
+      "n_unique_regions": 376,
+      "theta_e_stats": {
+        "min": 0.3,
+        "max": 1.0,
+        "mean": 0.6333333333276557,
+        "std": 0.2867443565497439
+      },
+      "n_unique_configs": 48,
+      "stamp_size_distribution": {
+        "64": 792192
+      },
+      "bandset_distribution": {
+        "grz": 792192
+      },
+      "valid": true
+    },
+    "grid_stamp64_bandsgrz_gridgrid_medium": {
+      "experiment_id": "grid_stamp64_bandsgrz_gridgrid_medium",
+      "issues": [],
+      "warnings": [],
+      "row_count": 325782720,
+      "columns": [
+        "task_id",
+        "experiment_id",
+        "selection_set_id",
+        "selection_strategy",
+        "ranking_mode",
+        "region_id",
+        "region_split",
+        "brickname",
+        "ra",
+        "dec",
+        "zmag",
+        "rmag",
+        "w1mag",
+        "rz",
+        "zw1",
+        "psfsize_r",
+        "psfdepth_r",
+        "ebv",
+        "psf_bin",
+        "depth_bin",
+        "config_id",
+        "theta_e_arcsec",
+        "src_dmag",
+        "src_reff_arcsec",
+        "src_e",
+        "shear",
+        "stamp_size",
+        "bandset",
+        "replicate"
+      ],
+      "null_counts": {
+        "task_id": 0,
+        "brickname": 0,
+        "ra": 0,
+        "dec": 0,
+        "region_split": 0
+      },
+      "ra_range": [
+        0.00026662146034615923,
+        359.99992834355663
+      ],
+      "dec_range": [
+        -88.87438927893115,
+        35.12118646469026
+      ],
+      "split_distribution": {
+        "test": 110720160,
+        "train": 93886560,
+        "val": 121176000
+      },
+      "n_selection_sets": 12,
+      "n_unique_bricks": 126921,
+      "n_unique_regions": 740,
+      "theta_e_stats": {
+        "min": 0.25,
+        "max": 1.2,
+        "mean": 0.620000000000083,
+        "std": 0.3443835076829969
+      },
+      "n_unique_configs": 360,
+      "stamp_size_distribution": {
+        "64": 325782720
+      },
+      "bandset_distribution": {
+        "grz": 325782720
+      },
+      "valid": true
+    },
+    "train_stamp64_bandsgrz_gridgrid_small": {
+      "experiment_id": "train_stamp64_bandsgrz_gridgrid_small",
+      "issues": [],
+      "warnings": [],
+      "row_count": 10648570,
+      "columns": [
+        "task_id",
+        "experiment_id",
+        "selection_set_id",
+        "selection_strategy",
+        "ranking_mode",
+        "region_id",
+        "region_split",
+        "brickname",
+        "ra",
+        "dec",
+        "zmag",
+        "rmag",
+        "w1mag",
+        "rz",
+        "zw1",
+        "psfsize_r",
+        "psfdepth_r",
+        "ebv",
+        "psf_bin",
+        "depth_bin",
+        "config_id",
+        "theta_e_arcsec",
+        "src_dmag",
+        "src_reff_arcsec",
+        "src_e",
+        "shear",
+        "stamp_size",
+        "bandset",
+        "replicate"
+      ],
+      "null_counts": {
+        "task_id": 0,
+        "brickname": 0,
+        "ra": 0,
+        "dec": 0,
+        "region_split": 0
+      },
+      "ra_range": [
+        7.176849833777728e-06,
+        359.99997912716174
+      ],
+      "dec_range": [
+        -88.87438927893115,
+        35.361127235480396
+      ],
+      "split_distribution": {
+        "train": 2768516,
+        "test": 3681570,
+        "val": 4198484
+      },
+      "n_selection_sets": 12,
+      "n_unique_bricks": 254028,
+      "n_unique_regions": 800,
+      "theta_e_stats": {
+        "min": null,
+        "max": 1.0,
+        "mean": 0.31676159334123016,
+        "std": 0.37618495121847506
+      },
+      "n_unique_configs": 48,
+      "stamp_size_distribution": {
+        "64": 10648570
+      },
+      "bandset_distribution": {
+        "grz": 10648570
+      },
+      "valid": true
+    }
+  },
+  "summary": {
+    "total_experiments": 3,
+    "total_tasks": 337223482,
+    "total_issues": 0,
+    "issues": []
+  },
+  "bricks_manifest": {
+    "issues": [],
+    "warnings": [],
+    "row_count": 387280,
+    "columns": [
+      "experiment_id",
+      "brickname"
+    ],
+    "n_unique_bricks": 254466,
+    "valid": true
+  }
+}

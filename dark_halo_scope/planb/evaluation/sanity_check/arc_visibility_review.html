@@ -1,0 +1,630 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Arc Visibility Sanity Check - SLACS/BELLS</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+        h1 { color: #333; }
+        .sample { 
+            background: white; 
+            margin: 20px 0; 
+            padding: 15px; 
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .images { display: flex; gap: 10px; flex-wrap: wrap; }
+        .images img { max-width: 300px; border: 1px solid #ddd; image-rendering: auto; }
+        .info { margin-top: 10px; }
+        .snr-pass { color: green; font-weight: bold; }
+        .snr-fail { color: red; font-weight: bold; }
+        .label-section { 
+            margin-top: 10px; 
+            padding: 10px; 
+            background: #f0f0f0;
+            border-radius: 4px;
+        }
+        input[type="radio"] { margin-right: 5px; }
+        label { margin-right: 15px; }
+    </style>
+</head>
+<body>
+    <h1>Arc Visibility Sanity Check</h1>
+    <p><strong>Instructions:</strong> For each lens, review the images and select whether you see a clear arc in the DR10 data.</p>
+    <p><strong>Critical question:</strong> Is our SNR > 2.0 threshold correctly identifying real arcs, or is it picking up non-arc structure?</p>
+    <hr>
+
+
+    <div class="sample" id="sample-0">
+        <h3>#1: SDSSJ1134+6027</h3>
+        <div class="images">
+            <div>
+                <p><strong>r-band (DR10)</strong></p>
+                <img src="SDSSJ1134+6027_rband.png" alt="r-band">
+            </div>
+            <div>
+                <p><strong>Residual + θ_E annulus</strong></p>
+                <img src="SDSSJ1134+6027_residual.png" alt="Residual">
+            </div>
+        </div>
+        <div class="info">
+            <p><strong>Source:</strong> SLACS | <strong>θ_E:</strong> 1.10" | 
+               <strong>Arc SNR:</strong> <span class="snr-pass">2.66</span></p>
+            <p><a href="https://www.legacysurvey.org/viewer?ra=173.5167&dec=60.4597&layer=ls-dr10&zoom=16" target="_blank">🔍 Open in Legacy Survey Viewer</a></p>
+        </div>
+        <div class="label-section">
+            <strong>Your assessment:</strong><br>
+            <input type="radio" name="label_0" id="clear_0" value="clear">
+            <label for="clear_0">Clear arc visible</label>
+            <input type="radio" name="label_0" id="maybe_0" value="maybe">
+            <label for="maybe_0">Maybe (uncertain)</label>
+            <input type="radio" name="label_0" id="no_0" value="no">
+            <label for="no_0">No arc visible</label>
+        </div>
+    </div>
+
+
+    <div class="sample" id="sample-1">
+        <h3>#2: SDSSJ1103+5322</h3>
+        <div class="images">
+            <div>
+                <p><strong>r-band (DR10)</strong></p>
+                <img src="SDSSJ1103+5322_rband.png" alt="r-band">
+            </div>
+            <div>
+                <p><strong>Residual + θ_E annulus</strong></p>
+                <img src="SDSSJ1103+5322_residual.png" alt="Residual">
+            </div>
+        </div>
+        <div class="info">
+            <p><strong>Source:</strong> SLACS | <strong>θ_E:</strong> 1.02" | 
+               <strong>Arc SNR:</strong> <span class="snr-pass">2.83</span></p>
+            <p><a href="https://www.legacysurvey.org/viewer?ra=165.9042&dec=53.3725&layer=ls-dr10&zoom=16" target="_blank">🔍 Open in Legacy Survey Viewer</a></p>
+        </div>
+        <div class="label-section">
+            <strong>Your assessment:</strong><br>
+            <input type="radio" name="label_1" id="clear_1" value="clear">
+            <label for="clear_1">Clear arc visible</label>
+            <input type="radio" name="label_1" id="maybe_1" value="maybe">
+            <label for="maybe_1">Maybe (uncertain)</label>
+            <input type="radio" name="label_1" id="no_1" value="no">
+            <label for="no_1">No arc visible</label>
+        </div>
+    </div>
+
+
+    <div class="sample" id="sample-2">
+        <h3>#3: SDSSJ1029+0420</h3>
+        <div class="images">
+            <div>
+                <p><strong>r-band (DR10)</strong></p>
+                <img src="SDSSJ1029+0420_rband.png" alt="r-band">
+            </div>
+            <div>
+                <p><strong>Residual + θ_E annulus</strong></p>
+                <img src="SDSSJ1029+0420_residual.png" alt="Residual">
+            </div>
+        </div>
+        <div class="info">
+            <p><strong>Source:</strong> SLACS | <strong>θ_E:</strong> 1.01" | 
+               <strong>Arc SNR:</strong> <span class="snr-pass">3.33</span></p>
+            <p><a href="https://www.legacysurvey.org/viewer?ra=157.4333&dec=4.3375&layer=ls-dr10&zoom=16" target="_blank">🔍 Open in Legacy Survey Viewer</a></p>
+        </div>
+        <div class="label-section">
+            <strong>Your assessment:</strong><br>
+            <input type="radio" name="label_2" id="clear_2" value="clear">
+            <label for="clear_2">Clear arc visible</label>
+            <input type="radio" name="label_2" id="maybe_2" value="maybe">
+            <label for="maybe_2">Maybe (uncertain)</label>
+            <input type="radio" name="label_2" id="no_2" value="no">
+            <label for="no_2">No arc visible</label>
+        </div>
+    </div>
+
+
+    <div class="sample" id="sample-3">
+        <h3>#4: BELLSJ0801+4727</h3>
+        <div class="images">
+            <div>
+                <p><strong>r-band (DR10)</strong></p>
+                <img src="BELLSJ0801+4727_rband.png" alt="r-band">
+            </div>
+            <div>
+                <p><strong>Residual + θ_E annulus</strong></p>
+                <img src="BELLSJ0801+4727_residual.png" alt="Residual">
+            </div>
+        </div>
+        <div class="info">
+            <p><strong>Source:</strong> BELLS | <strong>θ_E:</strong> 1.18" | 
+               <strong>Arc SNR:</strong> <span class="snr-pass">3.84</span></p>
+            <p><a href="https://www.legacysurvey.org/viewer?ra=120.3250&dec=47.4608&layer=ls-dr10&zoom=16" target="_blank">🔍 Open in Legacy Survey Viewer</a></p>
+        </div>
+        <div class="label-section">
+            <strong>Your assessment:</strong><br>
+            <input type="radio" name="label_3" id="clear_3" value="clear">
+            <label for="clear_3">Clear arc visible</label>
+            <input type="radio" name="label_3" id="maybe_3" value="maybe">
+            <label for="maybe_3">Maybe (uncertain)</label>
+            <input type="radio" name="label_3" id="no_3" value="no">
+            <label for="no_3">No arc visible</label>
+        </div>
+    </div>
+
+
+    <div class="sample" id="sample-4">
+        <h3>#5: SDSSJ0737+3216</h3>
+        <div class="images">
+            <div>
+                <p><strong>r-band (DR10)</strong></p>
+                <img src="SDSSJ0737+3216_rband.png" alt="r-band">
+            </div>
+            <div>
+                <p><strong>Residual + θ_E annulus</strong></p>
+                <img src="SDSSJ0737+3216_residual.png" alt="Residual">
+            </div>
+        </div>
+        <div class="info">
+            <p><strong>Source:</strong> SLACS | <strong>θ_E:</strong> 1.00" | 
+               <strong>Arc SNR:</strong> <span class="snr-pass">3.79</span></p>
+            <p><a href="https://www.legacysurvey.org/viewer?ra=114.4292&dec=32.2750&layer=ls-dr10&zoom=16" target="_blank">🔍 Open in Legacy Survey Viewer</a></p>
+        </div>
+        <div class="label-section">
+            <strong>Your assessment:</strong><br>
+            <input type="radio" name="label_4" id="clear_4" value="clear">
+            <label for="clear_4">Clear arc visible</label>
+            <input type="radio" name="label_4" id="maybe_4" value="maybe">
+            <label for="maybe_4">Maybe (uncertain)</label>
+            <input type="radio" name="label_4" id="no_4" value="no">
+            <label for="no_4">No arc visible</label>
+        </div>
+    </div>
+
+
+    <div class="sample" id="sample-5">
+        <h3>#6: SDSSJ1016+3859</h3>
+        <div class="images">
+            <div>
+                <p><strong>r-band (DR10)</strong></p>
+                <img src="SDSSJ1016+3859_rband.png" alt="r-band">
+            </div>
+            <div>
+                <p><strong>Residual + θ_E annulus</strong></p>
+                <img src="SDSSJ1016+3859_residual.png" alt="Residual">
+            </div>
+        </div>
+        <div class="info">
+            <p><strong>Source:</strong> SLACS | <strong>θ_E:</strong> 1.09" | 
+               <strong>Arc SNR:</strong> <span class="snr-pass">3.39</span></p>
+            <p><a href="https://www.legacysurvey.org/viewer?ra=154.2458&dec=38.9953&layer=ls-dr10&zoom=16" target="_blank">🔍 Open in Legacy Survey Viewer</a></p>
+        </div>
+        <div class="label-section">
+            <strong>Your assessment:</strong><br>
+            <input type="radio" name="label_5" id="clear_5" value="clear">
+            <label for="clear_5">Clear arc visible</label>
+            <input type="radio" name="label_5" id="maybe_5" value="maybe">
+            <label for="maybe_5">Maybe (uncertain)</label>
+            <input type="radio" name="label_5" id="no_5" value="no">
+            <label for="no_5">No arc visible</label>
+        </div>
+    </div>
+
+
+    <div class="sample" id="sample-6">
+        <h3>#7: BELLSJ1318+3942</h3>
+        <div class="images">
+            <div>
+                <p><strong>r-band (DR10)</strong></p>
+                <img src="BELLSJ1318+3942_rband.png" alt="r-band">
+            </div>
+            <div>
+                <p><strong>Residual + θ_E annulus</strong></p>
+                <img src="BELLSJ1318+3942_residual.png" alt="Residual">
+            </div>
+        </div>
+        <div class="info">
+            <p><strong>Source:</strong> BELLS | <strong>θ_E:</strong> 1.36" | 
+               <strong>Arc SNR:</strong> <span class="snr-pass">4.41</span></p>
+            <p><a href="https://www.legacysurvey.org/viewer?ra=199.6542&dec=39.7114&layer=ls-dr10&zoom=16" target="_blank">🔍 Open in Legacy Survey Viewer</a></p>
+        </div>
+        <div class="label-section">
+            <strong>Your assessment:</strong><br>
+            <input type="radio" name="label_6" id="clear_6" value="clear">
+            <label for="clear_6">Clear arc visible</label>
+            <input type="radio" name="label_6" id="maybe_6" value="maybe">
+            <label for="maybe_6">Maybe (uncertain)</label>
+            <input type="radio" name="label_6" id="no_6" value="no">
+            <label for="no_6">No arc visible</label>
+        </div>
+    </div>
+
+
+    <div class="sample" id="sample-7">
+        <h3>#8: BELLSJ0830+5116</h3>
+        <div class="images">
+            <div>
+                <p><strong>r-band (DR10)</strong></p>
+                <img src="BELLSJ0830+5116_rband.png" alt="r-band">
+            </div>
+            <div>
+                <p><strong>Residual + θ_E annulus</strong></p>
+                <img src="BELLSJ0830+5116_residual.png" alt="Residual">
+            </div>
+        </div>
+        <div class="info">
+            <p><strong>Source:</strong> BELLS | <strong>θ_E:</strong> 1.42" | 
+               <strong>Arc SNR:</strong> <span class="snr-pass">4.40</span></p>
+            <p><a href="https://www.legacysurvey.org/viewer?ra=127.5667&dec=51.2778&layer=ls-dr10&zoom=16" target="_blank">🔍 Open in Legacy Survey Viewer</a></p>
+        </div>
+        <div class="label-section">
+            <strong>Your assessment:</strong><br>
+            <input type="radio" name="label_7" id="clear_7" value="clear">
+            <label for="clear_7">Clear arc visible</label>
+            <input type="radio" name="label_7" id="maybe_7" value="maybe">
+            <label for="maybe_7">Maybe (uncertain)</label>
+            <input type="radio" name="label_7" id="no_7" value="no">
+            <label for="no_7">No arc visible</label>
+        </div>
+    </div>
+
+
+    <div class="sample" id="sample-8">
+        <h3>#9: BELLSJ1403+0006</h3>
+        <div class="images">
+            <div>
+                <p><strong>r-band (DR10)</strong></p>
+                <img src="BELLSJ1403+0006_rband.png" alt="r-band">
+            </div>
+            <div>
+                <p><strong>Residual + θ_E annulus</strong></p>
+                <img src="BELLSJ1403+0006_residual.png" alt="Residual">
+            </div>
+        </div>
+        <div class="info">
+            <p><strong>Source:</strong> BELLS | <strong>θ_E:</strong> 1.48" | 
+               <strong>Arc SNR:</strong> <span class="snr-pass">3.91</span></p>
+            <p><a href="https://www.legacysurvey.org/viewer?ra=210.9625&dec=0.1111&layer=ls-dr10&zoom=16" target="_blank">🔍 Open in Legacy Survey Viewer</a></p>
+        </div>
+        <div class="label-section">
+            <strong>Your assessment:</strong><br>
+            <input type="radio" name="label_8" id="clear_8" value="clear">
+            <label for="clear_8">Clear arc visible</label>
+            <input type="radio" name="label_8" id="maybe_8" value="maybe">
+            <label for="maybe_8">Maybe (uncertain)</label>
+            <input type="radio" name="label_8" id="no_8" value="no">
+            <label for="no_8">No arc visible</label>
+        </div>
+    </div>
+
+
+    <div class="sample" id="sample-9">
+        <h3>#10: SDSSJ0912+0029</h3>
+        <div class="images">
+            <div>
+                <p><strong>r-band (DR10)</strong></p>
+                <img src="SDSSJ0912+0029_rband.png" alt="r-band">
+            </div>
+            <div>
+                <p><strong>Residual + θ_E annulus</strong></p>
+                <img src="SDSSJ0912+0029_residual.png" alt="Residual">
+            </div>
+        </div>
+        <div class="info">
+            <p><strong>Source:</strong> SLACS | <strong>θ_E:</strong> 1.63" | 
+               <strong>Arc SNR:</strong> <span class="snr-pass">5.57</span></p>
+            <p><a href="https://www.legacysurvey.org/viewer?ra=138.2042&dec=0.4889&layer=ls-dr10&zoom=16" target="_blank">🔍 Open in Legacy Survey Viewer</a></p>
+        </div>
+        <div class="label-section">
+            <strong>Your assessment:</strong><br>
+            <input type="radio" name="label_9" id="clear_9" value="clear">
+            <label for="clear_9">Clear arc visible</label>
+            <input type="radio" name="label_9" id="maybe_9" value="maybe">
+            <label for="maybe_9">Maybe (uncertain)</label>
+            <input type="radio" name="label_9" id="no_9" value="no">
+            <label for="no_9">No arc visible</label>
+        </div>
+    </div>
+
+
+    <div class="sample" id="sample-10">
+        <h3>#11: BELLSJ0747+4448</h3>
+        <div class="images">
+            <div>
+                <p><strong>r-band (DR10)</strong></p>
+                <img src="BELLSJ0747+4448_rband.png" alt="r-band">
+            </div>
+            <div>
+                <p><strong>Residual + θ_E annulus</strong></p>
+                <img src="BELLSJ0747+4448_residual.png" alt="Residual">
+            </div>
+        </div>
+        <div class="info">
+            <p><strong>Source:</strong> BELLS | <strong>θ_E:</strong> 1.35" | 
+               <strong>Arc SNR:</strong> <span class="snr-pass">4.21</span></p>
+            <p><a href="https://www.legacysurvey.org/viewer?ra=116.8792&dec=44.8061&layer=ls-dr10&zoom=16" target="_blank">🔍 Open in Legacy Survey Viewer</a></p>
+        </div>
+        <div class="label-section">
+            <strong>Your assessment:</strong><br>
+            <input type="radio" name="label_10" id="clear_10" value="clear">
+            <label for="clear_10">Clear arc visible</label>
+            <input type="radio" name="label_10" id="maybe_10" value="maybe">
+            <label for="maybe_10">Maybe (uncertain)</label>
+            <input type="radio" name="label_10" id="no_10" value="no">
+            <label for="no_10">No arc visible</label>
+        </div>
+    </div>
+
+
+    <div class="sample" id="sample-11">
+        <h3>#12: SDSSJ0946+1006</h3>
+        <div class="images">
+            <div>
+                <p><strong>r-band (DR10)</strong></p>
+                <img src="SDSSJ0946+1006_rband.png" alt="r-band">
+            </div>
+            <div>
+                <p><strong>Residual + θ_E annulus</strong></p>
+                <img src="SDSSJ0946+1006_residual.png" alt="Residual">
+            </div>
+        </div>
+        <div class="info">
+            <p><strong>Source:</strong> SLACS | <strong>θ_E:</strong> 1.38" | 
+               <strong>Arc SNR:</strong> <span class="snr-pass">5.17</span></p>
+            <p><a href="https://www.legacysurvey.org/viewer?ra=146.7083&dec=10.1117&layer=ls-dr10&zoom=16" target="_blank">🔍 Open in Legacy Survey Viewer</a></p>
+        </div>
+        <div class="label-section">
+            <strong>Your assessment:</strong><br>
+            <input type="radio" name="label_11" id="clear_11" value="clear">
+            <label for="clear_11">Clear arc visible</label>
+            <input type="radio" name="label_11" id="maybe_11" value="maybe">
+            <label for="maybe_11">Maybe (uncertain)</label>
+            <input type="radio" name="label_11" id="no_11" value="no">
+            <label for="no_11">No arc visible</label>
+        </div>
+    </div>
+
+
+    <div class="sample" id="sample-12">
+        <h3>#13: SDSSJ1020+1122</h3>
+        <div class="images">
+            <div>
+                <p><strong>r-band (DR10)</strong></p>
+                <img src="SDSSJ1020+1122_rband.png" alt="r-band">
+            </div>
+            <div>
+                <p><strong>Residual + θ_E annulus</strong></p>
+                <img src="SDSSJ1020+1122_residual.png" alt="Residual">
+            </div>
+        </div>
+        <div class="info">
+            <p><strong>Source:</strong> SLACS | <strong>θ_E:</strong> 1.20" | 
+               <strong>Arc SNR:</strong> <span class="snr-pass">3.89</span></p>
+            <p><a href="https://www.legacysurvey.org/viewer?ra=155.0875&dec=11.3722&layer=ls-dr10&zoom=16" target="_blank">🔍 Open in Legacy Survey Viewer</a></p>
+        </div>
+        <div class="label-section">
+            <strong>Your assessment:</strong><br>
+            <input type="radio" name="label_12" id="clear_12" value="clear">
+            <label for="clear_12">Clear arc visible</label>
+            <input type="radio" name="label_12" id="maybe_12" value="maybe">
+            <label for="maybe_12">Maybe (uncertain)</label>
+            <input type="radio" name="label_12" id="no_12" value="no">
+            <label for="no_12">No arc visible</label>
+        </div>
+    </div>
+
+
+    <div class="sample" id="sample-13">
+        <h3>#14: BELLSJ1014+3920</h3>
+        <div class="images">
+            <div>
+                <p><strong>r-band (DR10)</strong></p>
+                <img src="BELLSJ1014+3920_rband.png" alt="r-band">
+            </div>
+            <div>
+                <p><strong>Residual + θ_E annulus</strong></p>
+                <img src="BELLSJ1014+3920_residual.png" alt="Residual">
+            </div>
+        </div>
+        <div class="info">
+            <p><strong>Source:</strong> BELLS | <strong>θ_E:</strong> 0.95" | 
+               <strong>Arc SNR:</strong> <span class="snr-pass">3.64</span></p>
+            <p><a href="https://www.legacysurvey.org/viewer?ra=153.6125&dec=39.3425&layer=ls-dr10&zoom=16" target="_blank">🔍 Open in Legacy Survey Viewer</a></p>
+        </div>
+        <div class="label-section">
+            <strong>Your assessment:</strong><br>
+            <input type="radio" name="label_13" id="clear_13" value="clear">
+            <label for="clear_13">Clear arc visible</label>
+            <input type="radio" name="label_13" id="maybe_13" value="maybe">
+            <label for="maybe_13">Maybe (uncertain)</label>
+            <input type="radio" name="label_13" id="no_13" value="no">
+            <label for="no_13">No arc visible</label>
+        </div>
+    </div>
+
+
+    <div class="sample" id="sample-14">
+        <h3>#15: BELLSJ1141+2216</h3>
+        <div class="images">
+            <div>
+                <p><strong>r-band (DR10)</strong></p>
+                <img src="BELLSJ1141+2216_rband.png" alt="r-band">
+            </div>
+            <div>
+                <p><strong>Residual + θ_E annulus</strong></p>
+                <img src="BELLSJ1141+2216_residual.png" alt="Residual">
+            </div>
+        </div>
+        <div class="info">
+            <p><strong>Source:</strong> BELLS | <strong>θ_E:</strong> 1.31" | 
+               <strong>Arc SNR:</strong> <span class="snr-pass">4.19</span></p>
+            <p><a href="https://www.legacysurvey.org/viewer?ra=175.4542&dec=22.2744&layer=ls-dr10&zoom=16" target="_blank">🔍 Open in Legacy Survey Viewer</a></p>
+        </div>
+        <div class="label-section">
+            <strong>Your assessment:</strong><br>
+            <input type="radio" name="label_14" id="clear_14" value="clear">
+            <label for="clear_14">Clear arc visible</label>
+            <input type="radio" name="label_14" id="maybe_14" value="maybe">
+            <label for="maybe_14">Maybe (uncertain)</label>
+            <input type="radio" name="label_14" id="no_14" value="no">
+            <label for="no_14">No arc visible</label>
+        </div>
+    </div>
+
+
+    <div class="sample" id="sample-15">
+        <h3>#16: SDSSJ0936+0913</h3>
+        <div class="images">
+            <div>
+                <p><strong>r-band (DR10)</strong></p>
+                <img src="SDSSJ0936+0913_rband.png" alt="r-band">
+            </div>
+            <div>
+                <p><strong>Residual + θ_E annulus</strong></p>
+                <img src="SDSSJ0936+0913_residual.png" alt="Residual">
+            </div>
+        </div>
+        <div class="info">
+            <p><strong>Source:</strong> SLACS | <strong>θ_E:</strong> 1.09" | 
+               <strong>Arc SNR:</strong> <span class="snr-pass">4.03</span></p>
+            <p><a href="https://www.legacysurvey.org/viewer?ra=144.1583&dec=9.2244&layer=ls-dr10&zoom=16" target="_blank">🔍 Open in Legacy Survey Viewer</a></p>
+        </div>
+        <div class="label-section">
+            <strong>Your assessment:</strong><br>
+            <input type="radio" name="label_15" id="clear_15" value="clear">
+            <label for="clear_15">Clear arc visible</label>
+            <input type="radio" name="label_15" id="maybe_15" value="maybe">
+            <label for="maybe_15">Maybe (uncertain)</label>
+            <input type="radio" name="label_15" id="no_15" value="no">
+            <label for="no_15">No arc visible</label>
+        </div>
+    </div>
+
+
+    <div class="sample" id="sample-16">
+        <h3>#17: SDSSJ1106+5228</h3>
+        <div class="images">
+            <div>
+                <p><strong>r-band (DR10)</strong></p>
+                <img src="SDSSJ1106+5228_rband.png" alt="r-band">
+            </div>
+            <div>
+                <p><strong>Residual + θ_E annulus</strong></p>
+                <img src="SDSSJ1106+5228_residual.png" alt="Residual">
+            </div>
+        </div>
+        <div class="info">
+            <p><strong>Source:</strong> SLACS | <strong>θ_E:</strong> 1.23" | 
+               <strong>Arc SNR:</strong> <span class="snr-pass">4.49</span></p>
+            <p><a href="https://www.legacysurvey.org/viewer?ra=166.6167&dec=52.4775&layer=ls-dr10&zoom=16" target="_blank">🔍 Open in Legacy Survey Viewer</a></p>
+        </div>
+        <div class="label-section">
+            <strong>Your assessment:</strong><br>
+            <input type="radio" name="label_16" id="clear_16" value="clear">
+            <label for="clear_16">Clear arc visible</label>
+            <input type="radio" name="label_16" id="maybe_16" value="maybe">
+            <label for="maybe_16">Maybe (uncertain)</label>
+            <input type="radio" name="label_16" id="no_16" value="no">
+            <label for="no_16">No arc visible</label>
+        </div>
+    </div>
+
+
+    <div class="sample" id="sample-17">
+        <h3>#18: SDSSJ1205+4910</h3>
+        <div class="images">
+            <div>
+                <p><strong>r-band (DR10)</strong></p>
+                <img src="SDSSJ1205+4910_rband.png" alt="r-band">
+            </div>
+            <div>
+                <p><strong>Residual + θ_E annulus</strong></p>
+                <img src="SDSSJ1205+4910_residual.png" alt="Residual">
+            </div>
+        </div>
+        <div class="info">
+            <p><strong>Source:</strong> SLACS | <strong>θ_E:</strong> 1.22" | 
+               <strong>Arc SNR:</strong> <span class="snr-pass">3.51</span></p>
+            <p><a href="https://www.legacysurvey.org/viewer?ra=181.3125&dec=49.1686&layer=ls-dr10&zoom=16" target="_blank">🔍 Open in Legacy Survey Viewer</a></p>
+        </div>
+        <div class="label-section">
+            <strong>Your assessment:</strong><br>
+            <input type="radio" name="label_17" id="clear_17" value="clear">
+            <label for="clear_17">Clear arc visible</label>
+            <input type="radio" name="label_17" id="maybe_17" value="maybe">
+            <label for="maybe_17">Maybe (uncertain)</label>
+            <input type="radio" name="label_17" id="no_17" value="no">
+            <label for="no_17">No arc visible</label>
+        </div>
+    </div>
+
+
+    <div class="sample" id="sample-18">
+        <h3>#19: SDSSJ0037-0942</h3>
+        <div class="images">
+            <div>
+                <p><strong>r-band (DR10)</strong></p>
+                <img src="SDSSJ0037-0942_rband.png" alt="r-band">
+            </div>
+            <div>
+                <p><strong>Residual + θ_E annulus</strong></p>
+                <img src="SDSSJ0037-0942_residual.png" alt="Residual">
+            </div>
+        </div>
+        <div class="info">
+            <p><strong>Source:</strong> SLACS | <strong>θ_E:</strong> 1.53" | 
+               <strong>Arc SNR:</strong> <span class="snr-pass">5.66</span></p>
+            <p><a href="https://www.legacysurvey.org/viewer?ra=9.4208&dec=-9.7056&layer=ls-dr10&zoom=16" target="_blank">🔍 Open in Legacy Survey Viewer</a></p>
+        </div>
+        <div class="label-section">
+            <strong>Your assessment:</strong><br>
+            <input type="radio" name="label_18" id="clear_18" value="clear">
+            <label for="clear_18">Clear arc visible</label>
+            <input type="radio" name="label_18" id="maybe_18" value="maybe">
+            <label for="maybe_18">Maybe (uncertain)</label>
+            <input type="radio" name="label_18" id="no_18" value="no">
+            <label for="no_18">No arc visible</label>
+        </div>
+    </div>
+
+
+    <div class="sample" id="sample-19">
+        <h3>#20: BELLSJ1110+3649</h3>
+        <div class="images">
+            <div>
+                <p><strong>r-band (DR10)</strong></p>
+                <img src="BELLSJ1110+3649_rband.png" alt="r-band">
+            </div>
+            <div>
+                <p><strong>Residual + θ_E annulus</strong></p>
+                <img src="BELLSJ1110+3649_residual.png" alt="Residual">
+            </div>
+        </div>
+        <div class="info">
+            <p><strong>Source:</strong> BELLS | <strong>θ_E:</strong> 1.08" | 
+               <strong>Arc SNR:</strong> <span class="snr-pass">3.49</span></p>
+            <p><a href="https://www.legacysurvey.org/viewer?ra=167.5917&dec=36.8211&layer=ls-dr10&zoom=16" target="_blank">🔍 Open in Legacy Survey Viewer</a></p>
+        </div>
+        <div class="label-section">
+            <strong>Your assessment:</strong><br>
+            <input type="radio" name="label_19" id="clear_19" value="clear">
+            <label for="clear_19">Clear arc visible</label>
+            <input type="radio" name="label_19" id="maybe_19" value="maybe">
+            <label for="maybe_19">Maybe (uncertain)</label>
+            <input type="radio" name="label_19" id="no_19" value="no">
+            <label for="no_19">No arc visible</label>
+        </div>
+    </div>
+
+
+    <hr>
+    <div style="margin-top: 20px;">
+        <h2>Summary</h2>
+        <p>After reviewing all samples, please count:</p>
+        <ul>
+            <li>How many "clear arc" with SNR > 2.0? (True Positives)</li>
+            <li>How many "no arc" with SNR > 2.0? (False Positives - our metric is wrong)</li>
+            <li>How many "clear arc" with SNR < 2.0? (False Negatives - threshold too strict)</li>
+        </ul>
+        <p><strong>Conclusion:</strong> If many "no arc" still pass SNR > 2.0, we need to revise the metric.</p>
+    </div>
+</body>
+</html>

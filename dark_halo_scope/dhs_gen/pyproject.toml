@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dhs-gen"
+version = "0.1.1"
+description = "Dark Halo Scope Gen6/7/8 data-generation utilities"
+readme = "README_gen678_uber.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.23",
+  "pyarrow>=12",
+]
+
+[tool.setuptools]
+packages = ["dhs_gen", "dhs_gen.deep_sources", "dhs_gen.hybrid_sources", "dhs_gen.domain_randomization", "dhs_gen.uber", "dhs_gen.validation"]

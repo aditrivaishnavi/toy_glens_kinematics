@@ -1,0 +1,5 @@
+STAMP_SIZE = 64
+BANDS = ("g", "r", "z")
+CORE_BOX = 10
+CORE_RADIUS = 5
+SEED_DEFAULT = 1337

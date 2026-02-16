@@ -163,11 +163,13 @@ def extract_embeddings_from_paths(
     all_emb = []
     all_scores = []
     all_layer_embs: Dict[str, list] = {}
+    failed_paths: List[str] = []
 
     for start in range(0, len(paths), batch_size):
         end = min(start + batch_size, len(paths))
         batch_paths = paths[start:end]
         imgs = []
+        valid_mask = []  # track which paths loaded successfully
         for p in batch_paths:
             try:
                 with np.load(p) as z:
@@ -175,24 +177,43 @@ def extract_embeddings_from_paths(
                 chw = np.transpose(hwc, (2, 0, 1))
                 proc = preprocess_stack(chw, **pp_kwargs)
                 imgs.append(proc)
-            except Exception:
+                valid_mask.append(True)
+            except Exception as exc:
+                failed_paths.append(p)
+                print(f"  WARNING: failed to load {p}: {exc}")
+                # Still need a placeholder to keep batch alignment for extraction,
+                # but we will drop this sample from the output arrays.
                 imgs.append(np.zeros((3, 101, 101), dtype=np.float32))
+                valid_mask.append(False)
 
         batch = np.stack(imgs, axis=0)
         x = torch.from_numpy(batch).float().to(device)
         emb, scores = extractor.extract(x)
-        all_emb.append(emb)
-        all_scores.append(scores)
 
-        if collect_layers:
-            layer_embs = extractor.get_layer_embeddings()
-            for k, v in layer_embs.items():
-                if k not in all_layer_embs:
-                    all_layer_embs[k] = []
-                all_layer_embs[k].append(v)
+        # Drop failed samples from output
+        valid_idx = [i for i, v in enumerate(valid_mask) if v]
+        if valid_idx:
+            all_emb.append(emb[valid_idx])
+            all_scores.append(scores[valid_idx])
+
+            if collect_layers:
+                layer_embs = extractor.get_layer_embeddings()
+                for k, v in layer_embs.items():
+                    if k not in all_layer_embs:
+                        all_layer_embs[k] = []
+                    all_layer_embs[k].append(v[valid_idx])
 
         if (start // batch_size) % 10 == 0:
             print(f"  {end}/{len(paths)}", end="\r")
+
+    n_failed = len(failed_paths)
+    n_total = len(paths)
+    print(f"\n  Cutout loads: {n_total - n_failed}/{n_total} succeeded, {n_failed} failed")
+    if n_failed > 0:
+        raise RuntimeError(
+            f"{n_failed} of {n_total} cutout loads failed. "
+            f"First 5 failed paths: {failed_paths[:5]}"
+        )
 
     layer_result = None
     if collect_layers and all_layer_embs:

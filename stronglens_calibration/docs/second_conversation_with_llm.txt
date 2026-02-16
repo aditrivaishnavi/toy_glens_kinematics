@@ -4040,3 +4040,2170 @@ Step 4 (regardless): Run CNN embedding UMAP (30 min GPU). This becomes a key pap
 **If retrain is NO-GO:** Document annulus bug as quantified systematic, focus effort on beta_frac analysis and literature comparison. This path produces a publishable paper faster (1–2 weeks vs 3–4 weeks).
 
 ==========================================================
+
+
+# Prompt 5: D01 Pre-Retrain Diagnostic Results — Independent Assessment
+
+## Instructions
+
+You are being asked to independently evaluate the results of 6 diagnostic experiments we ran before deciding whether to retrain a CNN strong-lens finder. We need you to be **100% honest, objective, and scientifically rigorous**. Do not tell us what we want to hear. If the results are ambiguous, say so. If a diagnostic is flawed or insufficient, say so. If you think we are about to waste time, say so.
+
+We are preparing an MNRAS paper. Assume a hostile but reasonable referee will scrutinize every claim. We need actionable conclusions, not vague recommendations.
+
+**Attached zip** (`d01_diagnostic_code_and_results.zip`) contains:
+- All 6 diagnostic scripts (Python source code)
+- The runner script (`scripts/run_diagnostics.sh`)
+- Core library modules they depend on (`dhs/preprocess.py`, `dhs/scoring_utils.py`, `dhs/injection_engine.py`, `dhs/model.py`, etc.)
+- Training configs for the current model (gen4) and proposed retrains (gen5a/b/c)
+- Injection prior registry (`configs/injection_priors.yaml`)
+- All raw result JSON files and log files
+- Experiment registry (`EXPERIMENT_REGISTRY.md`)
+
+Please read the code carefully. Do not trust our interpretation — form your own.
+
+---
+
+## Context
+
+### The Model
+
+- Architecture: EfficientNetV2-S (pretrained ImageNet, finetuned)
+- Training data: 451,681 cutouts (101x101 pixels, 3-band g/r/z, DESI Legacy Survey DR10)
+  - Train: 316,100 (277 Tier-A confirmed lenses, 3,079 Tier-B visual candidates, 312,744 negatives)
+  - Val: 135,581 (112 Tier-A, 1,320 Tier-B, 134,149 negatives)
+- Current best checkpoint: gen4 (finetuned from gen2, AUC=0.9921)
+- Preprocessing: `raw_robust` — per-band normalization using median and MAD computed from an outer annulus of the stamp
+- Known issue: The annulus radii used during training were (20, 32) pixels, but the geometrically correct values for 101x101 stamps are (32.5, 45.0). This is a bug discovered during code review.
+
+### The Injection Pipeline
+
+- Synthetic lensed arcs are injected into real host galaxy cutouts using SIS+shear ray-tracing with Sersic source profiles
+- Injection parameters: see `configs/injection_priors.yaml` for exact ranges
+- The selection function (detection completeness) is computed by injecting arcs into real cutouts and scoring with the frozen model
+- Current overall completeness: ~3.5% (marginal over all parameter space)
+- Real Tier-A lens recall at p>0.3: 73.3% (at p>0.5: ~70%)
+
+### The Question
+
+Should we retrain the model with the corrected annulus (32.5, 45.0) before publishing the MNRAS paper? We have three candidate configs ready:
+- gen5a: From-scratch training with corrected annulus, same hyperparameters as gen1
+- gen5b: Finetune from gen4 with corrected annulus
+- gen5c: From-scratch with corrected annulus + weighted loss (Tier-A=1.0, Tier-B=0.5)
+
+---
+
+## Diagnostics Executed
+
+All diagnostics were run on Lambda3 (NVIDIA GH200 480GB, Ubuntu 22.04, Python 3.12.3, torch 2.7.0+cu128). Total runtime: 170 seconds.
+
+### Exact Commands
+
+```bash
+# Runner script invocation:
+cd /lambda/nfs/darkhaloscope-training-dc/stronglens_calibration
+source .venv-lambda3/bin/activate
+export PYTHONPATH=.
+bash scripts/run_diagnostics.sh
+
+# Which runs these 6 commands in sequence:
+
+# [1/6] Split Balance (CPU)
+python scripts/split_balance_diagnostic.py \
+    --manifest manifests/training_parity_70_30_v1.parquet \
+    --out-dir results/D01_20260214_pre_retrain_diagnostics/split_balance_check
+
+# [2/6] Masked Pixels (CPU)
+python scripts/masked_pixel_diagnostic.py \
+    --manifest manifests/training_parity_70_30_v1.parquet \
+    --out-dir results/D01_20260214_pre_retrain_diagnostics/masked_pixel_check \
+    --n-samples 1000 --threshold 0.05
+
+# [3/6] Annulus Comparison (CPU)
+python scripts/annulus_comparison.py \
+    --manifest manifests/training_parity_70_30_v1.parquet \
+    --out-dir results/D01_20260214_pre_retrain_diagnostics/q23_annulus_comparison \
+    --n-samples 1000
+
+# [4/6] Mismatched Annulus Scoring (GPU)
+python scripts/mismatched_annulus_scoring.py \
+    --checkpoint checkpoints/paperIV_efficientnet_v2_s_v4_finetune/best.pt \
+    --manifest manifests/training_parity_70_30_v1.parquet \
+    --out-dir results/D01_20260214_pre_retrain_diagnostics/q24_mismatched_scoring \
+    --n-samples 500
+
+# [5/6] Beta-Frac Restriction Test (GPU)
+python sim_to_real_validations/bright_arc_injection_test.py \
+    --checkpoint checkpoints/paperIV_efficientnet_v2_s_v4_finetune/best.pt \
+    --manifest manifests/training_parity_70_30_v1.parquet \
+    --out-dir results/D01_20260214_pre_retrain_diagnostics/q21_beta_frac \
+    --beta-frac-range 0.1 0.55
+
+# [6/6] Embedding Analysis + Linear Probe (GPU)
+python scripts/feature_space_analysis.py \
+    --checkpoint checkpoints/paperIV_efficientnet_v2_s_v4_finetune/best.pt \
+    --manifest manifests/training_parity_70_30_v1.parquet \
+    --out-dir results/D01_20260214_pre_retrain_diagnostics/q22_embedding_umap \
+    --n-samples 200
+```
+
+---
+
+## Raw Results
+
+### Diagnostic 1: Split Balance
+
+```
+split_balance_results.json:
+{
+  "n_total": 451681,
+  "split_counts": {
+    "train": {"n_total": 316100, "n_pos": 3356, "n_neg": 312744, "n_tier_a": 277, "n_tier_b": 3079},
+    "val": {"n_total": 135581, "n_pos": 1432, "n_neg": 134149, "n_tier_a": 112, "n_tier_b": 1320}
+  },
+  "positive_spatial_distribution": {
+    "healpix_col": "healpix_128",
+    "n_unique_pixels": 0,
+    "n_nan_healpix": 4788,
+    "note": "All positive healpix values are NaN"
+  },
+  "psf_depth_balance": {
+    "psfsize_r": {"train_vs_val": {"ks_stat": 0.00360, "p_value": 0.1738, "mean_1": 1.3482, "mean_2": 1.3491}},
+    "psfdepth_r": {"train_vs_val": {"ks_stat": 0.00385, "p_value": 0.1233, "mean_1": 2284.86, "mean_2": 2271.14}}
+  }
+}
+```
+
+Console output:
+```
+train: 316100 total, 3356 pos (277 A, 3079 B), 312744 neg
+val: 135581 total, 1432 pos (112 A, 1320 B), 134149 neg
+WARNING: 4788 positives have NaN healpix (missing ra/dec)
+psfsize_r train vs val: KS=0.0036, p=1.7384e-01
+psfdepth_r train vs val: KS=0.0039, p=1.2332e-01
+```
+
+### Diagnostic 2: Masked Pixel Check
+
+```
+masked_pixel_results.json:
+{
+  "n_sampled": 1000,
+  "n_loaded": 1000,
+  "n_errors": 0,
+  "threshold": 0.05,
+  "nonfinite_pixels": {"mean_frac": 0.0, "median_frac": 0.0, "max_frac": 0.0, "pct_above_threshold": 0.0, "n_above_threshold": 0},
+  "zero_pixels": {"mean_frac": 5.20e-06, "median_frac": 0.0, "max_frac": 0.005196}
+}
+```
+
+### Diagnostic 3: Annulus Comparison — (20,32) vs (32.5,45)
+
+```
+annulus_comparison_results.json:
+{
+  "per_config_summary": {
+    "old_20_32": {"median_of_medians": 0.000467, "median_of_mads": 0.002276, "n_valid": 1000},
+    "new_32p5_45": {"median_of_medians": 0.000340, "median_of_mads": 0.002197, "n_valid": 1000}
+  },
+  "paired_comparison": {
+    "median_diff": {"mean": -0.000345, "std": 0.000955},
+    "mad_diff": {"mean": -0.000079, "std": 0.000469},
+    "ks_test_median": {"statistic": 0.151, "pvalue": 2.32e-10},
+    "ks_test_mad": {"statistic": 0.033, "pvalue": 0.648}
+  },
+  "correlation_with_psf": {"median_diff_vs_psf": {"r": -0.025, "p": 0.433}},
+  "correlation_with_depth": {"median_diff_vs_depth": {"r": 0.026, "p": 0.418}},
+  "shift_by_label": {
+    "positives": {"n": 12, "mean_median_diff": -0.000254},
+    "negatives": {"n": 988, "mean_median_diff": -0.000346}
+  }
+}
+```
+
+Console output:
+```
+old_20_32:   Median of medians: 0.000467, Median of MADs: 0.002276
+new_32p5_45: Median of medians: 0.000340, Median of MADs: 0.002197
+
+Paired differences (new - old), N=1000:
+  Median diff:  mean=-0.000345, std=0.000955
+  MAD diff:     mean=-0.000079, std=0.000469
+
+KS test (median): stat=0.1510, p=2.3212e-10
+KS test (MAD):    stat=0.0330, p=6.4781e-01
+
+Correlation with PSF:  median_diff: r=-0.0250, p=4.3296e-01
+Shift by label:
+  Positives (N=12): median_diff=-0.000254
+  Negatives (N=988): median_diff=-0.000346
+```
+
+### Diagnostic 4: Mismatched Annulus Scoring
+
+The gen4 model was trained with annulus (20,32). We score the same val set twice: once with native (20,32) preprocessing and once with mismatched (32.5,45) preprocessing.
+
+```
+mismatched_annulus_results.json:
+{
+  "native_annulus": [20, 32],
+  "mismatched_annulus": [32.5, 45.0],
+  "native_metrics": {
+    "n_pos": 500, "n_neg": 500,
+    "recall_p0.3": 0.740, "recall_p0.5": 0.698, "recall_p0.7": 0.642,
+    "fpr_p0.3": 0.002, "fpr_p0.5": 0.002, "fpr_p0.7": 0.002,
+    "median_pos_score": 0.9434, "median_neg_score": 1.49e-05
+  },
+  "mismatched_metrics": {
+    "n_pos": 500, "n_neg": 500,
+    "recall_p0.3": 0.704, "recall_p0.5": 0.660, "recall_p0.7": 0.616,
+    "fpr_p0.3": 0.002, "fpr_p0.5": 0.002, "fpr_p0.7": 0.002,
+    "median_pos_score": 0.9008, "median_neg_score": 1.30e-05
+  },
+  "deltas": {
+    "delta_recall_p0.3": -0.036,
+    "delta_recall_p0.5": -0.038,
+    "delta_recall_p0.7": -0.026
+  }
+}
+```
+
+Console output:
+```
+Metric                     Native   Mismatched      Delta
+------------------------------------------------------------
+Recall (p>0.3)              0.740        0.704     -0.036
+Recall (p>0.5)              0.698        0.660     -0.038
+Recall (p>0.7)              0.642        0.616     -0.026
+FPR (p>0.3)                0.0020       0.0020    +0.0000
+FPR (p>0.5)                0.0020       0.0020    +0.0000
+FPR (p>0.7)                0.0020       0.0020    +0.0000
+Median pos score            0.9434       0.9008
+Median neg score            0.0000       0.0000
+```
+
+### Diagnostic 5: Beta-Frac Restriction Test
+
+Injections with theta_E=1.5", beta_frac restricted to [0.1, 0.55] (area-weighted), source magnitudes 18-26, scored with gen4 model. 200 hosts per magnitude bin.
+
+```
+bright_arc_results_bf0.10_0.55.json:
+{
+  "theta_e": 1.5,
+  "beta_frac_range": [0.1, 0.55],
+  "add_poisson_noise": false,
+  "results_by_bin": {
+    "18-19": {"n_scored": 200, "detection_rate_p03": 0.170, "detection_rate_p05": 0.090, "median_score": 0.0804, "median_arc_snr": 1556.2},
+    "19-20": {"n_scored": 200, "detection_rate_p03": 0.245, "detection_rate_p05": 0.180, "median_score": 0.0893, "median_arc_snr": 671.5},
+    "20-21": {"n_scored": 200, "detection_rate_p03": 0.275, "detection_rate_p05": 0.170, "median_score": 0.1152, "median_arc_snr": 250.1},
+    "21-22": {"n_scored": 200, "detection_rate_p03": 0.355, "detection_rate_p05": 0.270, "median_score": 0.1008, "median_arc_snr": 101.4},
+    "22-23": {"n_scored": 200, "detection_rate_p03": 0.310, "detection_rate_p05": 0.275, "median_score": 0.0430, "median_arc_snr": 39.3},
+    "23-24": {"n_scored": 200, "detection_rate_p03": 0.240, "detection_rate_p05": 0.185, "median_score": 0.0024, "median_arc_snr": 15.6},
+    "24-25": {"n_scored": 200, "detection_rate_p03": 0.085, "detection_rate_p05": 0.070, "median_score": 0.0001, "median_arc_snr": 6.2},
+    "25-26": {"n_scored": 200, "detection_rate_p03": 0.010, "detection_rate_p05": 0.005, "median_score": 0.0000, "median_arc_snr": 2.3}
+  }
+}
+```
+
+Console output:
+```
+Mag bin      N scored      p>0.3      p>0.5     median_p   median_SNR
+---------------------------------------------------------------------
+18-19             200      17.0%       9.0%       0.0804       1556.2
+19-20             200      24.5%      18.0%       0.0893        671.5
+20-21             200      27.5%      17.0%       0.1152        250.1
+21-22             200      35.5%      27.0%       0.1008        101.4
+22-23             200      31.0%      27.5%       0.0430         39.3
+23-24             200      24.0%      18.5%       0.0024         15.6
+24-25             200       8.5%       7.0%       0.0001          6.2
+25-26             200       1.0%       0.5%       0.0000          2.3
+```
+
+For reference: real Tier-A lens recall is ~73% at p>0.3. Standard (unrestricted beta_frac) bright-arc detection ceiling was ~30%.
+
+### Diagnostic 6: Embedding Feature Space Analysis + Linear Probe
+
+Extracts penultimate-layer (1280-dim) embeddings for 4 groups, then trains a logistic regression (5-fold CV) to distinguish real Tier-A lenses from low-beta_frac injections.
+
+```
+feature_space_results.json:
+{
+  "n_real_tier_a": 112,
+  "n_inj_low_bf": 200,
+  "n_inj_high_bf": 200,
+  "n_negatives": 200,
+  "target_mag": 19.0,
+  "theta_e": 1.5,
+  "linear_probe": {
+    "task": "real_tier_a vs inj_low_bf",
+    "cv_auc_mean": 0.9911,
+    "cv_auc_std": 0.0102
+  },
+  "frechet_distance_per_layer": {
+    "features_0": 0.218,
+    "features_1": 1.397,
+    "features_2": 11.059,
+    "features_3": 63.072,
+    "features_4": NaN,
+    "features_5": NaN,
+    "features_6": NaN,
+    "features_7": NaN
+  },
+  "frechet_distance": {
+    "real_vs_low_bf": 219.67,
+    "real_vs_high_bf": 199.81
+  },
+  "median_scores": {
+    "real_tier_a": 0.9946,
+    "inj_low_bf": 0.1065,
+    "inj_high_bf": 0.0172,
+    "negatives": 0.0000
+  }
+}
+```
+
+Console output:
+```
+(a) Real Tier-A: 112 embeddings, median score=0.9946
+(d) Val negatives: 200 embeddings, median score=0.0000
+(b) Low beta_frac [0.1,0.3] injections: 200 embeddings, median score=0.1065
+(c) High beta_frac [0.7,1.0] injections: 200 embeddings, median score=0.0172
+
+Linear probe (real Tier-A vs low-bf injections): 5-fold CV AUC = 0.9911 +/- 0.0102
+
+Frechet distance:
+  FD(real vs low-bf injection): 219.67
+  FD(real vs high-bf injection): 199.81
+
+Per-layer FD:
+  features_0 (dim=24): 0.22
+  features_1 (dim=24): 1.40
+  features_2 (dim=48): 11.06
+  features_3 (dim=64): 63.07
+  features_4-7: too few samples for covariance (n=112 < dim)
+```
+
+---
+
+## Questions for You
+
+Please answer each question independently. Cite specific numbers from the raw results above.
+
+### A. Diagnostic Validity
+
+A1. Review the code in the attached zip. Are there any bugs, methodological flaws, or statistical errors in how these 6 diagnostics were implemented? Be specific — cite file names and line numbers if you find issues.
+
+A2. Are the sample sizes sufficient for the conclusions we need to draw? Specifically: 500 pos + 500 neg for the mismatched scoring, 200 hosts per magnitude bin for the beta_frac test, and 112 real Tier-A + 200 injections for the linear probe. What are the confidence intervals on the key numbers?
+
+A3. The split balance diagnostic found that ALL 4,788 positive samples have NaN in the healpix_128 column (missing ra/dec). What does this mean? Is this a data quality concern that affects any of the other diagnostics or the training itself?
+
+### B. Annulus Question (GO/NO-GO for Retrain)
+
+B1. The annulus comparison shows a statistically significant difference in normalization medians (KS p=2.3e-10) but NOT in MADs (KS p=0.648). What does this mean physically? Is a shift in the normalization reference point without a change in the noise scale actually meaningful for CNN performance?
+
+B2. The mismatched scoring shows recall drops of 3.6pp (p>0.3) and 3.8pp (p>0.5) when the gen4 model is scored with (32.5,45) preprocessing. The FPR does not change. Is this drop large enough to justify retraining? What is the expected statistical uncertainty on these recall numbers given N=500?
+
+B3. CRITICAL: The mismatched scoring test gives the gen4 model inputs preprocessed with the WRONG annulus — one it was never trained on. A recall drop is expected by default for any preprocessing change. Does this test actually tell us whether retraining with the correct annulus would IMPROVE performance? Or does it only tell us the model is sensitive to its own training preprocessing (which is trivially true for any model)?
+
+B4. Based on B1-B3, should we retrain with the corrected annulus? Is there sufficient evidence that the annulus bug is causing performance degradation, or could the annulus be cosmetic (the model adapted to it during training)?
+
+### C. Beta_frac and Detection Ceiling
+
+C1. With beta_frac restricted to [0.1, 0.55], the peak detection rate is 35.5% (mag 21-22). The unrestricted rate was ~30%. Is this 5.5pp improvement statistically significant given N=200 per bin?
+
+C2. The brightest arcs (mag 18-19, SNR>1500) have the LOWEST detection rate (17%). Why? What does this tell us about what the CNN has learned? Is this an artifact of the injection pipeline, a real property of the model, or a statistical fluctuation?
+
+C3. Detection peaks at mag 21-22 (SNR~100), not at the brightest magnitudes. What physical interpretation, if any, should we attach to this?
+
+### D. Injection Realism Gap
+
+D1. The linear probe achieves AUC=0.991 separating real Tier-A lenses from low-beta_frac injections. Is this a fair test? The real lenses have diverse morphologies and were observed; the injections are parametric Sersic profiles injected into random host galaxies. Would you expect AUC~1.0 even for a perfect injection pipeline, simply because the real sample is heterogeneous?
+
+D2. Real Tier-A lenses have median score 0.995 while low-bf injections have median score 0.107. This is a 10x gap. What fraction of this gap is attributable to (a) injection unrealism vs (b) the model being correct — i.e., many injections simply don't look like real lenses because the Sersic model is too simple?
+
+D3. The Frechet distance grows from 0.22 at features_0 to 63.07 at features_3. What does this layer-wise progression tell us about where the CNN learns to distinguish real from injected? Is this diagnostic informative or misleading given that features_4-7 could not be computed?
+
+D4. Given the linear probe AUC of 0.991, is injection-based completeness a meaningful metric at all? Or is it fundamentally measuring "how many Sersic profiles fool the CNN" rather than "what fraction of real lenses would the CNN find"?
+
+### E. The Retrain Decision
+
+E1. We have three retrain options: gen5a (from-scratch, corrected annulus), gen5b (finetune gen4, corrected annulus), gen5c (from-scratch, corrected annulus + weighted loss). Given ALL the diagnostics above, which if any should we run, and in what order? What specific improvements do you predict for each?
+
+E2. If we retrain and see AUC improve from 0.9921 to, say, 0.9935 — is this publishable as a meaningful improvement? The AUC standard error is ~0.0026 for N~14,000 val samples. The v2-to-v4 improvement was only +0.0006.
+
+E3. What is the minimum set of experiments needed for a publishable MNRAS paper, regardless of whether we retrain? What can we publish with just the gen4 model and these diagnostic results?
+
+### F. Hostile Reviewer Perspective
+
+F1. A referee writes: "The authors report injection-based completeness of ~3.5% but real-lens recall of ~73%. The linear probe AUC of 0.991 confirms the CNN trivially distinguishes Sersic injections from real lenses. How is the injection-based completeness number meaningful or useful?" How should we respond?
+
+F2. A referee writes: "The annulus normalization bug (20,32) vs (32.5,45) is concerning. Why was this not caught before training? How do we know there are no other undiscovered preprocessing bugs?" How should we respond?
+
+F3. A referee writes: "With only 112 Tier-A validation lenses, the binomial 95% CI on 73% recall is [64%, 81%]. This is too wide to claim any precision. The authors cannot distinguish 65% from 80% recall." Is this criticism valid? How should we address it in the paper?
+
+### G. Next Steps
+
+G1. Provide a prioritized list of concrete action items based on these results. For each item, state: what to do, estimated time, expected outcome, and what decision it enables. Do not include items that are unlikely to change the conclusions.
+
+G2. If you had to choose between (a) retraining with the annulus fix, or (b) spending the same compute time on improving injection realism (e.g., using real galaxy stamps instead of Sersic), which would you recommend and why? **If it is both, say so. I want the maximum chance to be accepted to MNRAS or equally prominent journal**
+
+G3. What is the single most important thing we should do before submitting the paper?
+
+---
+
+## Final Request
+
+Please be brutally honest. We have limited time and compute. We cannot afford to chase improvements that won't materialize. Tell us what is real, what is noise, and what a reasonable referee would actually care about.
+
+-------------------
+************
+LLM1 Answer:
+
+## A. Diagnostic validity
+
+### A1. Bugs, methodological flaws, statistical errors
+
+**Split balance (`scripts/split_balance_diagnostic.py`)**
+
+* **CONCERN (interpretation risk):** The PSF/depth KS tests are run on *all* train vs val rows (dominated by negatives). With very large N, tiny distribution shifts can still matter operationally, and class-conditional shifts (positives only) can be hidden. The reported p-values (0.17 and 0.12) are fine, but this does **not** prove balance for positives.
+* **FAIL (for its stated purpose of spatial leakage check on positives):** The script reports **all positives have NaN healpix** (4788 NaNs), so it cannot evaluate positive spatial clustering at all.
+
+**Masked pixels (`scripts/masked_pixel_diagnostic.py`)**
+
+* **PASS** for what it measures: no non-finite pixels; small fraction of exact zeros (max 0.52%). Nothing obviously wrong.
+
+**Annulus comparison (`scripts/annulus_comparison.py`)**
+
+* **CONCERN (test choice):** It uses a 2-sample KS test (lines ~236–252) on distributions that are naturally *paired* (same cutout, two annuli). KS ignores pairing and is hypersensitive at N=1000, so “p very small” can correspond to a tiny effect. A paired test (sign test, paired t-test on diffs, or just effect size in sigma units) is more appropriate.
+* **CONCERN (positive coverage):** Random sampling yields only **12 positives out of 1000** (result JSON), so it is not informative about whether the annulus change behaves differently on lens-like hosts.
+
+**Mismatched annulus scoring (`scripts/mismatched_annulus_scoring.py`)**
+
+* **PASS** as an implementation of “sensitivity to preprocessing mismatch.”
+* **CONCERN (what it actually measures):** It samples **positives as `label==1`** with no tier restriction, so the reported recall is Tier-A + Tier-B mixed. That is fine for *sensitivity*, but do not interpret it as Tier-A recall.
+
+**Beta-frac restriction test (`sim_to_real_validations/bright_arc_injection_test.py`)**
+
+* **PASS** for detection-rate measurement.
+* **FAIL (SNR reporting bug):** The script computes SNR using `injection_only[0]` (around lines ~227–233). If your band order is g=0, r=1, z=2, then your “median_arc_snr” is **g-band**, not r-band. This does **not** affect detection rates, but it makes the SNR numbers in the log scientifically misleading.
+
+**Embedding + linear probe (`scripts/feature_space_analysis.py`)**
+
+* **PASS** for the linear probe itself (logistic regression AUC via CV).
+* **FAIL / CONCERN (Fréchet distance in 1280-D):** It computes Fréchet distance in the full 1280-D embedding space even though **n=112 (Tier-A) < 1280**, so the covariance is singular/ill-conditioned. The reported FD numbers (219.67, 199.81) are therefore not reliable as absolute quantities. Your *per-layer* FD is more defensible only up to layers where n > dim (you stop at features_3, good).
+* **CONCERN (confounding):** “Real Tier-A” vs “injections on random negative hosts” is confounded by host population differences. A probe AUC near 1.0 can be driven by host/PSF/depth/sky-subtraction signatures, not only arc morphology.
+
+### A2. Sample size sufficiency and confidence intervals
+
+**Mismatched scoring (N=500 positives, 500 negatives)**
+
+* Recall 0.740 has a binomial 95% CI ≈ **[0.70, 0.78]**.
+* Recall 0.704 has a binomial 95% CI ≈ **[0.66, 0.74]**.
+* The observed drop 0.036 (18/500) is **modest**. Since this is *paired on the same images*, the right significance test is McNemar, but you did not report the discordant counts, so I cannot verify statistical significance of the delta.
+
+**Beta-frac test (N=200 per mag bin)**
+
+* Peak 0.355 (71/200) has 95% CI ≈ **[0.29, 0.42]**.
+* Brightest bin 0.170 (34/200) has 95% CI ≈ **[0.12, 0.23]**.
+* Differences of ~5 pp at N=200 are usually **not** distinguishable; differences of ~15–20 pp often are.
+
+**Linear probe (112 real Tier-A vs 200 low-bf injections)**
+
+* The reported CV AUC **0.991 ± 0.010** is already telling you separability is extremely strong. Exact AUC uncertainty needs DeLong or bootstrap on the full set; CV fold-to-fold std is not a formal CI, but at this level the conclusion “highly separable” is robust.
+
+### A3. “All positives have NaN healpix”: meaning and impact
+
+This means your manifest lacks the RA/Dec (or derived healpix index) for **every positive**. Consequences:
+
+* **It invalidates any claim** that your train/val split prevents *spatial* leakage for positives (you cannot demonstrate clustering or balance in sky position for positives).
+* It likely does **not** affect training/inference mechanically if you already have a `split` column populated (as you do), and none of the other diagnostics depend on healpix.
+* It **is** a paper-quality data provenance concern. A hostile referee can ask why the core positional metadata for the positive sample is missing and what else might be missing/misaligned.
+
+---
+
+## B. Annulus question (GO/NO-GO for retrain)
+
+### B1. KS significant for median, not for MAD: physical meaning
+
+You see:
+
+* Median-of-medians old: **0.000467**, new: **0.000340**
+* Mean paired median diff (new-old): **-0.000345**
+* Median-of-MADs old: **0.002276**, new: **0.002197**
+* Mean paired MAD diff (new-old): **-0.000079**, KS p=0.648 (no distribution-level difference)
+
+Physical interpretation:
+
+* The *background reference level* (median) shifts slightly with the annulus change, consistent with “old annulus includes a bit more galaxy light.”
+* The *robust noise scale* (MAD) is essentially unchanged in distribution terms.
+* The effect size is small relative to the noise scale: |median shift| / MAD ≈ 0.000345 / 0.0022 ≈ **0.16** in normalized units. This is not “nothing,” but it is not a dramatic contrast re-scaling either.
+
+### B2. Is the 3.6–3.8 pp recall drop large enough to justify retraining? Uncertainty?
+
+Given N=500 positives:
+
+* Typical 95% CI width is about ±4 percentage points around 0.7 recall.
+* So a **3.6–3.8 pp** drop is on the edge of what you can resolve without paired statistics.
+* Practically: it is **small** relative to your core problem (3.5% completeness and the injection-realism gap).
+
+### B3. Does mismatched scoring predict retrain benefit?
+
+Mostly **no**. It demonstrates:
+
+* The model is somewhat sensitive to preprocessing changes (expected).
+* You cannot change annulus at inference without paying a recall penalty (also expected).
+
+It does **not** establish that training with the corrected annulus will improve generalization or close the injection gap. To argue that, you would need either:
+
+* a mechanistic reason the old annulus causes harmful invariances, or
+* evidence that corrected-annulus features better align real lenses and injections (your linear-probe result points the opposite direction: the gap is huge and not explained by a small median shift).
+
+### B4. Should you retrain with corrected annulus?
+
+**My assessment: NO-GO as a “performance fix,” POSSIBLE-GO as a “paper hygiene fix.”**
+
+* As a performance fix: your diagnostics suggest the annulus bug is **not** the dominant driver of the 70 pp real vs injection gap. The median shift is small; mismatched scoring shows a modest sensitivity, not catastrophic.
+* As paper hygiene: training on a known-wrong annulus is a vulnerability. Retraining (especially a finetune) can remove that critique if it does not degrade metrics.
+
+If compute is truly scarce, do **not** expect annulus retraining to materially change injection completeness. Your strongest evidence points to injection-realism/domain-shift as the bottleneck.
+
+---
+
+## C. Beta_frac and the detection ceiling
+
+### C1. Is the 30% to 35.5% improvement significant?
+
+Peak bin is **35.5% (71/200)**. The previous “unrestricted ceiling ~30%” is from a different run, so it is not a clean apples-to-apples statistical test.
+
+Even if you compare to 30% as a reference:
+
+* At N=200, a +5.5 pp change is typically **not** significant at 95% unless you have a paired design or larger N.
+* So: **CONCERN / inconclusive**, not strong evidence beta_frac explains the ceiling.
+
+### C2. Why are the brightest arcs (18–19) detected least (17%)?
+
+This is not consistent with an “SNR-limited detector.” It suggests **out-of-distribution rejection**. Likely causes (most plausible first):
+
+1. **Clipping / saturation of morphology:** with `clip_range=10`, extremely bright arcs will hit the clip limits over large areas, collapsing informative gradients into flat saturated structures.
+2. **Training distribution mismatch:** real candidates almost never have arcs dominating the stamp at those levels. The model can learn “overly bright extended structures” as non-lens artifacts (reflection halos, scattered light, reduction artifacts).
+3. **Injection-process signature:** extremely bright injected features lack the observation-process artifacts (sky subtraction residuals, correlated noise, Poisson noise of arc flux), making them look “too clean” or “synthetic” in a way the network learned to reject.
+
+This is very unlikely to be a statistical fluctuation: 17% CI ≈ **[12%, 23%]**, while 35.5% CI ≈ **[29%, 42%]**, which do not overlap.
+
+### C3. Why does detection peak at mag 21–22 (SNR ~100) instead?
+
+This is consistent with “the model learned a *specific look* of real lens candidates,” not “detect anything arc-like.”
+
+* Moderate-SNR arcs may preserve texture/gradients without clipping, and resemble the training positives’ typical contrast regime.
+* Very bright arcs may enter a regime dominated by clipping and synthetic smoothness, which looks unlike training positives.
+
+---
+
+## D. Injection realism gap
+
+### D1. Is the linear probe AUC=0.991 a fair test?
+
+**Partly fair, but confounded.**
+
+* It is fair as a diagnostic that the **CNN representation contains enough information to separate real Tier-A from your injections** with very high accuracy.
+* It is not fair as a pure “arc realism” test because:
+
+  * real lenses include their true lens hosts and survey processing artifacts,
+  * injections are placed on random negative hosts (different host population),
+  * observational signatures (correlated noise, sky-subtraction residual structure, arc Poisson noise) differ.
+
+Even so, AUC ~0.991 is so high that “some strong separable signature exists” is robust.
+
+### D2. 10x median score gap: how much is injection unrealism vs model correctness?
+
+You cannot decompose this cleanly from current diagnostics. The best honest statement is:
+
+* A **large fraction** of the gap is due to **domain shift / injection unrealism**, because even deliberately “easy” injections (low beta_frac, bright) still score far below real lenses (median 0.107 vs 0.995).
+* Another fraction is due to **the injection family generating many configurations that are not actually lens-like** under your model (smooth Sérsic sources, limited morphology, wrong noise process, possible single-image cases even at “low beta_frac” depending on model details).
+
+If forced to allocate for planning purposes: I would treat it as **~70–90% injection-domain shift**, **~10–30% “injection family not matching real arcs”**. That is a planning heuristic, not a measured fact.
+
+### D3. Layer-wise FD grows from 0.22 to 63.07: what does it tell us?
+
+Qualitatively:
+
+* Early features look similar (low-level edges/textures not the separator).
+* Separation emerges in mid-level features (shape compositions, arc-like vs non-arc-like structures, or survey-artifact signatures).
+
+But:
+
+* Because you cannot compute FD for deeper layers (n < dim), you cannot localize the separation to the final semantic features.
+* And the full-embedding FD values are not reliable numerically (singular covariance).
+
+So: **informative directionally**, not quantitatively.
+
+### D4. Is injection-based completeness meaningful at all?
+
+**It is meaningful only as “completeness for this injection simulator,” not as “completeness for real lenses.”**
+
+Given the linear probe AUC ~0.991, a hostile referee is justified in saying your completeness is measuring “how many parametric injections enter the model’s acceptance region,” not the true astrophysical selection function.
+
+You can salvage meaning if you:
+
+* either improve injections until real vs injection separability is much weaker (probe AUC closer to 0.5–0.7),
+* or explicitly reframe the paper as quantifying the mismatch and providing bounds/diagnostics rather than claiming a definitive selection function.
+
+---
+
+## E. Retrain decision
+
+### E1. Which retrains to run, in what order, and predicted outcomes
+
+1. **gen5b (finetune gen4 with corrected annulus)** first
+
+* Lowest risk and likely lowest compute.
+* Prediction: **AUC change small** (±0.001 to ±0.003), Tier-A recall similar if tuned; injection completeness likely **unchanged within a few pp** unless annulus interacts with clipping/score calibration.
+
+2. **gen5c (from scratch + corrected annulus + weighted loss)** second, only if you care about high-purity regime metrics (TPR at fixed FPR)
+
+* Prediction: potential improvement in **TPR at very low FPR** and calibration, possibly at cost of some raw AUC.
+* I do **not** expect it to fix the injection realism gap by itself.
+
+3. **gen5a (from scratch, unweighted)** last
+
+* Highest compute, least likely to outperform a good finetune given your dataset size and existing strong checkpoint.
+
+### E2. If AUC improves 0.9921 to 0.9935, is that publishable?
+
+As a “meaningful performance improvement,” **no**, unless you show:
+
+* multiple seeds, or
+* a statistically defensible paired test and a metric tied to science operations (TPR at fixed FPR, or yield at a fixed candidate budget).
+
+As a “we fixed a preprocessing bug and preserved performance,” **yes**, if documented cleanly and you avoid overclaiming.
+
+### E3. Minimum set of experiments for a publishable MNRAS paper (with or without retrain)
+
+If you submit with gen4 and these diagnostics, the paper must not claim a robust selection function for real lenses. Minimum to be publishable:
+
+1. **Tier-A-only evaluation** (with uncertainty intervals) and **TPR at fixed FPR** (you started adding this).
+2. **A defensible statement of what the injection completeness represents**, plus a clear limitation that real vs injection is separable at AUC ~0.99.
+3. **At least one realism upgrade or calibration step** that demonstrably reduces the separability (for example: inject real galaxy source stamps, add arc Poisson noise, band-dependent PSF, and correlated noise consistent with DR10 coadds).
+4. **Uncertainty on completeness maps** (binomial intervals, and/or more injections where you report maps).
+
+Without (3), a hostile referee can plausibly recommend rejection on the grounds that the “selection function” is not tied to the real lens population.
+
+---
+
+## F. Hostile reviewer responses
+
+### F1. “Completeness 3.5% vs recall 73%; probe AUC 0.991 shows injections are trivially distinguishable. Why is completeness meaningful?”
+
+A defensible response has to concede the limitation and narrow the claim:
+
+* State explicitly: **our completeness is for a controlled parametric injection family**, not a full astrophysical selection function.
+* Use the probe result as a **quantified domain gap metric**.
+* Then show either:
+
+  * updated injections that reduce the gap (probe AUC drops materially), or
+  * a calibration strategy: compare distributions of measurable arc statistics in real vs injected (color gradients, curvature, width, residual structure) and tune priors/simulator until they match, then recompute completeness.
+
+If you do neither, the referee critique stands.
+
+### F2. “Annulus bug is concerning. Why not caught? How do we know no other preprocessing bugs?”
+
+Best response is process + tests:
+
+* Admit it was inherited from a 64×64 setting and silently carried to 101×101.
+* Show the new safeguards: preprocessing spec serialized with checkpoint, regression tests, explicit validation (`r_in < r_out`, min pixel count), and diagnostic scripts that quantify sensitivity.
+* Add one more strong control: a **frozen golden-batch preprocessing hash** on the actual target hardware, plus a “round-trip” test that scoring scripts match training-time preprocessing spec.
+
+### F3. “Only 112 Tier-A val lenses; CI is too wide.”
+
+The criticism is valid.
+
+* You address it by reporting **binomial confidence intervals**, avoiding overprecision, and supplementing with:
+
+  * Tier-B metrics with caveats,
+  * bootstrap across HEALPix regions if possible,
+  * and, if feasible, adding an external holdout set of confirmed lenses not used in training (even if small).
+
+---
+
+## G. Next steps
+
+### G1. Prioritized action items (only those likely to change conclusions)
+
+1. **Fix missing RA/Dec (healpix) for positives in the manifest**
+
+* Time: 0.5–1 day (depends on provenance).
+* Outcome: You can validate spatial clustering/leakage claims and stratify Tier-A performance by sky conditions.
+* Enables: credible responses to leakage/split questions.
+
+2. **Run the “clip_range=50” bright-arc test (and ideally clip_range sweep)**
+
+* Time: 10–30 minutes GPU for your current small n.
+* Outcome: Determines whether the “brightest arcs rejected” is primarily clipping-induced.
+* Enables: whether to change preprocessing or interpret bright-arc ceiling.
+
+3. **Host-matched realism test for the linear probe**
+
+* Time: 1–3 hours GPU + scripting.
+* What: compare real Tier-A vs injections placed on a *matched* host subset (LRG-like negatives matched in magnitude, size, PSF, depth).
+* Outcome: tells you how much of AUC=0.991 is host-domain vs arc-domain.
+* Enables: targeted realism improvements.
+
+4. **Injection realism upgrade aimed at reducing real-vs-injection separability**
+
+* Time: 1–3 days dev + reruns.
+* Highest leverage upgrades: arc Poisson noise, band-dependent PSF, correlated noise consistent with DR10 coadds, and non-parametric sources (real source stamps).
+* Outcome: If the probe AUC drops materially and injection completeness rises without breaking real recall, you have a defensible selection-function story.
+
+5. **Optional: gen5b finetune with corrected annulus**
+
+* Time: whatever your finetune budget is (often hours, not days).
+* Outcome: removes “known bug” vulnerability if performance is preserved.
+* Enables: cleaner paper narrative, but unlikely to fix the main gap.
+
+### G2. Retrain (annulus fix) vs injection realism: which is better use of compute?
+
+**Injection realism is higher leverage.** Your strongest diagnostic result is the representation-level separability (probe AUC ~0.991) and the non-monotonic behavior with brightness. Those are not explained by a small median shift in the annulus.
+
+If you can afford both: do **gen5b** (cheap hygiene) while prioritizing **realism upgrades** as the main path to MNRAS acceptance.
+
+### G3. Single most important thing before submission
+
+**Make the injection-based selection function demonstrably relevant to real lenses.** Concretely: implement at least one realism upgrade and show that (i) real vs injection separability decreases materially, and (ii) completeness behavior becomes physically sensible (monotonic with SNR once clipping is handled). Without this, a referee can credibly argue your “selection function” is for synthetic artifacts, not the astrophysical population.
+
+
+
+
+************
+LLM2 Answer:
+Let me start by carefully examining the diagnostic code, then work through every question systematically.Now let me build the comprehensive assessment report. I've read every diagnostic script line by line, verified the preprocessing pipeline, and examined the raw results. Here are my honest findings.Here's the full assessment. Let me call out the most critical findings — several of which require me to honestly admit my earlier predictions were wrong.
+
+**My Prompt 2 prediction was falsified.** I predicted restricting beta_frac to [0.1, 0.55] would raise the bright-arc ceiling to 60–80%. The actual result is 35.5% — barely distinguishable from the unrestricted ~30% baseline. The geometry explanation I built in Prompt 2 is at most a secondary factor, not the dominant one.
+
+**The linear probe is the single most important result.** AUC = 0.991 proves the CNN can trivially distinguish Sersic injections from real lenses, even when you give the injections every advantage (bright mag 19, dramatic low-beta_frac arcs). This means the 3.5% injection completeness is measuring "how many Sersic profiles fool the CNN," not "what fraction of real lenses the CNN would find." The injection pipeline — not the model, not the preprocessing — is the binding constraint.
+
+**The annulus fix is cosmetic — do NOT retrain for it.** The MAD (noise scale) doesn't change between the two annuli (KS p=0.648), and the 3.6pp recall drop from mismatched scoring is not statistically significant (p ≈ 0.10). Batch normalization absorbs the small median shift.
+
+**The brightest arcs having the LOWEST detection (17% at mag 18–19) is a clipping artifact.** At SNR ~1500, the arc is clipped to the ±10 clip_range ceiling, destroying its morphology. This is easily testable: re-run with `--clip-range 50`. This 10-minute experiment should be your first action item.
+
+**The NaN healpix for all 4,788 positives is a data quality concern** that needs investigation — if positives were split randomly rather than spatially, there could be train/val leakage from spatially correlated lens candidates.
+
+**The path to MNRAS:** Reframe the paper around the linear probe result. The novel contribution is not "here's our selection function" but "here's our selection function, here's quantitative proof it's a conservative lower bound, and here's how much more realistic the injections need to be." That framing turns every weakness into a scientific contribution.
+
+################################
+
+# Prompt 7: Should We Retrain? — You Decide
+
+## Your Role
+
+You are an independent scientific reviewer. We give you ALL the code, ALL the raw results, and ALL the context. We want YOU to decide what we should do next. Should we retrain the model? Should we change the injection pipeline? Should we publish as-is?
+
+**Rules:**
+- Read the attached code. Do not trust summaries — form your own conclusions from the data.
+- For every recommendation you make, explain your reasoning step by step. Show your work.
+- If the evidence is ambiguous, say so. Do not force a conclusion.
+- Be 100% honest. If we are wasting our time, tell us.
+- Think like a hostile but fair MNRAS referee who wants to see solid science.
+
+---
+
+## What Is in the Zip
+
+The attached `d01_d02_full_evidence_package.zip` contains:
+
+**Diagnostic scripts we wrote and ran (11 Python scripts + 2 shell runners):**
+- `scripts/split_balance_diagnostic.py` — checks train/val split balance, PSF/depth distributions, HEALPix spatial leakage
+- `scripts/masked_pixel_diagnostic.py` — checks for non-finite / zero pixels in cutouts
+- `scripts/annulus_comparison.py` — compares normalization stats between old (20,32) and new (32.5,45) annuli
+- `scripts/mismatched_annulus_scoring.py` — scores gen4 model with native vs mismatched annulus preprocessing
+- `scripts/feature_space_analysis.py` — extracts CNN embeddings, runs linear probe (logistic regression) separating real lenses from injections, computes Frechet distances
+- `scripts/investigate_healpix_nan.py` — investigates why all positives have NaN healpix_128
+- `scripts/generate_umap_figure.py` — generates UMAP visualization from saved embeddings
+- `sim_to_real_validations/bright_arc_injection_test.py` — injects bright arcs at varying magnitudes and scores them, with flags for --clip-range, --add-poisson-noise, --beta-frac-range
+- `sim_to_real_validations/real_lens_scoring.py` — scores real lenses with --tier-a-only option
+- `scripts/run_diagnostics.sh` — D01 runner (6 diagnostics)
+- `scripts/run_d02_quick_tests.sh` — D02 runner (7 experiments)
+
+**Core library modules these scripts depend on:**
+- `dhs/preprocess.py`, `dhs/preprocess_spec.py`, `dhs/scoring_utils.py`, `dhs/model.py`, `dhs/injection_engine.py`, `dhs/utils.py`, `dhs/constants.py`
+
+**Training configs:**
+- `configs/paperIV_efficientnet_v2_s_v4_finetune.yaml` — current gen4 model
+- `configs/gen5a_efficientnet_annulus_fix.yaml` — proposed retrain: from-scratch, corrected annulus
+- `configs/gen5b_efficientnet_annulus_ft.yaml` — proposed retrain: finetune gen4, corrected annulus
+- `configs/gen5c_efficientnet_weighted_loss.yaml` — proposed retrain: from-scratch, corrected annulus + weighted loss
+
+**Injection prior registry:**
+- `configs/injection_priors.yaml` — exact parameter ranges used for all injections
+
+**ALL raw results (JSON + logs + embeddings + UMAP figures):**
+- `results/D01_20260214_pre_retrain_diagnostics/` — 6 diagnostic outputs
+- `results/D02_20260214_prompt5_quick_tests/` — 7 experiment outputs including UMAP
+
+**Registry:**
+- `EXPERIMENT_REGISTRY.md` — maps all experiments to their configs, checkpoints, and results
+
+---
+
+## The Model
+
+- **Architecture:** EfficientNetV2-S (pretrained ImageNet, finetuned)
+- **Training data:** 451,681 cutouts (101x101 pixels, 3-band g/r/z, DESI Legacy Survey DR10)
+  - Train: 316,100 (277 Tier-A confirmed lenses, 3,079 Tier-B visual candidates, 312,744 negatives)
+  - Val: 135,581 (112 Tier-A, 1,320 Tier-B, 134,149 negatives)
+- **Current checkpoint:** gen4 (finetuned from gen2, AUC=0.9921)
+- **Preprocessing:** `raw_robust` — per-band normalization using median and MAD from outer annulus of stamp, then clip to [-clip_range, +clip_range]
+- **Known preprocessing issue:** Annulus radii used during training were (20, 32) pixels. The geometrically correct values for 101x101 stamps are (32.5, 45.0). Training clip_range=10.
+
+## The Injection Pipeline
+
+- Synthetic lensed arcs injected into real host galaxy cutouts using SIS+shear ray-tracing with Sersic source profiles
+- Parameter ranges: see `configs/injection_priors.yaml`
+- Poisson noise on injected arcs: OFF by default (flag exists but was not used during training or previous selection function computation)
+- Selection function completeness: ~3.5% marginal over full parameter space
+
+## Three Proposed Retrain Configs (Ready to Run)
+
+| Config | What changes | Estimated GPU time |
+|--------|-------------|-------------------|
+| gen5a | From-scratch, corrected annulus (32.5,45), same hyperparams as gen1 | ~15 GPU-hours |
+| gen5b | Finetune from gen4, corrected annulus | ~5 GPU-hours |
+| gen5c | From-scratch, corrected annulus + weighted loss (Tier-A=1.0, Tier-B=0.5) | ~15 GPU-hours |
+
+---
+
+## ALL Raw Results
+
+Below is every number from every experiment. The full JSON files and console logs are also in the zip.
+
+### D01: Pre-Retrain Diagnostics (6 experiments)
+
+**1. Split Balance:**
+```
+train: 316,100 total — 277 Tier-A, 3,079 Tier-B, 312,744 neg
+val:   135,581 total — 112 Tier-A, 1,320 Tier-B, 134,149 neg
+PSF balance (KS test): psfsize_r p=0.174, psfdepth_r p=0.123 (not significantly different)
+All 4,788 positives have NaN healpix_128
+```
+
+**2. Masked Pixels:**
+```
+1000 cutouts sampled: 0 non-finite pixels, max zero fraction 0.52%
+```
+
+**3. Annulus Comparison — (20,32) vs (32.5,45):**
+```
+old_20_32:   median_of_medians=0.000467, median_of_MADs=0.002276
+new_32p5_45: median_of_medians=0.000340, median_of_MADs=0.002197
+
+Paired differences (new - old), N=1000:
+  Median diff: mean=-0.000345, std=0.000955
+  MAD diff:    mean=-0.000079, std=0.000469
+
+KS test (median): stat=0.151, p=2.32e-10  (significant)
+KS test (MAD):    stat=0.033, p=0.648     (not significant)
+No correlation with PSF (r=-0.025, p=0.433) or depth (r=0.026, p=0.418)
+```
+
+**4. Mismatched Annulus Scoring (gen4 scored with native vs mismatched preprocessing):**
+```
+                     Native(20,32)  Mismatched(32.5,45)   Delta
+Recall (p>0.3)         0.740           0.704            -0.036
+Recall (p>0.5)         0.698           0.660            -0.038
+Recall (p>0.7)         0.642           0.616            -0.026
+FPR (p>0.3)            0.002           0.002            +0.000
+Median pos score       0.9434          0.9008
+Median neg score       0.0000          0.0000
+N=500 pos, 500 neg (mixed Tier-A + Tier-B)
+```
+
+**5. Beta-Frac Restriction Test (theta_E=1.5", beta_frac [0.1, 0.55], 200 hosts/bin):**
+```
+Mag bin   p>0.3    p>0.5   median_p  median_SNR
+18-19     17.0%     9.0%    0.0804    1556.2
+19-20     24.5%    18.0%    0.0893     671.5
+20-21     27.5%    17.0%    0.1152     250.1
+21-22     35.5%    27.0%    0.1008     101.4
+22-23     31.0%    27.5%    0.0430      39.3
+23-24     24.0%    18.5%    0.0024      15.6
+24-25      8.5%     7.0%    0.0001       6.2
+25-26      1.0%     0.5%    0.0000       2.3
+```
+
+**6. Embedding Analysis + Linear Probe:**
+```
+Real Tier-A (n=112):       median score = 0.9946
+Inj low beta_frac (n=200): median score = 0.1065
+Inj high beta_frac (n=200): median score = 0.0172
+Negatives (n=200):          median score = 0.0000
+
+Linear probe (real vs low-bf injections): AUC = 0.9911 +/- 0.0102
+
+Frechet distance: real vs low-bf = 219.67, real vs high-bf = 199.81
+Per-layer FD: features_0=0.22, features_1=1.40, features_2=11.06, features_3=63.07
+(features_4-7: n=112 < dim, could not compute)
+```
+
+### D02: Quick Tests (7 experiments)
+
+**7. Clip-Range Sweep (beta_frac [0.1, 0.55], detection rate at p>0.3):**
+```
+clip_range   18-19   19-20   20-21   21-22   22-23   23-24   24-25   25-26
+10 (baseline) 17.0%  24.5%   27.5%   35.5%   31.0%   24.0%    8.5%    1.0%
+20           30.5%   32.0%   37.0%   40.5%   35.0%   14.5%    4.5%    0.0%
+50            0.5%    0.0%    0.0%    1.0%    6.0%    4.0%    3.0%    0.0%
+100          21.0%   11.0%    3.0%    1.5%    6.5%    3.5%    2.5%    0.5%
+```
+
+**8. Poisson Noise Test (clip_range=10, beta_frac [0.1, 0.55], detection rate at p>0.3):**
+```
+Condition     18-19   19-20   20-21   21-22   22-23   23-24   24-25   25-26
+No Poisson    17.0%  24.5%   27.5%   35.5%   31.0%   24.0%    8.5%    1.0%
+With Poisson  17.5%  31.0%   45.0%   43.0%   23.5%    5.5%    1.0%    0.0%
+```
+
+**9. Poisson + clip_range=50 Combined (p>0.3):**
+```
+Near-total collapse: 0.5% at mag 18-19, 2.0% at 20-21, 11.0% at 21-22
+```
+
+**10. Tier-A-Only Real Lens Scoring (112 val Tier-A lenses):**
+```
+Threshold     Recall    n_detected/n    95% Wilson CI
+p>0.3         89.3%     100/112         [82.6%, 94.0%]
+p>0.5         83.9%      94/112         [76.3%, 89.8%]
+p>0.806       79.5%      89/112         [71.3%, 86.1%]
+p>0.995       48.2%      54/112         [39.1%, 57.4%]
+
+Score distribution: p5=0.014, p25=0.913, median=0.995, p75=0.999, p95=1.000
+```
+
+**11. All-Tier Scoring (1432 val positives = 112 Tier-A + 1320 Tier-B):**
+```
+Tier-A: p>0.3 = 89.3% (100/112) CI [82.6%, 94.0%]
+Tier-B: p>0.3 = 72.0% (950/1320) CI [69.5%, 74.3%]
+Combined: p>0.3 = 73.3%
+```
+
+**12. Unrestricted Beta-Frac Baseline [0.1, 1.0] (matched hosts, same seed, p>0.3):**
+```
+Mag bin   Unrestricted [0.1,1.0]   Restricted [0.1,0.55]   Delta
+18-19           17.0%                    17.0%               0.0pp
+19-20           21.5%                    24.5%              +3.0pp
+20-21           28.0%                    27.5%              -0.5pp
+21-22           20.0%                    35.5%             +15.5pp
+22-23           17.5%                    31.0%             +13.5pp
+23-24            7.0%                    24.0%             +17.0pp
+24-25            4.5%                     8.5%              +4.0pp
+25-26            0.0%                     1.0%              +1.0pp
+```
+
+**13. HEALPix Investigation:**
+```
+All 4,788 positives have valid ra/dec (NaN count = 0 for both).
+healpix_128 is NaN for all positives — a manifest-generation bug; the column was never computed.
+
+Recomputed HEALPix spatial overlap:
+  Tier-A: train=277 in 274 pixels, val=112 in 112 pixels — ZERO overlap
+  Tier-B: train=3079 in 2940 pixels, val=1320 in 1307 pixels — 118 overlapping pixels
+  Negatives: 176,391 pixels, 0 with mixed splits (fully spatial)
+```
+
+---
+
+## Questions
+
+Answer each question with your reasoning. Be specific. Cite numbers.
+
+### 1. The Retrain Question
+
+We have three retrain configs ready (gen5a, gen5b, gen5c). Based on ALL the evidence above:
+
+**1a.** Should we retrain at all? If yes, which config(s) and why? If no, why not? Walk through your reasoning step by step.
+
+**1b.** The annulus normalization medians differ significantly (KS p=2.3e-10) but the MADs do not (p=0.648). The mismatched scoring shows a 3.6pp recall drop at N=500. Is this evidence that the annulus bug hurts performance, or is it just expected sensitivity to preprocessing mismatch? Explain your reasoning.
+
+**1c.** If we retrain gen5c (weighted loss), what specific improvement do you predict and why? Be quantitative if possible.
+
+### 2. The Injection Pipeline Question
+
+**2a.** Adding Poisson noise raised detection at mag 20-21 from 27.5% to 45.0%. What does this tell us about what the CNN learned? Why does Poisson noise help detection of *injected* arcs when the model was never trained with Poisson noise on injections?
+
+**2b.** The clip-range sweep shows a non-monotonic pattern: 20 helps, 50 collapses, 100 partially recovers. Explain this pattern. What does it mean for the model?
+
+**2c.** The linear probe AUC of 0.991 means the CNN almost perfectly separates real lenses from injections. Given this, is the injection-based selection function (completeness ~3.5%) a meaningful number? What does it actually measure?
+
+### 3. The Tier-A Recall Question
+
+**3a.** Tier-A recall is 89.3% with zero spatial leakage. Tier-B recall is 72.0% with some spatial leakage (118 shared HEALPix pixels). Which is the correct headline number for the paper? What caveats are needed?
+
+**3b.** 12 out of 112 Tier-A lenses are missed (score < 0.3). Without seeing the images, what properties would you expect these missed lenses to have?
+
+### 4. What Should We Do Before Submitting the Paper?
+
+**4a.** Give us a concrete ordered list of what we MUST do before submitting to MNRAS. For each item state: what to do, how long it takes, and what it gets us. Do NOT include anything that will not materially improve the paper.
+
+**4b.** What claims can this paper make? What claims should it explicitly NOT make?
+
+**4c.** A hostile referee will read this paper. What are the top 3 criticisms they will raise? For each, either tell us how to preempt it in the paper, or tell us what experiment to run to address it.
+
+### 5. The Big Picture
+
+**5a.** Looking at the full body of evidence — the model gets 89.3% recall on real confirmed lenses, the injection completeness is 3.5%, and the linear probe AUC is 0.991. What is the most scientifically interesting story this data tells? What should the paper be *about*?
+
+**5b.** If you had one week of GPU time and one week of engineering time, what would you do to make this the strongest possible paper?
+
+---
+
+## What We Need From You
+
+Give us a clear decision with clear reasoning. Do not hedge. If the answer is "do not retrain," say so and explain why. If the answer is "retrain gen5c and add Poisson noise before publishing," say so and explain why. We will follow your recommendation if the reasoning is solid.
+
+-------------------
+************
+LLM1 Answer:
+
+## What I actually checked in the zip
+
+* Read the core modules: `dhs/preprocess.py`, `dhs/preprocess_spec.py`, `dhs/scoring_utils.py`, `dhs/model.py`, `dhs/injection_engine.py`, `dhs/utils.py`, `dhs/constants.py`.
+* Read the diagnostics scripts you listed, especially `feature_space_analysis.py` and the bright-arc scripts.
+* Loaded and inspected the raw JSON outputs under:
+
+  * `results/D01_20260214_pre_retrain_diagnostics/`
+  * `results/D02_20260214_prompt5_quick_tests/`
+* The numbers you pasted match the JSON outputs.
+
+The key fact that dominates everything is your own diagnostic:
+
+* **Linear probe (real Tier-A vs low-beta-fraction injections): AUC = 0.9911 ± 0.0102.**
+
+  * This means the CNN feature space almost perfectly separates “real lens cutouts” from “your injections” as a domain label.
+
+That single result implies your injection-based “selection function” is not measuring astrophysical detectability. It is primarily measuring “how often the model accepts this synthetic domain.”
+
+---
+
+## 1. The Retrain Question
+
+### 1a. Should you retrain? Which config?
+
+**Yes, retrain. Run gen5b first, then gen5c if gen5b does not improve Tier-A or calibration. Do not bother with gen5a unless gen5b fails.**
+
+Reasoning, step by step:
+
+1. **You have a known preprocessing spec bug in the current trained model (gen4):**
+
+   * Training used annulus radii **(20, 32)** on **101×101** stamps, while your “geometrically correct” choice is **(32.5, 45.0)**.
+   * If you submit a methods paper and you already know your normalization is not what you claim it is, referees will attack credibility immediately.
+
+2. **You already measured that the model is meaningfully sensitive to the annulus definition:**
+
+   * Scoring gen4 with mismatched annulus drops recall at p>0.3 from **0.740 to 0.704** (delta **-3.6 pp**) at N=500 mixed positives/negatives.
+   * That is too large to ignore in a paper that is fundamentally about calibration.
+
+3. **gen5b is the cheapest “make it defensible” step:**
+
+   * It directly addresses the annulus issue with minimal GPU time, and it is the most likely to preserve performance.
+
+4. **gen5c is justified as an additional run because you have clear label quality stratification:**
+
+   * Tier-A recall is **89.3%** (100/112) while Tier-B is **72.0%** (950/1320).
+   * Weighted loss is a principled way to reduce the influence of noisier Tier-B labels, and it costs you one extra training run.
+
+What retraining will not do:
+
+* It will **not** fix the injection mismatch by itself. Your feature-space separation result (AUC 0.991) shows the problem is largely in the injection domain, not in the classifier capacity.
+
+**Decision:** retrain for correctness and defensibility, not because it will magically raise injection completeness.
+
+---
+
+### 1b. Does the annulus bug hurt performance, or is this just expected mismatch sensitivity?
+
+It is both, but the evidence supports “it matters enough that you must fix it.”
+
+* Your annulus comparison shows:
+
+  * Medians differ significantly (KS p = **2.32e-10**)
+  * MADs do not (KS p = **0.648**)
+
+This pattern means:
+
+* The **center/offset** of normalized values shifts more than the scale.
+* CNNs are very sensitive to small systematic shifts in low-level statistics, especially when pretrained backbones are involved.
+
+Then the direct ablation confirms the practical effect:
+
+* **-3.6 pp recall** at p>0.3 when using (32.5,45) scoring on a model trained with (20,32).
+
+That is not “noise.” That is “your current model is partially specialized to the incorrect preprocessing.”
+
+---
+
+### 1c. If you retrain gen5c (weighted loss), what improvement do I predict?
+
+A realistic, testable prediction:
+
+* **Tier-A recall (p>0.3): +0 to +2 pp** relative to gen5b, with a nontrivial chance of being flat.
+* **Tier-B recall (p>0.3): -0 to -3 pp** (it may go down because you are explicitly trusting Tier-B less).
+* **Net effect:** improved scientific defensibility (less dependence on noisy positives), possibly slightly better calibration, but not a guaranteed AUC win.
+
+If gen5c does not improve Tier-A recall or calibration metrics, the conclusion is:
+
+* Tier-B noise is not the limiting factor for the detector; the limiting factor for your paper is injection realism and domain gap.
+
+---
+
+## 2. The Injection Pipeline Question
+
+### 2a. Why does Poisson noise help injected arcs?
+
+Your result:
+
+* At clip_range=10, beta_frac [0.1,0.55]:
+
+  * Mag 20-21: detection p>0.3 goes **27.5% → 45.0%** with Poisson noise.
+  * Mag 21-22: **35.5% → 43.0%**.
+  * But it hurts at faint end (23-24: **24.0% → 5.5%**).
+
+This strongly suggests:
+
+1. **The classifier expects real-lens arc texture that your parametric renderer lacks.**
+
+   * Real arcs have small-scale structure from star-forming clumps, plus correlated survey noise and photon noise from the arc itself.
+   * Your Sersic+Gaussian-clump model is still too smooth and too “synthetic.”
+   * Adding Poisson noise injects pixel-scale fluctuations that partially mimic real arc texture.
+
+2. **Why can it help if the model was never trained on injected Poisson?**
+
+   * Because the model was trained on **real images**, which already include photon noise and survey noise in the arc light.
+   * You are moving injections closer to the training distribution, even if your Poisson model is only approximate.
+
+3. **Why does it hurt faint arcs?**
+
+   * For low-SNR injections, adding noise can bury morphology.
+   * Your Poisson implementation is also not physically tied to depth/exposure, so it can be overly aggressive in some regimes.
+
+Bottom line:
+
+* This is evidence the detector is using **texture and noise realism**, not brightness alone.
+
+---
+
+### 2b. Explain the clip-range sweep (non-monotonic, collapse at 50)
+
+Your sweep (beta_frac [0.1,0.55], p>0.3):
+
+* clip 10 baseline: mag 21-22 = **35.5%**
+* clip 20: mag 21-22 = **40.5%** (improves mid-bright)
+* clip 50: near-total collapse (mag 18-19 = **0.5%**, 20-21 = **0.0%**)
+* clip 100: partial recovery in a weird pattern (mag 18-19 = **21.0%**, but 20-21 = **3.0%**)
+
+This is classic “training distribution lock-in”:
+
+1. The network was trained with clip_range=10, so intermediate activations are tuned for that bounded input.
+2. Increasing clip_range a little (20) reduces saturation artifacts and can help in some regimes.
+3. Increasing too far (50, 100) produces extreme pixel values that are out-of-distribution for early layers, causing prediction collapse.
+4. The partial recovery at 100 is consistent with unstable behavior under heavy OOD shift, not a meaningful optimum.
+
+Practical implication:
+
+* **Do not change clip_range at inference to “fix” injections.**
+* If clip is part of the problem, it has to be addressed by retraining with a different clip strategy and then revalidating everything.
+
+---
+
+### 2c. If the linear probe AUC is 0.991, is completeness ~3.5% meaningful?
+
+**Not as an astrophysical selection function. It is meaningful as a diagnostic of injection realism and domain gap.**
+
+What it actually measures:
+
+* ( P(\text{model says lens} \mid \text{images drawn from your injection generator}) )
+
+Given AUC 0.991 for separating real Tier-A vs injections in embedding space, the generator is producing a domain the model can almost perfectly reject. That means:
+
+* Your “3.5% completeness” is primarily: **how often your synthetic generator accidentally lands in the real-lens manifold the CNN learned**.
+* It is closer to a “generator acceptance rate” than a “survey selection function.”
+
+If you publish a 3.5% completeness surface as a real selection function without addressing this, a referee is likely to call it invalid.
+
+---
+
+## 3. The Tier-A Recall Question
+
+### 3a. What is the correct headline recall number?
+
+**Headline: Tier-A recall = 89.3% at p>0.3 (100/112), with explicit caveats.**
+
+Why:
+
+* Tier-A has **zero spatial overlap** between train and val by your recomputed HEALPix analysis.
+* Tier-B has **118 overlapping HEALPix pixels**, and Tier-B labels are inherently noisier.
+
+Caveats you must state in the paper:
+
+1. These “Tier-A” are confirmed within your compiled sample, not a fully independent, survey-complete truth set.
+2. Your negatives may contain unlabeled lenses, which affects FPR calibration.
+3. Tier-B performance is not a clean measure due to label noise and some spatial overlap.
+
+---
+
+### 3b. What properties do the 12/112 missed Tier-A lenses likely have?
+
+Given the score distribution for Tier-A (p5 = 0.014, p25 = 0.913, median = 0.995), the missed ones are likely extreme outliers. Without images, the most likely causes are:
+
+* **Small Einstein radius / unresolved arcs** relative to PSF.
+* **Low arc-host contrast** (bright deflector, faint source, strong blending).
+* **Red or dust-reddened sources** (color atypical vs the training-positive manifold).
+* **Strong contamination**: nearby stars, diffraction spikes, blends, satellite trails.
+* **Miscentering**: lens not centered in the 101×101 cutout.
+* **Atypical lens morphology**: doubles/quads with point-like images, or complex group environments.
+
+---
+
+## 4. What you must do before submitting to MNRAS
+
+### 4a. Concrete ordered list (only items that materially improve the paper)
+
+1. **Retrain with corrected annulus (gen5b), rerun Tier-A recall and basic calibration**
+
+   * Time: ~5 GPU-hours + evaluation.
+   * Gets you: removes an obvious methodology vulnerability.
+
+2. **Repeat the feature-space test on the retrained model**
+
+   * Compute the same linear probe AUC (real Tier-A vs injections) and show whether it changes.
+   * Time: hours.
+   * Gets you: a quantitative “domain gap” metric you can put in the paper as a realism validation gate.
+
+3. **Define and enforce an injection realism acceptance target**
+
+   * Example: require linear-probe AUC (real vs injections) to drop from ~0.99 to something like <0.75 before claiming selection-function relevance.
+   * Time: writing + a few runs.
+   * Gets you: referee-proof logic for why your selection function is or is not valid.
+
+4. **Run 2–3 injection variants whose sole goal is to reduce feature-space separability**
+   Minimum set:
+
+   * Add Poisson noise (already implemented).
+   * Use more realistic source morphology (your current clumps are not enough, as proven by AUC 0.991).
+   * Optionally: PSF realism upgrade if cheap.
+   * Time: days.
+   * Gets you: the ability to say “we validated injection realism and here is the resulting selection surface.”
+
+If you cannot reduce separability, then the paper must pivot to a “negative result / methodology warning” framing.
+
+---
+
+### 4b. Claims you can make vs claims you should not make
+
+You can claim:
+
+* The detector achieves **high recall on confirmed lenses** in your compiled sample (Tier-A 89.3% at p>0.3).
+* **Naive parametric injection models are strongly out-of-distribution** relative to real lenses in CNN feature space (linear-probe AUC ~0.99).
+* Therefore, **injection-based selection functions are not automatically valid** and must be realism-validated.
+
+You should not claim (yet):
+
+* A calibrated astrophysical selection function for real DR10 lenses, unless you demonstrate injection realism quantitatively and convincingly.
+* Population-level demographic inferences from the 3.5% completeness surface.
+
+---
+
+### 4c. Top 3 hostile-referee criticisms and how to preempt
+
+1. **“Your injections are not realistic, so your selection function is meaningless.”**
+
+   * Preempt with your own evidence: linear-probe AUC 0.991.
+   * Then either:
+
+     * Fix injections until separability drops materially, or
+     * Reframe paper as a methodological audit showing why realism validation is mandatory.
+
+2. **“Your preprocessing description does not match what you trained.”**
+
+   * Fix by retraining gen5b (and stating the correction clearly), or explicitly state you used (20,32) and justify it, but that will look weak.
+
+3. **“Your evaluation is not independent and may be circular.”**
+
+   * Preempt by:
+
+     * Using Tier-A-only headline metrics.
+     * Adding an external truth set evaluation if possible, but if not, be explicit that you measure recall on a compiled confirmed subset rather than survey completeness.
+
+---
+
+## 5. The Big Picture
+
+### 5a. What is the scientifically interesting story?
+
+The most interesting, defensible story is:
+
+**CNN lens finders trained on real survey cutouts learn a “real-lens manifold” that naive forward-model injections do not reproduce. You can quantify this mismatch directly in feature space, and it dominates selection-function inference unless realism is validated and enforced.**
+
+Your data supports this cleanly:
+
+* Real Tier-A recall: **89.3%**
+* Injections: much lower acceptance
+* Feature-space separability: **AUC ~0.99** for real vs injections
+
+That is a strong result. It is also a warning shot to the field if presented rigorously.
+
+---
+
+### 5b. One week of GPU time + one week engineering time: what I would do
+
+1. **Run gen5b retrain (annulus fix) and lock the final detector.**
+2. **Define a realism target metric and make it a gate:**
+
+   * Linear-probe AUC (real vs injections)
+   * Plus a simple matched statistic: arc annulus SNR and color distribution vs Tier-A.
+3. **Implement one morphology upgrade that is not parametric clumps:**
+
+   * Use real galaxy texture as source-plane brightness (even a crude version).
+4. **Iterate injections until feature-space AUC drops materially.**
+5. **Only then recompute the selection function grid and publish it.**
+
+   * If AUC does not drop, publish the negative result and do not present the grid as an astrophysical selection function.
+
+---
+
+## Clear decision
+
+* **Retrain:** Yes. **Run gen5b** (required for defensibility), then **gen5c** (optional but justified).
+* **Injection pipeline:** Your current injection-based completeness (~3.5%) is **not publishable as a real selection function** given the feature-space separability (AUC ~0.99). Treat it as a realism diagnostic, not a completeness result.
+* **Paper direction:** Either (a) fix injections until they pass a quantitative realism gate, then publish a real selection function, or (b) pivot the paper to a rigorous demonstration that naive injections fail and propose validated criteria and improved methods.
+
+If you want one binary go/no-go rule before calling anything a “selection function”:
+
+* **GO only if real-vs-injection linear-probe AUC drops far below 0.99 (target <0.75), while Tier-A recall remains high.**
+* If not, your completeness surfaces are not measuring what the paper claims.
+
+
+************
+LLM2 Answer:
+# Prompt 7: Final Decision — Should We Retrain?
+
+**Reviewer:** Claude (Anthropic), independent assessment  
+**Date:** 2026-02-14  
+**Evidence base:** D01 (6 diagnostics) + D02 (7 experiments) + all code reviewed  
+**Verdict:** Do not retrain for the annulus. Run gen5c only if you have spare GPU budget. The paper's strength is the sim-to-real gap characterization, not the model.
+
+---
+
+## Corrections to My Earlier Assessments
+
+Before diving in, I owe you three corrections from my Prompt 3 and D01 reports.
+
+**Correction 1: Beta_frac restriction DOES help, and by a lot.** In my D01 assessment I said the 5.5pp improvement was "not significant" because I was comparing restricted [0.1, 0.55] at 35.5% against an unmatched "~30% baseline" from a prior experiment. The D02 matched-baseline comparison (Experiment 12) tells a completely different story. At mag 21–22, the restricted run achieves 35.5% versus 20.0% unrestricted — a gain of +15.5pp. At mag 22–23: 31.0% vs 17.5% = +13.5pp. At mag 23–24: 24.0% vs 7.0% = +17.0pp. These are large, real effects that pass well beyond the ~7pp binomial standard error at n=200. The geometry explanation from Prompt 2 is partially vindicated: restricting to low-to-moderate beta_frac (high magnification, genuine arcs) roughly doubles detection for moderate-brightness injections. The ceiling, however, remains at ~35% rather than the 60–80% I predicted. Geometry matters, but injection realism matters more.
+
+**Correction 2: Tier-A recall is 89.3%, not 73.3%.** The 73.3% headline number that has been circulating since Prompt 1 combines Tier-A (89.3%) and Tier-B (72.0%). This is a significant distinction. The model recovers 100 out of 112 spectroscopically confirmed lenses at p > 0.3 — an excellent result that competes with published CNN lens finders.
+
+**Correction 3: The HEALPix NaN was a manifest bug, not a data quality issue.** All 4,788 positives have valid ra/dec; the healpix_128 column simply was never computed for them. Recomputed spatial analysis shows zero Tier-A pixel overlap between train and val, and 118 overlapping HEALPix pixels for Tier-B. The Tier-A validation is spatially clean.
+
+---
+
+## 1. The Retrain Question
+
+### 1a. Should we retrain at all?
+
+**Decision: Do NOT retrain gen5a or gen5b. Consider gen5c ONLY if you have spare GPU budget AND you want slightly improved calibration. It is not necessary for the paper.**
+
+Here is my step-by-step reasoning.
+
+**Step 1: What would retraining fix?** The three proposed retrains address two issues: the annulus bug (gen5a, gen5b, gen5c) and the unweighted loss (gen5c only). Let me evaluate each.
+
+**Step 2: Is the annulus bug worth fixing via retraining?** No. The D01 annulus comparison shows the median shifts by −0.000345 nmgy (about 0.15 normalized units after dividing by the MAD of 0.002276), while the MAD itself barely changes (−0.000079, or 3.5% of the MAD). EfficientNetV2-S uses batch normalization, which subtracts per-channel means and divides by per-channel standard deviations. A 0.15-unit additive offset in the input is absorbed by the running mean in the first batch-norm layer. The MAD not changing means the noise structure — what the model actually uses to distinguish signal from noise — is identical between the two annuli. Furthermore, the median shift does not correlate with PSF (r = −0.025, p = 0.43) or depth (r = 0.026, p = 0.42), so the bug does not introduce condition-dependent distortions.
+
+The mismatched scoring (D01 Experiment 4) shows a 3.6pp recall drop at n=500, which is 1.3 standard errors — not statistically significant. And as I explained in D01, this test only tells us the model is sensitive to its own training distribution, which is trivially true for any neural network. It does not predict whether a retrained model would be better.
+
+**Step 3: Is the weighted loss worth retraining for?** The case is stronger here but still marginal. Currently, 92% of training positives are Tier-B (3,079 out of 3,356 in the train split), with an estimated ~10% false-positive rate (~300 mislabeled). Downweighting Tier-B to 0.5 would reduce the effective contribution of noisy labels by half, making the model focus more on the 277 clean Tier-A positives. The expected result is modestly improved calibration in the high-probability regime (p > 0.9) and potentially +1–3pp Tier-A recall. But Tier-A recall is already 89.3% — the ceiling for improvement is only ~10pp, and diminishing returns set in quickly.
+
+**Step 4: Would retraining improve the paper?** No. The paper's headline numbers are: (a) 89.3% Tier-A recall, (b) 3.5% injection completeness, (c) linear probe AUC = 0.991. Retraining might push (a) from 89.3% to ~91%, which is within the existing confidence interval [82.6%, 94.0%] and therefore undetectable. It cannot change (b) or (c), because those are properties of the injection pipeline, not the model. The paper's scientific contribution is the sim-to-real gap characterization, and retraining does not advance that.
+
+**Step 5: Is there a cost to NOT retraining?** A referee could ask: "Why didn't you fix the known preprocessing bug?" The answer is straightforward and supported by data: "We characterized the annulus bug through four diagnostic experiments (Appendix X). The normalization median shifts by 0.15 standard deviations, absorbed by batch normalization. The noise scale (MAD) does not change. Scoring with the corrected annulus changes recall by −3.6 ± 2.8 pp, consistent with zero. We conclude the bug is cosmetic for model performance." This is an honest, data-backed answer that a fair referee would accept.
+
+### 1b. Annulus evidence: real performance issue or trivial sensitivity?
+
+**It is trivial sensitivity to preprocessing mismatch, not evidence of performance degradation.**
+
+Here is the full chain of reasoning. The KS test on the medians (p = 2.3 × 10⁻¹⁰) tells us the two annuli produce statistically distinguishable median values, which is unsurprising — the old annulus sits partly in galaxy light, so of course its median is biased upward. The KS test on MADs (p = 0.648) tells us the noise scale is identical. In the normalization formula x_norm = (x − median) / MAD, a shift in the median is a global additive offset, while a shift in the MAD would change the relative contrast between signal and noise. The MAD not changing means the signal-to-noise structure of the normalized image is preserved. Batch normalization in EfficientNetV2-S absorbs global additive offsets. So the preprocessed images fed to the convolutional layers are effectively identical under the two annuli.
+
+The 3.6pp recall drop from mismatched scoring is the expected consequence of feeding the model inputs with a slightly different offset than it was trained on. This is NOT evidence that the old annulus degrades the model's ability to detect lenses. If you changed the pixel scale by 1%, or the band order from grz to gzr, you'd also see a recall drop — that doesn't mean the original pixel scale or band order was wrong. The model adapts to whatever distribution it's trained on. The question "would a model trained on the new annulus be better?" can only be answered by actually retraining, and the prior evidence (annulus median shift is tiny, MAD is unchanged, no PSF/depth correlation) strongly suggests the answer is "no, or negligibly so."
+
+### 1c. Predicted gen5c improvement
+
+**Predicted improvement: AUC +0.001 to +0.003. Tier-A recall at p > 0.3: +1 to +3pp (from 89.3% to ~91–92%). Bright-arc injection ceiling: unchanged (~35%). Selection function completeness: unchanged (~3.5%).**
+
+The reasoning is as follows. The weighted loss reduces the effective weight of ~300 mislabeled Tier-B positives, which currently push the decision boundary slightly toward accommodating non-lens morphologies. Downweighting them concentrates the gradient signal on the 277 Tier-A confirmed lenses and the ~2,770 "true" Tier-B lenses (at 90% purity). This should sharpen the decision boundary in the high-confidence regime, improving precision at the cost of marginal recall on borderline cases. The effect on AUC (a global metric) is small because AUC is dominated by the easy cases (high-confidence positives and negatives), which are already well-separated.
+
+The injection completeness will not change because the CNN's ability to distinguish Sersic injections from real lenses is a feature-space property, not a decision-boundary property. The linear probe AUC of 0.991 means the injection/real separation exists in the embedding geometry itself, not just in the classifier head. Changing the loss function reshapes the decision boundary but does not change the embeddings.
+
+---
+
+## 2. The Injection Pipeline Question
+
+### 2a. Why does Poisson noise help detection?
+
+**Poisson noise makes injections look more like real astronomical sources. The CNN has learned that smooth, noise-free features are synthetic.**
+
+The result is striking: at mag 20–21 (SNR ~250), adding Poisson noise raises detection from 27.5% to 45.0% (+17.5pp). At mag 21–22 (SNR ~100): 35.5% to 43.0% (+7.5pp). But at mag 18–19 (SNR ~1500): 17.0% to 17.5% (no change). And at mag 22–23 (SNR ~40): 31.0% to 23.5% (−7.5pp, a decrease).
+
+This pattern reveals exactly what the CNN learned. At SNR ~100–250, a Sersic arc without Poisson noise has pixel values that vary only due to the smooth Sersic profile. Real astronomical sources at this brightness have pixel-to-pixel fluctuations of 3–10% from Poisson statistics. The CNN learned this texture: real bright features are grainy, injections are smooth. Adding Poisson noise bridges this gap, giving the injection a realistic texture that the CNN recognizes as "astronomical source."
+
+At SNR ~1500, the Poisson noise is tiny relative to the signal (~2.6% fluctuations), AND the arc is clipped by clip_range = 10 anyway. The clipping destroys both the smooth Sersic morphology and the Poisson texture, so neither matters. The bottleneck at mag 18–19 is clipping, not smoothness.
+
+At SNR ~40, Poisson noise is ~16% of the signal. This is large enough to degrade the coherent arc structure. The CNN detects arcs partly through spatial coherence (extended curved features), and adding ~16% noise disrupts this coherence at the pixel level. The net effect is destructive: noise washes out the already faint arc signal. At fainter magnitudes (SNR < 15), the Poisson noise is comparable to sky noise and has essentially zero effect.
+
+The model was never trained with Poisson noise on injections, but it was trained on real Tier-A lenses that inherently have Poisson noise. It learned "real bright features have grain; smooth bright features are suspicious." This is a legitimate astronomical insight encoded in the network, not a bug. The fix is straightforward: add Poisson noise to the injection pipeline. It is a one-line code change using the existing `--add-poisson-noise` flag.
+
+### 2b. The clip-range sweep: why does 50 collapse and 100 partially recover?
+
+This is the most technically revealing result in D02, and understanding it requires thinking about what happens inside the network.
+
+**clip_range = 10 (baseline):** The model was trained with inputs clipped to [−10, +10]. Its batch-normalization running statistics, convolutional filter weights, and classifier head are all calibrated for this dynamic range. At the center of a bright galaxy, the normalized value might be +8 to +10 (clipped); at the arc, +3 to +7; in the sky, near 0.
+
+**clip_range = 20:** The clipping boundary doubles. Bright galaxy centers now extend to +15 or +20 instead of being clamped at +10. Arcs at mag 18–19, which were clamped at +10 (losing their shape), now extend to +12 to +18, preserving their morphological structure. The model has never seen values above +10, but its convolutional filters still fire on edge/arc patterns regardless of absolute magnitude, because convolutions are translation-invariant in the value dimension too (a bright edge is still an edge). Batch-norm rescales the expanded range, partially compensating. The net result: bright arcs regain their morphology, detection jumps from 17.0% to 30.5% at mag 18–19, and moderate arcs also improve (27.5% to 37.0% at mag 20–21). The improvement across the board confirms that clip_range = 10 was too aggressive for bright sources.
+
+**clip_range = 50:** Near-total collapse to 0–1% detection across all magnitude bins. This is because the expanded dynamic range now includes massive outlier values from galaxy centers and bright stars. A bright galaxy center at +40 in normalized units is 4× outside the training distribution. The batch-norm running mean and variance, frozen at inference time, cannot rescale these values. The first convolutional layer sees inputs that are 4× larger than anything it was trained on, producing activations that saturate or behave nonlinearly. This cascades through the network, producing near-random outputs at the classifier head. Every input — arcs, galaxies, sky — looks equally alien to the model.
+
+**clip_range = 100:** Partial recovery at the brightest magnitudes (21.0% at mag 18–19) but continued collapse for fainter bins. At clip_range = 100, the dynamic range is 10× wider than training. Galaxy centers are at +80 to +100. For most inputs, this is catastrophically out of distribution (same as clip = 50). But for the very brightest arcs (mag 18, SNR > 1500), the arc signal is SO strong that even with the distorted batch-norm statistics, some residual edge-detection survives. The partial recovery at mag 18–19 and the absence of recovery at mag 21+ confirms this interpretation: only the most extreme signals can punch through a 10× distribution shift.
+
+**The key insight:** You cannot change clip_range at inference without retraining. The model's internal statistics are rigidly calibrated to the training distribution. The clip_range = 20 result tells us that a model RETRAINED with clip_range = 20 would have better bright-arc detection. But this improvement benefits injection completeness, not real-lens recall (already 89.3%).
+
+### 2c. Is the 3.5% completeness meaningful?
+
+**Yes, as a conservative lower bound. No, as an unbiased estimate of the true selection function.**
+
+The linear probe AUC of 0.991 proves there is a hyperplane in the CNN's 1280-dimensional feature space that separates real lenses from Sersic injections with near-perfect accuracy. The UMAP visualization (which I've now examined) makes this viscerally clear: real Tier-A lenses form a tight elongated manifold stretching across UMAP-1 from ~2 to ~14, while low-beta_frac injections cluster in a separate region around UMAP-1 from −3 to +3. The two populations barely overlap. There is a handful of orange stars (real lenses) scattered near the injection cluster — these are likely the ~10% of Tier-A with low scores (the 12 missed lenses), which happen to look more parametric than typical.
+
+What the 3.5% measures is: "what fraction of parametric Sersic injections does the CNN classify as lens-like?" This is a well-defined quantity, and it IS useful, for three reasons. First, it provides a conservative floor on the true selection function — real lenses with more complex morphology will be detected at higher rates, so the true completeness is ≥ 3.5%. Second, it maps out the parameter dependence of detection (which Einstein radii, magnitudes, and impact parameters are favorable), even if the absolute completeness is underestimated. Third, it quantifies the injection realism gap: the ratio of injection completeness to real-lens recall (~3.5% / 89.3% ≈ 4%) tells us how far parametric injections are from being realistic.
+
+The paper should NOT claim "the selection function completeness is 3.5%." It should claim "injection-recovery completeness with parametric Sersic sources is 3.5%, which we demonstrate is a conservative lower bound on the true selection function. The linear probe AUC of 0.991 in CNN feature space quantifies the morphological gap between parametric injections and real lenses."
+
+---
+
+## 3. The Tier-A Recall Question
+
+### 3a. Which headline number?
+
+**Tier-A recall (89.3% at p > 0.3) should be the headline number, with Tier-B as a secondary metric.**
+
+Tier-A consists of 112 spectroscopically confirmed lenses with zero spatial leakage between train and val (verified by the D02 HEALPix investigation: 274 unique train pixels, 112 unique val pixels, 0 overlapping). This is the cleanest evaluation you have. The 95% Wilson CI is [82.6%, 94.0%] — not amazingly tight, but the lower bound of 82.6% is already an excellent result for a CNN lens finder.
+
+Tier-B recall (72.0%) is contaminated by two effects: (a) ~10% of Tier-B are estimated non-lenses, so the denominator includes ~132 false positives in the val set, and (b) there are 118 shared HEALPix pixels between train and val, creating mild spatial leakage. If 10% of Tier-B val positives are non-lenses, the "true" Tier-B recall on actual lenses is approximately 72.0% / 0.90 × (1320 / (1320 − 132)) ≈ 80% × 1.11 ≈ 79%. But this correction is rough and the spatial leakage makes it less reliable.
+
+For the paper: "The CNN achieves 89.3% recall [82.6%, 94.0%] at p > 0.3 on 112 spectroscopically confirmed Tier-A lenses held out from training, with zero spatial overlap between training and validation sets. On the full validation set of 1,432 candidates (including 1,320 Tier-B visual candidates with estimated ~10% false-positive rate), recall is 73.3%." This gives the reader both numbers with appropriate context.
+
+### 3b. Properties of the 12 missed Tier-A lenses
+
+Without seeing the images, I predict the 12 misses (score < 0.3) fall into three categories.
+
+First, compact lenses with small Einstein radii (θ_E < 0.8″ ≈ 3 pixels). At 0.262″/pixel, small Einstein radii produce arcs that span only a few pixels and are difficult to distinguish from PSF artifacts, satellite trails, or galaxy substructure. The CNN requires spatially resolved arc features to assign high scores.
+
+Second, lenses in crowded environments where blending with nearby galaxies or stars contaminates the stamp. The normalization annulus would be biased by the neighbor, and the arc signal would be diluted by the neighbor's light.
+
+Third, lenses with unusual morphologies that don't match the typical training distribution — for example, fold or cusp configurations producing compact, high-magnification images rather than extended arcs, or systems where the source is very close to the lens center (low impact parameter) producing a complete Einstein ring rather than an arc. If the training set has few examples of these morphologies, the model may not have learned to recognize them.
+
+The UMAP supports this: the handful of orange stars (real lenses) that fall near the injection cluster at UMAP-1 ≈ −2 to 0 are likely these atypical systems that the CNN finds ambiguous.
+
+---
+
+## 4. What to Do Before Submitting
+
+### 4a. Ordered action list
+
+**Item 1 (ESSENTIAL, 0 GPU-hours, 2 hours writing): Frame the paper around the sim-to-real gap.** The paper's central contribution is not the selection function number (3.5%), it is the demonstration that injection-recovery completeness is fundamentally limited by source model fidelity, quantified by the linear probe AUC of 0.991 and the UMAP visualization. Rewrite the abstract and introduction to lead with this. This is the single highest-impact action and costs nothing but thought.
+
+**Item 2 (ESSENTIAL, 0 GPU-hours, 1 hour): Add Poisson noise to the selection function computation.** Re-run the selection function grid with `--add-poisson-noise`. The existing flag works. At mag 20–21, this raises detection from 27.5% to 45.0%. The overall marginal completeness will increase from ~3.5% to ~5–7%. Importantly, this is the correct physics — real injected sources WOULD have Poisson noise. Not including it is an acknowledged error in the original pipeline. The marginal compute cost is zero (same GPU time as a regular grid run), but you do need to schedule the grid computation.
+
+**Item 3 (ESSENTIAL, ~4 GPU-hours, done automatically): Re-run the full selection function grid with Poisson noise.** This produces the updated multi-dimensional completeness map that becomes the paper's data product. Use the existing grid infrastructure, just add the flag.
+
+**Item 4 (ESSENTIAL, 0 GPU-hours, 2 hours analysis): Build the comparison table against published results.** Map your parameter ranges against Herle et al. (2024), HOLISMOKES XI, and the Euclid Discovery Engine. Show where your completeness is measured at comparable operating points. This table goes in the discussion section and preempts the "how does 3.5% compare?" referee question.
+
+**Item 5 (STRONGLY RECOMMENDED, 0.5 GPU-hours, 1 hour analysis): Run the bright-arc test with Poisson noise AND clip_range=20 combined.** You have results for Poisson alone and clip_range=20 alone, but not the combination. At mag 20–21, Poisson alone gives 45.0% and clip_range=20 alone gives 37.0%. The combination might give ~50–60% if the effects are additive. If so, this demonstrates that two simple fixes (Poisson noise + wider clip range) substantially close the sim-to-real gap for bright injections, strengthening the paper's narrative. Even though clip_range=20 requires retraining to use in production, reporting it as a diagnostic result is valid.
+
+**Item 6 (RECOMMENDED, 0 GPU-hours, 1 hour): Produce the UMAP figure with score coloring.** You already have `umap_score_colored.png`. Include it as a paper figure. It visually demonstrates the sim-to-real gap in a way that no table of numbers can.
+
+**Item 7 (OPTIONAL, 15 GPU-hours: Run gen5c.** If you have spare GPU budget, gen5c (weighted loss + corrected annulus) may improve calibration and push Tier-A recall from 89.3% to ~91–92%. This is not necessary for publication but would modestly strengthen the model evaluation section.
+
+### 4b. What claims can the paper make?
+
+**Claims it CAN make:**
+
+The CNN achieves 89.3% recall on spectroscopically confirmed lenses with zero spatial leakage, establishing it as a competitive lens finder for DESI Legacy Survey data. Injection-recovery completeness with parametric Sersic sources is a conservative lower bound on the true selection function, limited by source model fidelity rather than classifier performance. A linear probe in CNN feature space achieves AUC = 0.991 separating parametric injections from real lenses, quantifying the sim-to-real morphological gap. Adding Poisson noise to injected arcs increases detection by +17.5pp at key magnitudes, identifying source texture as a major contributor to the realism gap. Restricting to favorable lensing geometry (low impact parameter) roughly doubles detection at moderate magnitudes, confirming that both geometry and morphology control completeness. The multi-dimensional completeness map, despite being conservative, correctly captures the parameter dependence of detection (bright, highly magnified arcs are found preferentially).
+
+**Claims it should NOT make:**
+
+"The selection function completeness is 3.5%" as an unbiased estimate of the true completeness. "The CNN misses 97% of lensed sources" — this conflates the injection realism gap with model performance. "Retraining with the corrected annulus would improve performance" — the evidence does not support this. Any comparison of absolute completeness numbers with HOLISMOKES or Euclid without explicitly noting the different injection methodologies and acceptance criteria.
+
+### 4c. Top 3 referee criticisms
+
+**Criticism 1: "With a linear probe AUC of 0.991, the injection-based completeness is not measuring the selection function. It is measuring how well Sersic profiles fool the CNN. The numbers are meaningless."**
+
+This is the strongest criticism and the one you must preempt most thoroughly. The response has two parts. First, acknowledge the limitation honestly: "The linear probe AUC of 0.991 demonstrates that our parametric injection model produces morphologically distinct features in CNN feature space. Injection-based completeness is therefore a lower bound on the true selection function, not an unbiased estimate." Second, argue the lower bound is useful: "The parameter dependence of the completeness map (which Einstein radii, source magnitudes, and geometries are favorable) is informative even if the absolute values are underestimates. Moreover, the lower bound can be tightened by improving injection realism — we demonstrate that adding Poisson noise alone increases completeness by up to 17.5pp." Third, present the linear probe result AS the contribution: "We provide the first quantitative measurement of the injection realism gap for CNN lens finders in ground-based survey data, establishing a benchmark for future injection pipeline development."
+
+**Criticism 2: "112 Tier-A lenses is not enough for a precision selection function measurement. The 95% CI on 89.3% recall spans 17 percentage points."**
+
+Response: "We agree this is a limitation of the current spectroscopically confirmed lens sample. We report the Wilson 95% confidence interval explicitly. The Tier-A recall serves as a validation that the CNN is an effective lens finder (lower bound 82.6%), not as a precision measurement. The selection function characterization comes from the injection-recovery experiments, which use thousands of injections per parameter bin. Forthcoming spectroscopic campaigns (DESI, 4MOST) will expand the confirmed lens sample by an order of magnitude."
+
+**Criticism 3: "No independent holdout set. Tier-A lenses in the val split are from the same labeling process as those in the train split."**
+
+Response: Preempt by reporting the HEALPix spatial analysis: "Tier-A train and val lenses occupy 274 and 112 unique HEALPix pixels respectively, with zero spatial overlap. The train/val split is spatially disjoint for confirmed lenses. While both sets were identified through the same spectroscopic campaigns, the zero spatial overlap ensures the model has not seen sky regions or environmental conditions similar to the val set during training." This is honest and addresses the concern directly.
+
+---
+
+## 5. The Big Picture
+
+### 5a. What should the paper be about?
+
+**The paper should be about the gap between what CNN lens finders learn and what parametric injection-recovery can test.**
+
+Here is the story the data tells, and it's a story no other DESI lens-finding paper has told.
+
+You built a CNN that achieves 89.3% recall on confirmed lenses. Then you tried to calibrate its selection function using the standard approach (inject parametric Sersic arcs, measure recovery). The completeness was 3.5% — a 86pp gap. The natural question is: is the model terrible, or are the injections unrealistic?
+
+Your diagnostic suite answers this definitively. The linear probe AUC of 0.991 proves the CNN can trivially distinguish injections from real lenses in its learned feature space. The UMAP shows the two populations forming separate manifolds with almost no overlap. Adding Poisson noise (a one-line fix) closes 17.5pp of the gap at key magnitudes, confirming that source texture is a major contributor. Restricting to favorable geometry closes another 13–17pp. These findings establish that the completeness floor is set by injection realism, not classifier performance.
+
+This matters beyond your specific paper. Every CNN lens-finding paper that uses parametric injection-recovery (which is most of them) faces the same fundamental limitation, but none have quantified it. Herle et al. (2024) used parametric Sersic sources for Euclid simulations. HOLISMOKES XI used real galaxy stamps precisely to avoid this problem, but they never quantified how much it matters. Your linear probe AUC of 0.991 is the first direct measurement of this gap in the DESI Legacy Survey, and it provides a clear benchmark: injection realism must improve until the probe AUC drops below ~0.7 before injection-based completeness can be trusted as an unbiased estimate.
+
+**Proposed title:** "The injection realism gap in CNN strong lens selection functions: quantifying parametric source limitations with DESI Legacy Survey DR10"
+
+**Proposed abstract framing (not verbatim):** We train an EfficientNetV2-S CNN on DESI DR10 that achieves 89% recall on confirmed lenses. Standard injection-recovery with Sersic source profiles yields 3.5% marginal completeness. We demonstrate this 86pp gap is dominated by injection model limitations, not classifier performance: a linear probe in CNN feature space separates injections from real lenses with AUC = 0.991. Adding Poisson noise to injections closes up to 17pp of the gap. We provide the first quantitative measurement of the injection realism gap for ground-based survey lens finders and identify source texture, clipping artifacts, and lensing geometry as the dominant contributors. Our multi-dimensional completeness map is a conservative lower bound that captures the parameter dependence of selection even when the absolute completeness is underestimated.
+
+### 5b. One week of GPU time + one week of engineering time
+
+Here is what I would do, in order of priority.
+
+**Days 1–2 (engineering): Add Poisson noise to the selection function grid and re-run.** This is the single highest-impact computation. It produces an updated completeness map that is physically more correct AND higher (estimated ~5–7% marginal). Include both the original (no-Poisson) and updated (with-Poisson) maps in the paper as a before/after comparison. The difference between them quantifies the contribution of source texture to the realism gap.
+
+**Day 3 (GPU): Run the bright-arc test with Poisson noise + clip_range=20 combined.** This diagnostic (not the production grid) tells you the maximum detection achievable with simple fixes to the injection pipeline. If it reaches ~60% at mag 20–22, you can claim: "Two straightforward improvements to the injection pipeline (Poisson noise + wider dynamic range) increase bright-arc detection from ~30% to ~60%, closing roughly half the gap to real-lens recall." This is a powerful result for the paper's narrative.
+
+**Day 4 (engineering): Build the linear probe + UMAP analysis into a reproducible figure pipeline.** Clean up the UMAP figure, add score-colored version, produce a two-panel figure for the paper. Add the per-magnitude linear probe analysis (compute probe AUC at different source magnitudes to show where the realism gap is largest).
+
+**Days 5–6 (engineering + writing): Write the paper.** Lead with the sim-to-real gap story. The structure should be: Introduction (CNN lens finders → need for selection function calibration → injection-recovery approach → the realism problem). Data & Model (DESI DR10, training set, architecture). Injection Pipeline (SIE + Sersic, parameter ranges, Poisson noise). Results: (a) Model performance (89.3% Tier-A recall), (b) Injection-recovery completeness map (with and without Poisson), (c) The injection realism gap (linear probe, UMAP, clip-range sweep, beta_frac analysis). Discussion: comparison to published results, implications for future surveys. Conclusion.
+
+**Day 7 (GPU, OPTIONAL): Run gen5c.** If there's GPU budget left, run the weighted-loss retrain. If it produces AUC > 0.993, use it as the paper's model. If not, stick with gen4. Either result is informative: "weighted loss did/did not improve over unweighted" is a useful ablation for the training methodology section.
+
+---
+
+## Summary Decision Table
+
+| Question | Decision | Confidence | Key Evidence |
+|---|---|---|---|
+| Retrain for annulus? | **No** | High | MAD unchanged (KS p=0.648), median shift absorbed by batch norm, no PSF/depth correlation |
+| Retrain gen5c? | Optional | Medium | Would improve calibration marginally, not necessary for publication |
+| Add Poisson noise? | **Yes, essential** | High | +17.5pp at mag 20–21, correct physics, one-line change |
+| Change clip_range? | Report as diagnostic only | High | clip=20 helps but requires retraining; report the finding, don't change the model |
+| Paper framing? | Sim-to-real gap | High | Linear probe AUC=0.991 is the novel contribution |
+| Headline recall? | 89.3% Tier-A | High | Zero spatial leakage, spectroscopically confirmed |
+| Publishable? | **Yes**, with Poisson noise + reframing | High | Novel quantification of injection realism gap |
+
+################################
+
+
+# Prompt 8: Final Paper Review Before Submission
+
+## Your Role
+
+You are an independent scientific reviewer. This is the FINAL review before we prepare the MNRAS submission. We have completed all diagnostics and made our key decisions. We now need you to:
+
+1. Confirm our paper framing is defensible
+2. Review the updated completeness map (with Poisson noise)
+3. Identify any remaining gaps that must be filled before submission
+4. Draft figure captions for the key figures
+
+**Rules:**
+- Read the attached code and raw results. Do not trust summaries.
+- If something is wrong, say so. This is our last chance to catch issues.
+- Be rigorous but constructive. We want actionable feedback.
+- Think like a senior MNRAS referee.
+
+---
+
+## What Has Changed Since Prompt 7
+
+### Decisions Made (Based on Prompt 7 LLM Consensus)
+
+1. **NOT retraining for annulus fix.** Both reviewers agreed the annulus effect is cosmetic (3.6pp recall drop at 1.3 sigma, not significant; MAD unchanged; no PSF/depth correlation). Documented in Appendix.
+
+2. **Added Poisson noise to selection function grid.** Both reviewers agreed this is the highest-priority computation. The `--add-poisson-noise` flag was added to `selection_function_grid.py` and a full grid run (D03) was completed.
+
+3. **Ran combined Poisson + clip_range=20 diagnostic.** Tests whether these two effects are additive.
+
+4. **Reframed paper around sim-to-real gap.** The paper is now framed as a measurement of the injection realism gap, not just a selection function.
+
+### New Code
+
+- `selection_function_grid.py`: Added `--add-poisson-noise` and `--gain-e-per-nmgy` CLI flags, threaded through to `inject_sis_shear()`.
+- `generate_paper_umap_figure.py`: Publication-quality two-panel UMAP figure (category + score).
+- `run_d03_poisson_grid.sh`: D03 runner script.
+
+### New Documents
+
+- `docs/PAPER_FRAMING_SIM_TO_REAL_GAP.md`: Complete paper outline, abstract draft, key numbers, referee preemption strategy.
+- `docs/APPENDIX_ANNULUS_CHARACTERIZATION.md`: Four-diagnostic characterization of the annulus effect.
+- `docs/COMPARISON_TABLE_PUBLISHED_RESULTS.md`: Comparison with Herle et al. 2024, HOLISMOKES XI, Euclid Prep. XXXIII.
+
+---
+
+## D03 Results: Selection Function Grid with Poisson Noise
+
+### Grid Configuration
+- Model: gen4 (EfficientNetV2-S, AUC=0.9921)
+- Grid: 11 theta_E (0.5-3.0") x 7 PSF (0.9-1.8") x 5 depth (22.5-24.5 mag) = 385 cells
+- Injections per cell: 500
+- Total injections: 192,500
+- Poisson noise: ON (gain=150 e-/nmgy)
+- FPR-derived thresholds: 0.001, 0.0001
+
+### Raw Results
+
+Grid completed in 1,349 seconds (~22 min), 3.50s/cell.
+110,000 successful injections (0 failures). 343/385 cells empty (no hosts matching PSF/depth bin).
+
+FPR-derived thresholds:
+- FPR=0.001 -> threshold p=0.806
+- FPR=0.0001 -> threshold p=0.995
+
+**Mean completeness by threshold (over non-empty cells):**
+- p>0.3: **2.6%**
+- p>0.5: **2.4%**
+- p>0.7: **2.2%**
+- FPR=0.001 (p>0.806): **2.0%**
+- FPR=0.0001 (p>0.995): **1.0%**
+
+**Completeness by theta_E at p>0.3:**
+```
+theta_E=0.50": C=0.000, mean_arc_SNR=3.0
+theta_E=0.75": C=0.000, mean_arc_SNR=4.3
+theta_E=1.00": C=0.011, mean_arc_SNR=4.6
+theta_E=1.25": C=0.021, mean_arc_SNR=5.8
+theta_E=1.50": C=0.010, mean_arc_SNR=5.4
+theta_E=1.75": C=0.021, mean_arc_SNR=6.5
+theta_E=2.00": C=0.056, mean_arc_SNR=7.8
+theta_E=2.25": C=0.034, mean_arc_SNR=5.5
+theta_E=2.50": C=0.056, mean_arc_SNR=6.7
+theta_E=2.75": C=0.034, mean_arc_SNR=4.6
+theta_E=3.00": C=0.034, mean_arc_SNR=5.9
+```
+
+_The complete CSV (1.6MB, all cells/thresholds/mag bins) and JSON metadata
+are in the attached zip under `results/D03_20260214_poisson_grid/selection_function_poisson/`._
+
+### KEY FINDING: Poisson noise does NOT dramatically improve marginal completeness
+
+The previous grid (without Poisson) reported ~3.5% marginal completeness. With Poisson
+noise, we get ~2.6%. This is LOWER, not higher.
+
+**Why?** The D02 bright-arc test showed Poisson noise helps at mag 20-21 (+17.5pp)
+but HURTS at mag 22-24 (e.g., mag 22-23: 31% -> 23.5%). When integrated over the
+full parameter space (which includes many faint-source configurations), the faint-end
+degradation offsets the bright-end improvement. The net effect is roughly neutral or
+slightly negative.
+
+This is an important result for the paper: Poisson noise alone is not sufficient
+to close the realism gap. It helps for the RIGHT physical reason (adding source
+texture), but the injection pipeline has other deficiencies (smooth Sersic morphology,
+no correlated noise, simplified PSF) that dominate at faint magnitudes.
+
+---
+
+## D03 Results: Combined Poisson + clip_range=20 Diagnostic
+
+### Individual Effects (from D02)
+| Condition | mag 18-19 (p>0.3) | mag 20-21 (p>0.3) | mag 21-22 (p>0.3) |
+|-----------|--------------------|--------------------|---------------------|
+| Baseline (no Poisson, clip=10) | 17.0% | 27.5% | 35.5% |
+| Poisson alone (clip=10) | 17.5% | 45.0% | 43.0% |
+| clip_range=20 alone | 30.5% | 37.0% | 40.5% |
+
+### Combined Effect (D03)
+
+| mag bin | Baseline (D01) | Poisson only (D02) | clip20 only (D02) | **Poisson+clip20 (D03)** |
+|---------|---------------|--------------------|--------------------|-------------------------|
+| 18-19   | 17.0%         | 17.5%              | 30.5%              | **42.5%**               |
+| 19-20   | 24.5%         | 31.0%              | 32.0%              | **47.5%**               |
+| 20-21   | 27.5%         | 45.0%              | 37.0%              | **45.0%**               |
+| 21-22   | 35.5%         | 43.0%              | 40.5%              | **30.5%**               |
+| 22-23   | 31.0%         | 23.5%              | 35.0%              | **17.5%**               |
+| 23-24   | 24.0%         | 5.5%               | 14.5%              | **3.5%**                |
+
+### KEY FINDING: Effects are super-additive for bright arcs, destructive for faint
+
+**Bright arcs (mag 18-20):** The combined effect is SUPER-ADDITIVE.
+- At mag 18-19: 42.5% combined vs max(17.5%, 30.5%) = 30.5%. This is a +25.5pp improvement over baseline.
+- At mag 19-20: 47.5% combined -- the highest detection rate for any injection configuration tested.
+
+This makes physical sense: clip_range=20 preserves the bright arc's morphological
+structure (which was clipped at +-10), AND Poisson noise adds the expected pixel-level
+texture. Together they make the injection look more like a real astronomical source.
+
+**The peak combined detection of 47.5% (at mag 19-20) closes more than half the
+gap to real-lens recall (89.3%).**
+
+**Faint arcs (mag 21+):** The combined effect is DESTRUCTIVE.
+- At mag 21-22: 30.5% combined vs 43.0% Poisson-only -- WORSE than individual effects.
+- At mag 22-23: 17.5% combined vs 23.5% Poisson-only.
+
+This also makes physical sense: clip_range=20 expands the dynamic range, pushing
+faint-arc images further from the model's training distribution (which used clip=10).
+At faint magnitudes, this distribution shift overwhelms any benefit from Poisson noise.
+
+**Implication for the paper:** Two simple injection realism fixes (Poisson + wider clip)
+can close ~half the gap for bright arcs, but fundamentally different approaches are
+needed for the faint end (real galaxy stamps, correlated noise, band-dependent PSF).
+NOTE: clip_range=20 requires retraining for production use; this result is diagnostic.
+
+---
+
+## All Previous Results (Unchanged from Prompt 7)
+
+Tier-A recall: 89.3% [82.6%, 94.0%] at p>0.3 (100/112 confirmed lenses)
+Tier-B recall: 72.0% [69.5%, 74.3%]
+AUC: 0.9921
+Linear probe AUC: 0.991 +/- 0.010
+Tier-A spatial leakage: ZERO (274 train, 112 val HEALPix pixels, 0 overlap)
+
+---
+
+## Proposed Paper Structure
+
+### Title
+"The injection realism gap in CNN strong lens selection functions: quantifying parametric source limitations with DESI Legacy Survey DR10"
+
+### Key Figures
+1. **UMAP two-panel** (category + score): Shows distinct manifolds for real vs injected
+2. **Detection rate vs source magnitude**: Multiple injection configurations
+3. **Completeness heatmap** C(theta_E, depth): With and without Poisson noise
+4. **Score distributions**: Real Tier-A, injections, negatives
+
+### Key Claims
+- 89.3% recall on confirmed lenses (zero spatial leakage)
+- Linear probe AUC = 0.991: first quantitative measurement of injection realism gap
+- Injection completeness is a conservative lower bound, not unbiased estimate
+- Poisson noise increases detection by up to +17.5pp
+- Beta_frac restriction doubles detection at moderate magnitudes
+
+---
+
+## Questions
+
+### 1. Paper Framing Review
+
+**1a.** Read our draft abstract in `docs/PAPER_FRAMING_SIM_TO_REAL_GAP.md`. Is it scientifically accurate? Is anything overclaimed or underclaimed? Suggest specific edits.
+
+**1b.** The proposed title is "The injection realism gap in CNN strong lens selection functions: quantifying parametric source limitations with DESI Legacy Survey DR10". Is this too narrow, too broad, or about right for MNRAS?
+
+**1c.** Review our referee preemption strategy (Section 8 of the paper framing doc). Are there additional criticisms we haven't anticipated?
+
+### 2. Updated Completeness Map
+
+**2a.** Compare the marginal completeness with and without Poisson noise. Is the improvement consistent with what we predicted from the D02 bright-arc test? If not, why?
+
+**2b.** Does the updated completeness map change any of the claims from Prompt 7?
+
+**2c.** What is the correct way to present both maps (with and without Poisson) in the paper? Show one as primary and one as comparison? Show both side by side?
+
+### 3. Combined Poisson + clip_range=20 Results
+
+**3a.** Are the effects additive? If the combined detection is roughly (Poisson alone) + (clip20 alone) - (baseline), that supports independent mechanisms. If not, what does it mean?
+
+**3b.** Given that clip_range=20 requires retraining for production use, how should we present this result? As a diagnostic only, or as a recommendation for future work?
+
+### 4. Comparison with Published Results
+
+**4a.** Review our comparison table in `docs/COMPARISON_TABLE_PUBLISHED_RESULTS.md`. Is it fair and accurate? Have we missed any important comparison papers?
+
+**4b.** Is our claim of "first quantitative measurement of the injection realism gap" defensible? Has anyone done this before with a linear probe or equivalent metric?
+
+### 5. Final Gaps
+
+**5a.** Is there anything MISSING that would prevent this paper from being accepted at MNRAS? Be specific.
+
+**5b.** If you had to rank the 5 most important things to include in the paper (that we might not have thought of), what would they be?
+
+**5c.** Draft a 2-sentence figure caption for the UMAP two-panel figure.
+
+---
+
+## What We Need From You
+
+This is the final review. Give us:
+1. Specific edits to the abstract
+2. Any remaining experiments that MUST be run (not nice-to-have)
+3. A clear "ready to submit" or "not ready, do X first" verdict
+
+
+
+-------------------
+************
+LLM1 Answer:
+
+## Verdict
+
+**Not ready to submit.** There are two correctness issues in the D03 reporting (one is a real bug), and one missing control that a hostile referee will use to undercut the core “realism gap” claim. Fix these three items, update the abstract/table accordingly, then you are in good shape.
+
+---
+
+## 0. What I checked in the evidence package
+
+From `results/D03_20260214_poisson_grid/selection_function_poisson/selection_function.csv` and `selection_function_meta.json`, I recomputed the D03 summary numbers directly from the raw CSV (not the prose summary). I also inspected the `dhs/injection_engine.py` Poisson implementation and the D03 “Poisson + clip20” JSON output.
+
+---
+
+## 1. Paper framing review
+
+### 1a. Abstract: scientifically accurate? Specific edits
+
+Your current abstract still states (paraphrasing) “~3.5% completeness” and does not reflect what D03 actually computed. More importantly, the “2.6%” number in your Prompt 8 summary is **not** the marginal completeness over the injected population. It is an average over multiple magnitude-conditioned bins.
+
+**Concrete fixes you should make:**
+
+1. **Define what completeness is marginalised over.** Right now, “marginal completeness” is ambiguous because your D03 CSV contains multiple `source_mag_bin` values (including `all`, source-mag bins like `23-24`, and lensed-mag bins like `lensed_20-22`).
+
+2. **Replace “2.6%” with the correct marginal number (for the `all` bin).** From the D03 CSV, using `source_mag_bin='all'`:
+
+   * p>0.3: **0.7436%** (818 detections out of 110,000 injections)
+   * p>0.5: **0.6534%**
+   * p>0.7: **0.5934%**
+   * FPR=1e-3 threshold (p=0.806): **0.5175%**
+   * FPR=1e-4 threshold (p=0.995): **0.1752%**
+
+   Your quoted **2.6%** matches what you get if you average completeness across all non-empty magnitude sub-bins (mixing source-mag and lensed-mag bins) rather than marginalising over the injected population.
+
+3. **Fix the “empty cells” statement.** D03 is **not** 343/385 empty in the “no hosts” sense. Using the `all` bin, there are:
+
+   * **220 non-empty host bins**
+   * **165 empty host bins**
+
+   The “343” is counting bins with zero injections inside certain magnitude sub-bins, not host availability.
+
+4. **Poisson realism claim needs one extra line of honesty.** Your Poisson implementation (below) artificially injects too much noise at the faint end because it clamps the Poisson rate. That makes the “Poisson does not improve marginal completeness” conclusion not yet referee-proof.
+
+**Suggested replacement abstract text (drop-in):**
+
+> We evaluate an EfficientNetV2-S strong-lens classifier on DESI Legacy Survey DR10 cutouts, achieving 89.3% recall (100/112) on confirmed lenses in a spatially disjoint validation set. However, injection-recovery completeness for parametric SIS+shear Sersic-source arcs is below 1% when marginalised over the injected population at the same decision threshold, indicating a substantial simulation-to-real mismatch. Embedding-space tests further show that real lenses and injected arcs occupy separable manifolds (linear-probe AUC ≈ 0.99), motivating a reframing of injection-based selection functions as conservative lower bounds rather than unbiased completeness estimates.
+
+(Then, after you fix the Poisson bug and run the matched baseline, you can add one sentence about what Poisson changes and what it does not.)
+
+### 1b. Title
+
+“The injection realism gap in CNN strong lens selection functions…” is directionally right, but it is long and a bit narrow in a way that invites “this is just your simulator” criticism.
+
+A tighter, safer version:
+
+* **“Quantifying the injection realism gap for CNN strong-lens finding in DESI Legacy Survey DR10”**
+
+This keeps the paper about *measurement*, not about claiming a general property of all selection functions.
+
+### 1c. Referee preemption: what you missed
+
+Add these three, explicitly:
+
+1. **Definition-of-marginalisation criticism.** A referee will ask: “Completeness marginalised over what distribution?” You must state whether you marginalise over source magnitude, lensed magnitude, magnification distribution, and host-galaxy population. Right now, your D03 reporting mixes bins.
+
+2. **Poisson model validity criticism.** Your Poisson augmentation is currently a Gaussian approximation with a hard clamp that injects non-physical noise for faint pixels. A referee can legitimately call your faint-end conclusions an artifact unless you fix it (details below).
+
+3. **Host-population confound criticism for the embedding/linear-probe result.** Your linear probe compares real Tier-A lenses to injections placed on negatives. A referee can say the AUC≈0.99 is mostly “lens hosts vs non-lens hosts,” not “real arcs vs injected arcs,” unless you run a host-matched control.
+
+---
+
+## 2. Updated completeness map with Poisson noise
+
+### 2a. Is the improvement consistent with D02 bright-arc test?
+
+You cannot claim consistency yet, for two reasons:
+
+1. **You did not include an apples-to-apples “no Poisson” D03 grid with the same binning and reporting.** The earlier “~3.5%” number is not comparable unless it uses the same grid, same host selection, same injection count per cell, and the same marginalisation definition.
+
+2. **The D03 “2.6%” is not the marginal completeness.** Correctly marginalised (`source_mag_bin='all'`), D03 is **0.74% at p>0.3**, far below your prose summary.
+
+### 2b. Does the updated map change any claims from Prompt 7?
+
+Yes. With the corrected reading of D03:
+
+* The injection-based selection function is **even more clearly a conservative lower bound** (sub-1% marginal completeness under your injected distribution at p>0.3).
+* The “Poisson does not dramatically improve marginal completeness” claim is **not yet defensible** until you (i) fix the Poisson clamp and (ii) run the matched “no Poisson” baseline on the same grid.
+
+### 2c. How to present “with and without Poisson” in the paper
+
+Do this:
+
+* **Primary:** baseline map that matches the pipeline used for any earlier catalog work (likely “no Poisson, clip=10”), with completeness defined using `source_mag_bin='all'` (and optionally broken out by source-mag bins).
+* **Comparison:** Poisson-augmented map shown side-by-side with identical colour scale, and a third panel showing the difference (Poisson minus baseline).
+
+Do not present a single scalar “marginal completeness” without stating the exact marginalisation distribution.
+
+---
+
+## 3. Combined Poisson + clip_range=20
+
+### 3a. Are the effects additive?
+
+No. Using your D01/D02/D03 bright-arc results, the combined effect is:
+
+* **Super-additive at the bright end** (e.g., mag 18–19: observed 42.5% vs additive prediction 31.0%)
+* **Strongly sub-additive or destructive at the faint end** (e.g., mag 22–23 and 23–24 collapse)
+
+Interpretation: clip-range interacts with Poisson because it changes both morphology preservation and the effective distribution shift relative to training (clip=10). This is useful diagnostic evidence of sensitivity to preprocessing and noise texture, not an estimator of survey completeness.
+
+### 3b. How to present it
+
+**Diagnostic only**, framed as: “Two simple realism knobs can recover a large fraction of the gap for bright arcs, but harm the faint end without retraining or distribution-aware training.”
+
+Also explicitly state: “clip_range=20 would require retraining and recalibration of thresholds; these results are out-of-distribution scoring experiments.”
+
+---
+
+## 4. Comparison with published results
+
+### 4a. Is your comparison table fair/accurate?
+
+It needs edits:
+
+* Your HOLISMOKES reference appears off by iteration number. The current literature includes later HOLISMOKES papers (for example HOLISMOKES XV/XVI) that benchmark lens finders and discuss selection effects. ([A&A Publishing][1])
+* Your table still contains “pending” and “expected 5–7%” style placeholders. Those must be removed before submission.
+
+Also, be careful not to compare your **Tier-A recall on confirmed lenses** directly to other works’ **completeness** unless you clearly separate “classification recall on a labelled set” from “injection-recovery completeness under a simulator prior.”
+
+### 4b. “First quantitative measurement of the injection realism gap” defensible?
+
+As written, it is too strong. Domain shift and sim-to-real issues in lens finding have been studied (including domain adaptation work) ([preprints.kavlimeetings.org][2]), and broader astronomy ML has used embedding-based distances to quantify dataset mismatch.
+
+Safer, defensible phrasing:
+
+* **“To our knowledge, this is among the first embedding-based quantifications of the mismatch between confirmed strong lenses and parametric injection distributions within a survey lens-finding pipeline.”**
+
+If you want to keep “first,” you need a tight scope qualifier (parametric SIS+shear Sersic injections, DR10 cutouts, and a linear-probe-on-CNN-features metric) plus a short literature scan paragraph.
+
+---
+
+## 5. Final gaps
+
+### 5a. Anything missing that could block MNRAS acceptance?
+
+Yes. These are blocking:
+
+1. **Fix the Poisson-noise implementation and rerun D03.** In `dhs/injection_engine.py`, you clamp `arc_electrons` to a minimum of 1 e- before applying Gaussian “Poisson” noise. That injects non-physical noise into faint pixels and can easily manufacture the faint-end degradation.
+
+   * Fix: sample Poisson properly (e.g., `N ~ Poisson(lambda)` then add `(N-lambda)/gain`) or at minimum remove the `min=1` clamp and allow lambda→0.
+
+2. **Run a matched “no Poisson” baseline grid with the exact same D03 setup.** This is a 20–30 minute run and is mandatory for any claim about Poisson’s net effect.
+
+3. **Host-matched control for the “realism gap” metric.** You must show the linear-probe/embedding separation persists when injections are done on a host population matched to the Tier-A lens hosts (at least in z-band magnitude and colour, ideally also size/ellipticity or a shallow CNN embedding).
+
+   * Otherwise, a referee can dismiss the AUC≈0.99 as “galaxy population mismatch,” not “arc realism mismatch.”
+
+### 5b. Five most important inclusions you likely still need
+
+Ranked:
+
+1. **A precise definition of completeness and the marginalisation distribution**, with an equation and explicit priors.
+2. **Apples-to-apples Poisson vs no-Poisson completeness comparison** (after fixing Poisson).
+3. **Host-matched embedding/linear-probe control** (and report how much of the gap remains).
+4. **A short calibration section on thresholds** (FPR thresholds, expected candidate yields per deg², and uncertainty due to finite negatives).
+5. **A minimal qualitative failure-mode figure** (a few Tier-A misses and a few injection false negatives), even as an appendix figure. This materially helps referee confidence.
+
+### 5c. Two-sentence caption for the UMAP two-panel figure
+
+**Figure X.** Two-dimensional UMAP projection of EfficientNetV2-S feature embeddings for confirmed Tier-A lenses, injected arcs, and negative galaxies, showing a clear separation between the real-lens manifold and the injection/negative manifold. The right panel colours points by the model score, demonstrating that high-confidence detections concentrate within the real-lens region while injected examples largely occupy low-score regions, consistent with a significant simulation-to-real mismatch.
+
+---
+
+## Required experiments before submission (only the must-dos)
+
+1. **Fix Poisson noise (remove clamp, implement exact Poisson residual) and rerun D03 Poisson grid.**
+   Time: 1–2 hours engineering, 25 minutes GPU.
+
+2. **Run the matched D03 grid with Poisson OFF (same bins, same hosts, same injection count).**
+   Time: 25 minutes GPU.
+
+3. **Host-matched linear-probe/UMAP control (match negatives used for injection to Tier-A hosts).**
+   Time: 0.5–1 day engineering, up to a few GPU-hours depending on embedding extraction.
+
+After those, update:
+
+* Abstract numbers and wording
+* Comparison table references and “pending” fields
+* Completeness-map figure generation (ensure you ship the actual heatmap figures in the evidence package)
+
+Only then: **ready to submit.**
+
+[1]: https://www.aanda.org/articles/aa/full_html/2025/06/aa53195-24/aa53195-24.html?utm_source=chatgpt.com "HOLISMOKES - XV. Search for strong gravitational lenses combining ground-based and space-based imaging | Astronomy & Astrophysics (A&A)"
+[2]: https://preprints.kavlimeetings.org/2024/10/23/all/astro/chicago/211952/?utm_source=chatgpt.com "Neural Network Prediction of Strong Lensing Systems with Domain Adaptation and Uncertainty Quantification – Kavli Institute Pre-Print Publications"
+
+
+************
+LLM2 Answer:
+
+# Prompt 8: Final Paper Review Before Submission
+
+**Reviewer:** Claude (Anthropic), independent assessment
+**Date:** 2026-02-14
+**Evidence base:** D01 (6 diagnostics) + D02 (7 experiments) + D03 (Poisson grid + combined diagnostic) + all code + paper framing docs
+**Overall verdict:** NOT READY TO SUBMIT. One critical numerical error must be fixed (30 minutes). Two moderate issues require attention (2–3 hours). After those fixes, the paper is ready.
+
+---
+
+## ⚠ CRITICAL ISSUE: The Reported Marginal Completeness Is Wrong
+
+I independently parsed the D03 selection function CSV (`selection_function.csv`, 9,625 rows). The numbers in the prompt document do not match the CSV data. This MUST be corrected before any submission.
+
+**What the prompt says:** "Mean completeness by threshold (over non-empty cells): p>0.3: 2.6%"
+
+**What the CSV actually contains:** 818 detections out of 110,000 injections across all 220 non-empty cells at p > 0.3, giving a marginal completeness of **0.74%**, not 2.6%. Both cell-averaged and injection-weighted methods give identical results (0.74%) because every non-empty cell has exactly 500 injections.
+
+**Where the "2.6%" likely comes from:** The per-θ_E values in the prompt match the "lensed_20-22" magnitude bin in the CSV, not the "all" bin. For example, the prompt lists θ_E = 2.00″ as C = 0.056, while the CSV gives C = 0.0123 for the "all" bin but C = 0.0623 for the "lensed_20-22" bin. The "2.6%" appears to be a mean over a specific lensed magnitude subset, not the true marginal over all parameters. The actual mean completeness in the lensed_20-22 bin is 3.83% (injection-weighted: 739/19,278).
+
+**The correct numbers from the D03 CSV at p > 0.3 are:**
+
+The overall marginal completeness (all source magnitudes 23–26, all θ_E, all PSF, all depth) is 0.74%. Broken down by lensed apparent magnitude: systems producing lensed images at mag 18–20 are detected 58.7% of the time (but this is based on only 46 injections across 42 cells, so the uncertainty is enormous); systems at lensed mag 20–22 are detected at 3.83%; systems at lensed mag 22–24 at 0.08%; and systems at lensed mag 24–27 at 0.02%. By source magnitude: the brightest source bin (23–24) has completeness 1.93%, dropping to 0.28% at 24–25 and 0.03% at 25–26.
+
+**Why this matters for the paper:** The framing document lists "Marginal completeness (with Poisson) | ~2.6%" and the previous no-Poisson grid is cited as "~3.5%". If the Poisson grid is actually 0.74%, and the old grid was computed by the same method, the old grid might also be lower than reported. Before submission, you MUST re-verify the old (no-Poisson) grid's marginal completeness using the same injection-weighted calculation I used above. If both are computed consistently, the comparison is valid; if they were computed differently, the "Poisson is roughly neutral" narrative needs updating.
+
+**Suggested fix (30 minutes):** Re-run the marginal completeness computation for both grids using a single consistent method: total_detected / total_injections at p > 0.3, summed over all non-empty cells at the "all" source magnitude bin. Report this as the headline number. Also report completeness stratified by lensed apparent magnitude (which is the more physically meaningful breakdown), clearly labeling each.
+
+---
+
+## 1. Paper Framing Review
+
+### 1a. Abstract Review
+
+The draft abstract in `PAPER_FRAMING_SIM_TO_REAL_GAP.md` is scientifically sound in its structure and framing but needs three specific corrections.
+
+**Correction 1: Fix the completeness number.** The abstract says "a marginal completeness of approximately 3.5% over the full parameter space." Given the issue above, the correct number needs to be verified. Whatever the correct overall marginal turns out to be (likely ~0.7–1%), the abstract should state it with appropriate precision and make clear this is integrated over source magnitudes 23–26 (which are mostly undetectable at ground-based depth). Consider adding a clarifying phrase like "where the majority of the prior volume corresponds to sources too faint to produce detectable arcs."
+
+**Correction 2: The "86 percentage-point gap" framing is misleading.** The abstract subtracts 89.3% real recall from 3.5% injection completeness to get an "86 pp gap." But these two numbers measure fundamentally different things: real recall measures detection of actual astronomical lenses at their native (generally bright) apparent magnitudes, while marginal injection completeness averages over a parameter space that extends to mag 26 (hopelessly faint). The gap is real, but subtracting these numbers implies they should be comparable, which they are not without conditioning on the same observability criteria. A fairer comparison would be: at lensed mag 20–22, the injection completeness is ~3.8%, while real Tier-A lenses (which are predominantly at lensed mag 18–22) show 89.3% recall. That is still a large gap, but the framing should acknowledge the difference in the underlying populations.
+
+**Correction 3: Soften the "first quantitative measurement" claim.** The abstract says the linear probe AUC "establish[es] that injection morphology — not model capacity — is the binding constraint." This is supported by the data, but the word "establishing" is too strong for a single experiment on one model and one injection pipeline. Suggest: "strongly suggesting" or "providing quantitative evidence that."
+
+I would also add one sentence about the combined Poisson + clip_range=20 result (peak 47.5% at mag 19–20), since this is the most actionable finding for the community: simple injection pipeline improvements can close roughly half the gap.
+
+### 1b. Title Assessment
+
+The title "The injection realism gap in CNN strong lens selection functions: quantifying parametric source limitations with DESI Legacy Survey DR10" is appropriate for MNRAS. It is specific enough to convey the novel contribution (quantifying the realism gap) while broad enough to attract readers interested in either lens finding or selection function methodology. One minor suggestion: "parametric source limitations" could be sharpened to "parametric source model limitations" to make clear you're referring to the Sersic model, not limitations of the source galaxies themselves. But this is a matter of taste.
+
+### 1c. Referee Preemption Strategy — Additional Criticisms
+
+The four anticipated criticisms in Section 8 are well-chosen. Here are two additional ones I would prepare for.
+
+**Criticism 5: "The gain parameter (150 e⁻/nmgy) for Poisson noise is a rough approximation. How sensitive are the results to this choice?"** The gain varies significantly across the DR10 footprint (with depth, number of exposures, band). A factor-of-2 error in the gain changes the Poisson noise amplitude by √2, which could shift the detection rates meaningfully at the sweet spot (mag 20–22 where Poisson matters most). You should either run the grid at two gain values (e.g., 100 and 200) as a sensitivity check, or add a paragraph in the paper arguing that the exact gain matters less than the qualitative finding (Poisson noise helps). The latter is defensible but weaker.
+
+**Criticism 6: "The linear probe uses logistic regression with C=1.0. How sensitive is the AUC to regularization strength? Could a different C produce a lower AUC?"** Logistic regression with L2 regularization at C=1.0 on a 1280-dimensional problem with n=312 samples is well-regularized. Lower C would increase regularization and should push AUC toward 0.5 (harder to separate). Higher C would decrease regularization and might overfit, pushing AUC higher. Since the question is "can the CNN's features separate real from injected?", the relevant direction is whether AUC stays high even with stronger regularization. You could re-run the probe at C=0.01, 0.1, 1.0, 10.0 to show robustness. Alternatively, since the 5-fold CV already protects against overfitting (AUC = 0.991 ± 0.010 with low fold-to-fold variance), this criticism is defensible without additional experiments.
+
+---
+
+## 2. Updated Completeness Map
+
+### 2a. Consistency with D02 Predictions
+
+The D02 bright-arc test showed Poisson noise helps at mag 20–21 (+17.5pp) but hurts at mag 22–23 (−7.5pp). The D03 grid result — where overall marginal completeness does not improve — is CONSISTENT with this prediction because the grid's source magnitude range (23–26) is dominated by faint sources. The D02 test used a separate magnitude range (18–26 with controlled bins), so the beneficial effect at mag 20–21 is diluted to near-zero when averaged over the 23–26 prior.
+
+However, the paper framing document's statement "Marginal completeness (with Poisson) | ~2.6% | Net neutral: bright-end gain offset by faint-end loss" needs correction on the number (see Critical Issue above) and nuance on the interpretation. The faint-end degradation is not just "offsetting" the bright-end gain; the faint end dominates the parameter space so thoroughly (sources at mag 25–26 outnumber those producing bright arcs by ~10:1) that the bright-end improvement is essentially invisible in the marginal statistic. The marginal completeness was never the right metric for evaluating Poisson noise; the per-lensed-magnitude breakdown is.
+
+### 2b. Does this change claims from Prompt 7?
+
+It changes one specific claim and strengthens another.
+
+**Changed:** My Prompt 7 prediction that "marginal completeness will increase from ~3.5% to ~5–7%" with Poisson noise was wrong. I overestimated the bright-end contribution to the marginal. The correct statement is that Poisson noise substantially improves detection for moderate-brightness injections (lensed mag 20–22) but is invisible in the overall marginal because the prior volume is dominated by undetectable configurations.
+
+**Strengthened:** The finding that injection-based marginal completeness is a poor summary statistic is now empirically demonstrated, not just argued theoretically. The number barely changes (or decreases) when you add physically correct noise, even though the underlying detection physics clearly improves. This is powerful evidence that marginal completeness should not be used as a single-number characterization of the selection function. The paper should report completeness stratified by lensed apparent magnitude, not as a single marginal.
+
+### 2c. How to Present Both Maps
+
+Present the Poisson-noise map as the primary result (it is the more physically correct computation) and the no-Poisson map as a comparison in a supplementary table or appendix figure. The paper's main completeness heatmap should use the Poisson grid.
+
+However, the most informative presentation is neither map in isolation but a figure showing completeness versus lensed apparent magnitude at fixed θ_E (say 1.5″), with and without Poisson noise on the same axes. This would directly show: Poisson helps at lensed mag 20–22, is neutral at 18–20 (clipping dominates), and hurts at 22+ (noise degrades faint arcs). This single figure tells the entire story more clearly than two heatmaps.
+
+---
+
+## 3. Combined Poisson + clip_range=20
+
+### 3a. Are the Effects Additive?
+
+No, they are not simply additive, and the pattern reveals something important. Let me work through the numbers at each magnitude bin.
+
+If the effects were independent and additive, the predicted combined detection rate would be approximately baseline + (Poisson gain) + (clip20 gain). At mag 18–19 this gives 17.0% + 0.5% + 13.5% = 31.0%, but the actual combined result is 42.5% — substantially super-additive (+11.5pp above the additive prediction). At mag 19–20: predicted 24.5% + 6.5% + 7.5% = 38.5%, actual is 47.5% — again super-additive (+9.0pp). At mag 20–21: predicted 27.5% + 17.5% + 9.5% = 54.5%, actual is 45.0% — slightly sub-additive. At mag 21–22: predicted 35.5% + 7.5% + 5.0% = 48.0%, actual is 30.5% — strongly sub-additive (−17.5pp below prediction). At mag 22–23: predicted 31.0% + (−7.5%) + 4.0% = 27.5%, actual is 17.5% — strongly sub-additive.
+
+The pattern reveals that the two effects interact through a shared mechanism: the model's response to the absolute dynamic range of the input. For bright arcs (mag 18–20), Poisson noise adds realistic grain AND clip_range=20 preserves morphological structure — both are needed simultaneously for the injection to resemble a real source, so their joint effect exceeds the sum of parts. For faint arcs (mag 21+), clip_range=20 pushes galaxy centers further out of the training distribution while Poisson noise degrades the already faint arc signal — both effects compound the degradation.
+
+This has an important implication: the bright-end super-additivity demonstrates that the realism gap has multiple independent components (texture AND morphology), both of which must be addressed simultaneously. Fixing only one gives diminishing returns.
+
+### 3b. How to Present the clip_range=20 Result
+
+Present it as a diagnostic result in a dedicated "Diagnosing the Realism Gap" section. Frame it as: "To test whether the model's input dynamic range affects injection detection, we scored injections preprocessed with clip_range=20 (wider than the training value of 10). This requires retraining for production use and is therefore a diagnostic, not a recommendation. The result demonstrates that bright-arc detection increases from 17% to 30.5% at mag 18–19, confirming that the standard clip_range truncates the morphological structure of bright injected arcs."
+
+The combined Poisson+clip20 result is the most powerful diagnostic finding for the paper's narrative. The peak of 47.5% at mag 19–20 should be highlighted as: "Two straightforward injection pipeline improvements — adding Poisson noise and preserving the full dynamic range — close roughly half the gap between injection completeness and real-lens recall for bright systems. This demonstrates that the realism gap is not an irreducible property of parametric source models but can be substantially narrowed through physically motivated improvements."
+
+---
+
+## 4. Comparison with Published Results
+
+### 4a. Comparison Table Assessment
+
+The comparison table in `COMPARISON_TABLE_PUBLISHED_RESULTS.md` is fair and well-structured. Three suggestions for improvement.
+
+First, add Jacobs et al. (2019) DES results more concretely. Their paper includes a human-inspection experiment where trained classifiers achieved 4.8% highest-confidence identification of high-z simulated lenses, which is directly comparable to your injection completeness and provides important context (even humans struggle with parametric injections).
+
+Second, add a row for Rojas et al. (2022/2023, MNRAS), who used injection-recovery with Sersic sources in KiDS data for a CNN lens finder. They are one of the few groups doing ground-based injection-recovery with parametric sources, making them the closest methodological peer.
+
+Third, the claim "First quantitative measurement of injection realism gap in CNN feature space" is defensible. I am not aware of any prior work that has used a linear probe or equivalent metric to measure the separability of real lenses from parametric injections in a trained CNN's feature space. HOLISMOKES XI avoids the problem by using real stamps; Herle et al. (2024) work entirely in simulation; Euclid Prep. XXXIII does not validate injection realism against real lenses. Your linear probe result is novel.
+
+### 4b. Is the "First" Claim Defensible?
+
+Yes, with appropriate caveats. The paper should state: "To our knowledge, this is the first direct measurement of the separability of parametric injections from real lenses in CNN feature space for a ground-based optical survey." The caveats are: (a) you measure this for one architecture (EfficientNetV2-S) on one survey (DESI DR10), and other architectures/surveys may show different probe AUCs; (b) the probe uses the CNN's own representations, which are shaped by training — a model trained on more diverse data might show lower probe AUC; (c) the Sersic+clumps source model is one specific parametric model, and other parametric models (e.g., shapelets, pixelated sources) might perform differently.
+
+---
+
+## 5. Final Gaps
+
+### 5a. What Would Prevent MNRAS Acceptance?
+
+Three issues must be resolved. The first is the critical numerical error on marginal completeness, which I have detailed above. Reporting incorrect numbers would be immediately caught by a referee who re-analyzes the data products.
+
+The second is the absence of a no-Poisson grid comparison computed with the same methodology. The paper's narrative relies on comparing with-Poisson and without-Poisson completeness. If the old "3.5%" number was computed differently from the D03 grid, the comparison is invalid. You need either to re-verify the old number against its CSV, or to re-run the grid without Poisson noise using the D03 infrastructure (same code, same seeds, same methodology, just `--add-poisson-noise` removed). This ensures an apples-to-apples comparison and takes ~4 GPU-hours.
+
+The third is the band-dependent PSF limitation. The injection engine uses a single r-band PSF FWHM for all three bands, but real PSFs vary by band (g-band PSF is larger than z-band PSF in DR10). This means injected arcs have incorrect color morphology: in reality a g-band arc should be slightly more blurred than a z-band arc, but your injections have identical blurring in all bands. This is a known limitation that you should acknowledge explicitly. A referee familiar with Legacy Survey imaging will notice. The fix is one sentence in the "Limitations" paragraph: "Our injection engine applies a single r-band PSF to all three bands. Band-dependent PSF convolution would produce more realistic color morphology and is a priority for future work."
+
+Nothing else would prevent acceptance. The paper's core contribution (quantifying the realism gap) is novel, the diagnostics are thorough, and the framing is honest about limitations.
+
+### 5b. Five Most Important Things to Include
+
+**First: Completeness stratified by lensed apparent magnitude.** This is more informative than the marginal completeness and avoids the problem of averaging detectable and undetectable configurations together. Report a table showing C(lensed mag) at fixed θ_E = 1.5″ for both with-Poisson and without-Poisson grids. This single table replaces the misleading single-number marginal.
+
+**Second: The detection-rate-vs-magnitude figure with all configurations overlaid.** Plot baseline, Poisson, clip20, and Poisson+clip20 on one panel. This is the paper's most information-dense figure and tells the entire diagnostic story in one image: clipping hurts bright arcs, Poisson helps moderate arcs, the combination is super-additive at bright magnitudes. Overlay the real Tier-A recall as a horizontal dashed line for reference. Use the restricted beta_frac [0.1, 0.55] data (which represents favorable lensing geometry) rather than unrestricted, since this is where the diagnostic effects are most clearly visible.
+
+**Third: A brief discussion of what the "missed" 12 Tier-A lenses might look like.** You have 12 lenses with score < 0.3. Even without showing images, you can report their PSF, depth, and any available metadata (spectroscopic redshift, catalog morphology). This grounds the recall measurement in physical properties and preempts the referee question "why are these missed?"
+
+**Fourth: Explicit acknowledgment of the Collett (2015) prediction.** Collett predicted that the population of detectable strong lenses in ground-based surveys is dominated by sources near i ~ 24–25. Your injection completeness at these magnitudes is near zero. This is not a model failure; it is the expected result. The paper should cite Collett and frame the low marginal completeness as consistent with the theoretical expectation that most strong lensing configurations produce arcs below ground-based detection thresholds.
+
+**Fifth: A reproducibility statement.** List the exact software versions, random seeds, and hardware used. The D01/D02/D03 runner scripts already document this, but the paper should include a sentence like "All experiments are reproducible from the provided runner scripts with fixed random seeds; code and result files are available at [URL]." MNRAS referees increasingly expect this.
+
+### 5c. UMAP Figure Caption
+
+The two-panel UMAP figure is publication-quality. I examined it carefully and it clearly conveys the key result. Here is a suggested caption.
+
+"UMAP projection of EfficientNetV2-S penultimate-layer embeddings (1280 dimensions) for four populations: 112 spectroscopically confirmed Tier-A lenses (orange stars), 200 parametric Sersic injections at low impact parameter (β_frac ∈ [0.1, 0.3], r = 19 mag; blue circles), 200 injections at high impact parameter (β_frac ∈ [0.7, 1.0]; cyan triangles), and 200 validation negatives (grey dots). Panel (a) shows category labels; panel (b) shows the CNN's output probability p(lens). Real lenses occupy a distinct manifold at UMAP-1 > 5 with p > 0.9, while parametric injections cluster at UMAP-1 < 3 with p < 0.3, demonstrating that the CNN's learned features separate real lenses from Sersic injections with near-perfect fidelity (linear probe AUC = 0.991 ± 0.010). The small number of real lenses embedded near the injection cluster correspond to the lowest-scoring Tier-A systems."
+
+---
+
+## Verdict: What Remains Before Submission
+
+**Must do (blocks submission):**
+
+The first must-do is to fix the marginal completeness numbers. Verify the no-Poisson grid's overall completeness using the same total_detected / total_injected method applied to the D03 CSV. Report both numbers consistently. If the old grid cannot be easily re-verified, re-run it with the D03 infrastructure. This takes 30 minutes of analysis or 4 GPU-hours of re-computation.
+
+The second must-do is to add the lensed-magnitude-stratified completeness table. This takes 1 hour of analysis from the existing CSV data and replaces the misleading single-number marginal.
+
+The third must-do is to add one sentence about band-dependent PSF as a limitation. This takes 5 minutes.
+
+**Should do (strengthens paper):**
+
+Building the multi-configuration detection-rate figure (baseline / Poisson / clip20 / combined on one panel) would take 2 hours and would become the paper's signature diagnostic figure. Running the linear probe at multiple regularization strengths (C = 0.01, 0.1, 1.0, 10.0) to show robustness would take 10 minutes of CPU. Looking up metadata on the 12 missed Tier-A lenses (PSF, depth, redshift) and adding a brief discussion would take 1 hour. And adding a Collett (2015) comparison paragraph would take 30 minutes.
+
+**Overall assessment:** The paper is very close to submission-ready. The scientific contribution is novel and clear: the linear probe AUC of 0.991 is a new measurement that the community needs, the UMAP visualization is compelling, and the diagnostic suite (Poisson noise, clip-range, beta_frac) provides actionable insights for improving injection pipelines. The Tier-A recall of 89.3% with zero spatial leakage establishes the CNN as a competitive lens finder. The framing as "injection realism gap" rather than "selection function measurement" is the correct strategy — it turns every weakness into a contribution.
+
+Fix the completeness numbers, add the stratified table, note the PSF limitation, and submit. This is a solid MNRAS paper.
+
+====================================
+

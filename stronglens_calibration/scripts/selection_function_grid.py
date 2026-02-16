@@ -300,6 +300,9 @@ def run_selection_function(
     seed: int = 1337,
     device_str: str = "cuda",
     data_root: Optional[str] = None,
+    # Injection realism options
+    add_poisson_noise: bool = False,
+    gain_e_per_nmgy: float = 150.0,
     # Sensitivity analysis overrides (all default to no-op)
     injection_overrides: Optional[Dict[str, Any]] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
@@ -385,6 +388,7 @@ def run_selection_function(
     print(f"  Depth (5sig mag): {depth_bins}")
     print(f"  Thresholds: {thresholds}")
     print(f"  Injections/cell: {injections_per_cell}")
+    print(f"  Poisson noise: {'ON (gain={:.0f} e-/nmgy)'.format(gain_e_per_nmgy) if add_poisson_noise else 'OFF'}")
     print(f"  Total injections: {n_cells * injections_per_cell:,}")
 
     # Assign hosts to PSF and depth bins using selection_function_utils
@@ -501,6 +505,8 @@ def run_selection_function(
                             pixel_scale=pixscale,
                             psf_fwhm_r_arcsec=eff_psf,
                             seed=inj_seed,
+                            add_poisson_noise=add_poisson_noise,
+                            gain_e_per_nmgy=gain_e_per_nmgy,
                         )
 
                         # Compute arc annulus SNR diagnostic
@@ -721,11 +727,15 @@ def run_selection_function(
         "pixscale": pixscale,
         "seed": seed,
         "n_cells": n_cells,
+        # BUGFIX: Filter to source_mag_bin='all' for cell counts.
+        # Previous code counted across all mag sub-bins, inflating numbers.
         "n_sufficient_cells": int(results_df.loc[
-            results_df["threshold"] == thresholds[0], "sufficient"
+            (results_df["threshold"] == thresholds[0]) &
+            (results_df["source_mag_bin"] == "all"), "sufficient"
         ].sum()),
         "n_empty_cells": int(results_df.loc[
-            results_df["threshold"] == thresholds[0], "n_injections"
+            (results_df["threshold"] == thresholds[0]) &
+            (results_df["source_mag_bin"] == "all"), "n_injections"
         ].eq(0).sum()),
         "total_injections_ok": total_inject_ok,
         "total_injections_failed": total_inject_failed,
@@ -734,6 +744,8 @@ def run_selection_function(
         "failure_log_sample": failure_log[:20],  # first 20 failures for debugging
         "fpr_targets": fpr_targets if fpr_targets else [],
         "fpr_derived_thresholds": {str(k): v for k, v in fpr_threshold_map.items()},
+        "add_poisson_noise": add_poisson_noise,
+        "gain_e_per_nmgy": gain_e_per_nmgy if add_poisson_noise else None,
         "injection_engine": "SIE+shear (dhs.injection_engine)",
         "source_model": "Sersic + optional clumps",
         "injection_overrides": injection_overrides if injection_overrides else {},
@@ -823,6 +835,13 @@ def main():
     ap.add_argument("--seed", type=int, default=1337)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--data-root", default=None)
+    # Injection realism
+    ap.add_argument("--add-poisson-noise", action="store_true", default=False,
+                    help="Add Poisson (shot) noise to injected arcs before adding to host. "
+                         "Physically correct: real sources contribute photon noise. "
+                         "Uses gain_e_per_nmgy=150 (approx DR10 coadd).")
+    ap.add_argument("--gain-e-per-nmgy", type=float, default=150.0,
+                    help="Gain in e-/nmgy for Poisson noise (default: 150)")
     args = ap.parse_args()
 
     results_df, metadata = run_selection_function(
@@ -848,31 +867,66 @@ def main():
         seed=args.seed,
         device_str=args.device,
         data_root=args.data_root,
+        add_poisson_noise=args.add_poisson_noise,
+        gain_e_per_nmgy=args.gain_e_per_nmgy,
     )
 
     # Save results
     save_outputs(results_df, metadata, args.out_dir)
 
     # Print summary
+    # BUGFIX (D03 post-review): Filter to source_mag_bin='all' for marginal
+    # completeness. Previous code averaged over ALL source_mag_bin types
+    # (including lensed magnitude bins), giving inflated values.
     for thr in args.thresholds:
-        thr_df = results_df[results_df["threshold"] == thr]
-        valid = thr_df[thr_df["n_injections"] > 0]
+        # Use only the 'all' bin for marginal completeness
+        thr_all = results_df[
+            (results_df["threshold"] == thr) &
+            (results_df["source_mag_bin"] == "all")
+        ]
+        valid_all = thr_all[thr_all["n_injections"] > 0]
+        n_empty_host_cells = int(thr_all["n_injections"].eq(0).sum())
+
         print(f"\n{'='*60}")
         print(f"SELECTION FUNCTION SUMMARY (threshold={thr})")
         print(f"{'='*60}")
         print(f"  Model: {metadata['arch']}")
         print(f"  Grid cells: {metadata['n_cells']}")
-        print(f"  Sufficient cells: {int(valid['sufficient'].sum())}")
-        print(f"  Empty cells: {int(thr_df['n_injections'].eq(0).sum())}")
-        mc = float(valid['completeness'].dropna().mean()) if len(valid) > 0 else float("nan")
-        print(f"  Mean completeness: {mc:.3f}")
-        if len(valid) > 0:
-            print(f"\n  Completeness by theta_E:")
-            for te in sorted(valid["theta_e"].unique()):
-                mask = valid["theta_e"] == te
-                c = valid.loc[mask, "completeness"].mean()
-                snr = valid.loc[mask, "mean_arc_snr"].dropna().mean()
-                print(f"    theta_E={te:.2f}\": C={c:.3f}, mean_arc_SNR={snr:.1f}")
+        print(f"  Non-empty cells: {len(valid_all)}")
+        print(f"  Empty cells (no hosts): {n_empty_host_cells}")
+
+        # Injection-weighted marginal: total_detected / total_injected
+        total_inj = int(valid_all["n_injections"].sum())
+        total_det = int(valid_all["n_detected"].sum())
+        mc = total_det / total_inj if total_inj > 0 else float("nan")
+        print(f"  Marginal completeness: {mc:.4f} ({total_det}/{total_inj})")
+
+        if len(valid_all) > 0:
+            print(f"\n  Completeness by theta_E (source_mag_bin='all'):")
+            for te in sorted(valid_all["theta_e"].unique()):
+                te_rows = valid_all[valid_all["theta_e"] == te]
+                te_inj = int(te_rows["n_injections"].sum())
+                te_det = int(te_rows["n_detected"].sum())
+                te_c = te_det / te_inj if te_inj > 0 else float("nan")
+                snr = te_rows["mean_arc_snr"].dropna().mean()
+                print(f"    theta_E={te:.2f}\": C={te_c:.4f} ({te_det}/{te_inj}), "
+                      f"mean_arc_SNR={snr:.1f}")
+
+            # Also show lensed-magnitude stratified completeness
+            lensed_bins = results_df[
+                (results_df["threshold"] == thr) &
+                (results_df["source_mag_bin"].str.startswith("lensed_"))
+            ]
+            lensed_valid = lensed_bins[lensed_bins["n_injections"] > 0]
+            if len(lensed_valid) > 0:
+                print(f"\n  Completeness by lensed apparent magnitude:")
+                for smb in sorted(lensed_valid["source_mag_bin"].unique()):
+                    smb_rows = lensed_valid[lensed_valid["source_mag_bin"] == smb]
+                    smb_inj = int(smb_rows["n_injections"].sum())
+                    smb_det = int(smb_rows["n_detected"].sum())
+                    smb_c = smb_det / smb_inj if smb_inj > 0 else float("nan")
+                    print(f"    {smb}: C={smb_c:.4f} ({smb_det}/{smb_inj})")
+
         print(f"{'='*60}")
 
 

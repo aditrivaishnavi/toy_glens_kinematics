@@ -137,6 +137,7 @@ def run_bright_arc_test(
     seed: int = 42,
     beta_frac_range: Tuple[float, float] | None = None,
     add_poisson_noise: bool = False,
+    gain_e_per_nmgy: float = 150.0,
     clip_range_override: float | None = None,
 ) -> Dict[str, Any]:
     """Run bright arc injection test across magnitude bins.
@@ -221,6 +222,7 @@ def run_bright_arc_test(
                 core_suppress_radius_pix=None,
                 seed=seed + i,
                 add_poisson_noise=add_poisson_noise,
+                gain_e_per_nmgy=gain_e_per_nmgy,
             )
 
             inj_chw = result.injected[0].numpy()
@@ -273,6 +275,7 @@ def run_bright_arc_test(
         "theta_e": theta_e,
         "beta_frac_range": bf_desc,
         "add_poisson_noise": add_poisson_noise,
+        "gain_e_per_nmgy": gain_e_per_nmgy if add_poisson_noise else None,
         "clip_range_override": clip_range_override,
         "arch": arch,
         "epoch": epoch,
@@ -345,6 +348,9 @@ def main() -> int:
     ap.add_argument("--add-poisson-noise", action="store_true", default=False,
                     help="Add Poisson noise to injected arcs (tests anomalous smoothness "
                          "hypothesis from LLM2 reviewer).")
+    ap.add_argument("--gain-e-per-nmgy", type=float, default=150.0,
+                    help="Gain in e-/nmgy for Poisson noise (default: 150). "
+                         "Set very high (e.g. 1e12) to verify Poisson converges to baseline.")
     ap.add_argument("--clip-range", type=float, default=None,
                     help="Override clip_range in preprocessing (default: use checkpoint value). "
                          "Use to test whether clipping suppresses bright-arc cues "
@@ -368,6 +374,7 @@ def main() -> int:
         seed=args.seed,
         beta_frac_range=bf_range,
         add_poisson_noise=args.add_poisson_noise,
+        gain_e_per_nmgy=args.gain_e_per_nmgy,
         clip_range_override=args.clip_range,
     )
 

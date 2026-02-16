@@ -1,0 +1,35 @@
+{
+  "gate": "1.6",
+  "name": "Core-Only Baseline Classifier",
+  "description": "Tests if core-only features can separate classes (shortcut detection)",
+  "core_radius_pixels": 10,
+  "n_train": 19980,
+  "n_val": 9979,
+  "train_auc": 0.9909,
+  "val_auc": 0.98,
+  "top_features": [
+    {
+      "name": "g_q25",
+      "importance": 17.1888
+    },
+    {
+      "name": "g_median",
+      "importance": 10.8325
+    },
+    {
+      "name": "r_median",
+      "importance": 7.862
+    },
+    {
+      "name": "r_q25",
+      "importance": 3.0949
+    },
+    {
+      "name": "r_max",
+      "importance": 1.628
+    }
+  ],
+  "threshold": 0.6,
+  "overall_passed": false,
+  "interpretation": "CRITICAL FAILURE: A simple logistic regression on ONLY central 10px achieves 98% AUC! This definitively proves the dataset has a core-based shortcut. The model is NOT learning arc features - it is learning to detect something in the central galaxy core that differs between positives and controls."
+}

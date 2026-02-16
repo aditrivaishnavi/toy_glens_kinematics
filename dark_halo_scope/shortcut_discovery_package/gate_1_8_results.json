@@ -1,0 +1,77 @@
+{
+  "gate": "1.8",
+  "name": "Core Brightness Matching Check",
+  "description": "Verifies positives and controls have matched core brightness",
+  "core_radius_pixels": 8,
+  "n_controls": 10000,
+  "n_positives": 9980,
+  "comparisons": [
+    {
+      "metric": "core_mean_r",
+      "ctrl_mean": 0.020503,
+      "pos_mean": 0.03359,
+      "ratio": 1.638,
+      "ks_stat": 0.3576,
+      "passed": false
+    },
+    {
+      "metric": "core_max_r",
+      "ctrl_mean": 0.101569,
+      "pos_mean": 0.124656,
+      "ratio": 1.227,
+      "ks_stat": 0.1511,
+      "passed": false
+    },
+    {
+      "metric": "core_median_r",
+      "ctrl_mean": 0.013296,
+      "pos_mean": 0.025556,
+      "ratio": 1.922,
+      "ks_stat": 0.4383,
+      "passed": false
+    },
+    {
+      "metric": "core_sum_r",
+      "ctrl_mean": 3.957075,
+      "pos_mean": 6.482851,
+      "ratio": 1.638,
+      "ks_stat": 0.3576,
+      "passed": false
+    }
+  ],
+  "percentiles_core_mean_r": {
+    "p5": {
+      "ctrl": 0.006008,
+      "pos": 0.009365,
+      "ratio": 1.559
+    },
+    "p25": {
+      "ctrl": 0.01057,
+      "pos": 0.016786,
+      "ratio": 1.588
+    },
+    "p50": {
+      "ctrl": 0.014889,
+      "pos": 0.023961,
+      "ratio": 1.609
+    },
+    "p75": {
+      "ctrl": 0.021023,
+      "pos": 0.03566,
+      "ratio": 1.696
+    },
+    "p95": {
+      "ctrl": 0.040311,
+      "pos": 0.071323,
+      "ratio": 1.769
+    }
+  },
+  "failed_metrics": [
+    "core_mean_r",
+    "core_max_r",
+    "core_median_r",
+    "core_sum_r"
+  ],
+  "overall_passed": false,
+  "interpretation": "ROOT CAUSE IDENTIFIED: Positives are 64% brighter in the core than controls! This explains why core-only classifier achieves 98% AUC. The injection process adds flux to the central region (from lensed source + possible arc overlap). This creates a trivial shortcut - the model just detects brighter cores, not arc morphology."
+}

@@ -1,0 +1,110 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\citation{Treu2010,Collett2015}
+\citation{Collett2015,Sonnenfeld2022}
+\citation{Gavazzi2014,Jacobs2019,CollettCunnington2022}
+\citation{Petrillo2017,Lanusse2018,Jacobs2019,Metcalf2019,Huang2020,Canameras2021,Savary2022,Stein2022,Rojas2022,Storfer2024}
+\citation{CollettCunnington2022,Herle2024}
+\newlabel{firstpage}{{}{1}{}{Doc-Start}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{1}{section.1}\protected@file@percent }
+\citation{Herle2024}
+\citation{Canameras2024}
+\citation{Dey2019}
+\citation{TanLe2021}
+\@writefile{toc}{\contentsline {section}{\numberline {2}Data and model}{2}{section.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}DESI Legacy Imaging Survey DR10}{2}{subsection.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}Training data}{2}{subsection.2.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.3}Spatial integrity}{2}{subsection.2.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.4}Architecture and training}{2}{subsection.2.4}\protected@file@percent }
+\citation{Kormann1994}
+\citation{Keeton2001}
+\citation{Sersic1968}
+\citation{GrahamDriver2005}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.5}Preprocessing}{3}{subsection.2.5}\protected@file@percent }
+\newlabel{sec:preprocessing}{{2.5}{3}{}{subsection.2.5}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {3}Injection pipeline}{3}{section.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Lens model}{3}{subsection.3.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Source model}{3}{subsection.3.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Ray-tracing and flux calibration}{3}{subsection.3.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}Poisson noise}{3}{subsection.3.4}\protected@file@percent }
+\newlabel{eq:poisson}{{2}{3}{}{equation.2}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Recall on 112 spectroscopically confirmed (Tier-A) lenses in the validation split. Wilson 95~per cent confidence intervals account for the binomial sampling distribution. FPR-derived thresholds are calibrated on 50\,000 validation negatives in the grid experiments; the empirical FPR on the 3000 negatives scored here is shown in parentheses.}}{4}{table.1}\protected@file@percent }
+\newlabel{tab:tierA}{{1}{4}{Recall on 112 spectroscopically confirmed (Tier-A) lenses in the validation split. Wilson 95~per cent confidence intervals account for the binomial sampling distribution. FPR-derived thresholds are calibrated on 50\,000 validation negatives in the grid experiments; the empirical FPR on the 3000 negatives scored here is shown in parentheses}{table.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.5}Host galaxies and injection procedure}{4}{subsection.3.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4}The injection realism gap}{4}{section.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Real lens performance}{4}{subsection.4.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Injection completeness is unexpectedly low}{4}{subsection.4.2}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Injection-recovery completeness over the full grid ($110\,000$ injections across 220 non-empty cells) at multiple detection thresholds. The Poisson column adds shot noise at gain $= 150\tmspace  +\thickmuskip {.2777em}\mathrm  {e^{-}\tmspace  +\thickmuskip {.2777em}nmgy^{-1}}$.}}{4}{table.2}\protected@file@percent }
+\newlabel{tab:thresholds}{{2}{4}{Injection-recovery completeness over the full grid ($110\,000$ injections across 220 non-empty cells) at multiple detection thresholds. The Poisson column adds shot noise at gain $= 150\;\mathrm {e^{-}\;nmgy^{-1}}$}{table.2}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Injection-recovery completeness by Einstein radius (no Poisson, $p > 0.3$). Each $\theta _{\rm  E}$ bin contains 10\,000 injections across all PSF and depth cells.}}{4}{table.3}\protected@file@percent }
+\newlabel{tab:thetaE}{{3}{4}{Injection-recovery completeness by Einstein radius (no Poisson, $p > 0.3$). Each $\theta _{\rm E}$ bin contains 10\,000 injections across all PSF and depth cells}{table.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}The CNN distinguishes real lenses from injections}{4}{subsection.4.3}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Injection-recovery completeness at $p > 0.3$. \textbf  {Left:} Completeness versus Einstein radius (no Poisson baseline), showing peak completeness at $\theta _{\rm  E} \approx 2.0\tmspace  +\thickmuskip {.2777em}\mathrm  {arcsec}$ with decline at both small (unresolved) and large (spread) radii. Error bars show 95~per cent Wilson confidence intervals. \textbf  {Right:} Completeness versus lensed apparent magnitude in four bins ($18$--$20$, $20$--$22$, $22$--$24$, $24$--$27$), with both no-Poisson (blue) and Poisson (orange) conditions. Data: \texttt  {selection\_function.csv} from \texttt  {grid\_no\_poisson/} and \texttt  {grid\_poisson\_fixed/}. Axes: $\theta _{\rm  E}$ or lensed mag (x), completeness per cent (y, range 0--60).}}{5}{figure.1}\protected@file@percent }
+\newlabel{fig:completeness}{{1}{5}{Injection-recovery completeness at $p > 0.3$. \textbf {Left:} Completeness versus Einstein radius (no Poisson baseline), showing peak completeness at $\theta _{\rm E} \approx 2.0\;\mathrm {arcsec}$ with decline at both small (unresolved) and large (spread) radii. Error bars show 95~per cent Wilson confidence intervals. \textbf {Right:} Completeness versus lensed apparent magnitude in four bins ($18$--$20$, $20$--$22$, $22$--$24$, $24$--$27$), with both no-Poisson (blue) and Poisson (orange) conditions. Data: \texttt {selection\_function.csv} from \texttt {grid\_no\_poisson/} and \texttt {grid\_poisson\_fixed/}. Axes: $\theta _{\rm E}$ or lensed mag (x), completeness per cent (y, range 0--60)}{figure.1}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Linear probe and feature diagnostics (D05). Fr\'{e}chet distances at deeper layers ($\geq $~block~4) are numerically unstable ($n < \mathrm  {dim}$) and omitted.}}{5}{table.4}\protected@file@percent }
+\newlabel{tab:probe}{{4}{5}{Linear probe and feature diagnostics (D05). Fr\'{e}chet distances at deeper layers ($\geq $~block~4) are numerically unstable ($n < \mathrm {dim}$) and omitted}{table.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Testing the noise texture hypothesis}{5}{subsection.4.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.4.1}Prediction from first principles}{5}{subsubsection.4.4.1}\protected@file@percent }
+\newlabel{sec:prediction}{{4.4.1}{5}{}{subsubsection.4.4.1}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.4.2}Bright-arc controlled experiment}{5}{subsubsection.4.4.2}\protected@file@percent }
+\newlabel{sec:brightarc}{{4.4.2}{5}{}{subsubsection.4.4.2}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.4.3}Gain sweep validation}{5}{subsubsection.4.4.3}\protected@file@percent }
+\newlabel{sec:gainsweep}{{4.4.3}{5}{}{subsubsection.4.4.3}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Two-panel UMAP projection of CNN penultimate-layer (1280-dimensional) embeddings. \textbf  {Left:} Points coloured by category --- real Tier-A (gold), low-$\beta _{\rm  frac}$ injections (blue), high-$\beta _{\rm  frac}$ injections (cyan), negatives (grey). \textbf  {Right:} Same projection coloured by CNN score ($p$, continuous colourbar from 0 to 1). Data: \texttt  {embeddings.npz} from \texttt  {linear\_probe/}. Use UMAP with \texttt  {n\_neighbors=30}, \texttt  {min\_dist=0.3}, \texttt  {metric=cosine}. Colourbar: \texttt  {viridis} (right panel).}}{6}{figure.2}\protected@file@percent }
+\newlabel{fig:umap}{{2}{6}{Two-panel UMAP projection of CNN penultimate-layer (1280-dimensional) embeddings. \textbf {Left:} Points coloured by category --- real Tier-A (gold), low-$\beta _{\rm frac}$ injections (blue), high-$\beta _{\rm frac}$ injections (cyan), negatives (grey). \textbf {Right:} Same projection coloured by CNN score ($p$, continuous colourbar from 0 to 1). Data: \texttt {embeddings.npz} from \texttt {linear\_probe/}. Use UMAP with \texttt {n\_neighbors=30}, \texttt {min\_dist=0.3}, \texttt {metric=cosine}. Colourbar: \texttt {viridis} (right panel)}{figure.2}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces Bright-arc detection rates at $p>0.3$ (D05). All: $\theta _{\rm  E}=1.5\tmspace  +\thickmuskip {.2777em}\mathrm  {arcsec}$, $N=200$ per mag bin, seed$\,=42$, $\beta _{\rm  frac}\in [0.1,0.55]$ unless noted. The gain~$= 10^{12}$ column matches the baseline at every bin, confirming the Poisson implementation is correct. Boldface indicates identical values to baseline.}}{6}{table.5}\protected@file@percent }
+\newlabel{tab:brightarc}{{5}{6}{Bright-arc detection rates at $p>0.3$ (D05). All: $\theta _{\rm E}=1.5\;\mathrm {arcsec}$, $N=200$ per mag bin, seed$\,=42$, $\beta _{\rm frac}\in [0.1,0.55]$ unless noted. The gain~$= 10^{12}$ column matches the baseline at every bin, confirming the Poisson implementation is correct. Boldface indicates identical values to baseline}{table.5}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces CNN score distributions. Kernel density estimates (or histograms with 50 bins, log-scaled $y$-axis) for: real Tier-A lenses (gold, $n = 112$, median $= 0.995$), low-$\beta _{\rm  frac}$ bright injections (blue, $n = 500$, median $= 0.110$), and validation negatives (grey, $n = 500$, median $= 1.5 \times 10^{-5}$). Vertical lines at $p = 0.3$, 0.806, and 0.995 mark the detection thresholds.}}{6}{figure.3}\protected@file@percent }
+\newlabel{fig:scores}{{3}{6}{CNN score distributions. Kernel density estimates (or histograms with 50 bins, log-scaled $y$-axis) for: real Tier-A lenses (gold, $n = 112$, median $= 0.995$), low-$\beta _{\rm frac}$ bright injections (blue, $n = 500$, median $= 0.110$), and validation negatives (grey, $n = 500$, median $= 1.5 \times 10^{-5}$). Vertical lines at $p = 0.3$, 0.806, and 0.995 mark the detection thresholds}{figure.3}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces Detection rate ($p > 0.3$) versus lensed apparent magnitude for all experimental conditions. \textbf  {Lines:} baseline (blue solid), Poisson gain$\,=\,$150 (orange dashed), clip$\,=\,$20 (green dotted), Poisson + clip\,20 (red dash-dot), unrestricted $\beta _{\rm  frac}$ (purple thin solid), gain$\,=\,10^{12}$ control (blue circles, overlaid on baseline). The gain$\,=\,10^{12}$ line overlays the baseline exactly, providing visual proof that the Poisson implementation is correct. Error bars: 95~per cent Wilson CIs ($n = 200$). A horizontal dashed line at $89.3$~per cent marks the Tier-A real-lens recall. Data: six JSON result files from \texttt  {D05\_20260214\_full\_reeval/ba\_*/bright\_arc\_results*.json}.}}{6}{figure.4}\protected@file@percent }
+\newlabel{fig:brightarc}{{4}{6}{Detection rate ($p > 0.3$) versus lensed apparent magnitude for all experimental conditions. \textbf {Lines:} baseline (blue solid), Poisson gain$\,=\,$150 (orange dashed), clip$\,=\,$20 (green dotted), Poisson + clip\,20 (red dash-dot), unrestricted $\beta _{\rm frac}$ (purple thin solid), gain$\,=\,10^{12}$ control (blue circles, overlaid on baseline). The gain$\,=\,10^{12}$ line overlays the baseline exactly, providing visual proof that the Poisson implementation is correct. Error bars: 95~per cent Wilson CIs ($n = 200$). A horizontal dashed line at $89.3$~per cent marks the Tier-A real-lens recall. Data: six JSON result files from \texttt {D05\_20260214\_full\_reeval/ba\_*/bright\_arc\_results*.json}}{figure.4}{}}
+\citation{Herle2024}
+\citation{Canameras2024}
+\citation{Huang2020}
+\citation{Jacobs2019}
+\citation{Herle2024}
+\citation{Canameras2024}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.4.4}Grid-level confirmation and $\theta _{\rm  E}$ dependence}{7}{subsubsection.4.4.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.4.5}The Poisson--clipping interaction}{7}{subsubsection.4.4.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.4.6}Interpretation: the barrier is morphological}{7}{subsubsection.4.4.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}Discussion}{7}{section.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Comparison with published results}{7}{subsection.5.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}The linear probe as a realism gate}{7}{subsection.5.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Implications for lens population studies}{7}{subsection.5.3}\protected@file@percent }
+\citation{Herle2024}
+\citation{Canameras2024}
+\@writefile{lot}{\contentsline {table}{\numberline {6}{\ignorespaces Comparison with published CNN strong lens finder results.}}{8}{table.6}\protected@file@percent }
+\newlabel{tab:published}{{6}{8}{Comparison with published CNN strong lens finder results}{table.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Limitations}{8}{subsection.5.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.5}Future directions}{8}{subsection.5.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6}Conclusions}{8}{section.6}\protected@file@percent }
+\bibcite{Canameras2021}{{1}{2021}{{Ca\~{n}ameras et al.}}{{}}}
+\bibcite{Canameras2024}{{2}{2024}{{Ca\~{n}ameras et al.}}{{}}}
+\bibcite{CiottiBertin1999}{{3}{1999}{{Ciotti \& Bertin}}{{}}}
+\bibcite{Collett2015}{{4}{2015}{{Collett}}{{}}}
+\bibcite{CollettCunnington2022}{{5}{2022}{{Collett \& Cunnington}}{{}}}
+\bibcite{Dey2019}{{6}{2019}{{Dey et al.}}{{}}}
+\bibcite{Gavazzi2014}{{7}{2014}{{Gavazzi et al.}}{{}}}
+\bibcite{GrahamDriver2005}{{8}{2005}{{Graham \& Driver}}{{}}}
+\bibcite{Herle2024}{{9}{2024}{{Herle et al.}}{{}}}
+\bibcite{Huang2020}{{10}{2020}{{Huang et al.}}{{}}}
+\bibcite{Jacobs2019}{{11}{2019}{{Jacobs et al.}}{{}}}
+\bibcite{Keeton2001}{{12}{2001}{{Keeton}}{{}}}
+\bibcite{Lanusse2018}{{13}{2018}{{Lanusse et al.}}{{}}}
+\bibcite{Metcalf2019}{{14}{2019}{{Metcalf et al.}}{{}}}
+\bibcite{Kormann1994}{{15}{1994}{{Kormann, Schneider \& Bartelmann}}{{}}}
+\bibcite{Petrillo2017}{{16}{2017}{{Petrillo et al.}}{{}}}
+\bibcite{Rojas2022}{{17}{2022}{{Rojas et al.}}{{}}}
+\bibcite{Savary2022}{{18}{2022}{{Savary et al.}}{{}}}
+\bibcite{Sersic1968}{{19}{1968}{{S\'{e}rsic}}{{}}}
+\bibcite{Sonnenfeld2022}{{20}{2022}{{Sonnenfeld}}{{}}}
+\bibcite{Stein2022}{{21}{2022}{{Stein et al.}}{{}}}
+\bibcite{Storfer2024}{{22}{2024}{{Storfer et al.}}{{}}}
+\bibcite{TanLe2021}{{23}{2021}{{Tan \& Le}}{{}}}
+\bibcite{Treu2010}{{24}{2010}{{Treu}}{{}}}
+\@writefile{toc}{\contentsline {section}{\numberline {A}Annulus normalisation characterisation}{9}{section.A1}\protected@file@percent }
+\newlabel{app:annulus}{{A}{9}{}{section.A1}{}}
+\newlabel{lastpage}{{A}{9}{}{section.A1}{}}
+\gdef \@abspage@last{9}

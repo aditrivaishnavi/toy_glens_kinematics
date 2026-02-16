@@ -2249,7 +2249,316 @@ DECISION: GO for retrain (gen5a + gen5b)
 
 ---
 
+## 30. Prompt 5 LLM Review and D02 Quick-Test Results (2026-02-14)
+
+### 30.1 Prompt 5 LLM Consensus
+
+Both independent LLM reviewers (LLM1 = GPT, LLM2 = Claude) agreed on:
+
+1. **Annulus bug is cosmetic — NO-GO for retraining solely for the annulus fix.**
+   The 3.6pp recall drop is ~1.3 sigma (not statistically significant at n=500).
+   Batch normalization absorbs the 0.15 normalized-unit median shift.
+2. **Linear probe AUC=0.991 is the most important finding.** The CNN trivially
+   distinguishes Sersic injections from real lenses. Injection realism is the
+   binding constraint.
+3. **Paper should reframe** from "here is our selection function" to "here is our
+   selection function, here is why it is a conservative lower bound, and here is
+   how we quantify the sim-to-real gap."
+4. **Both recommended injection realism improvements over retraining** as highest
+   leverage for MNRAS acceptance.
+
+Note: LLM1 incorrectly claimed the SNR computation uses g-band (index 0). Verified
+in code: `injection_only_chw[1]` uses r-band (index 1). No bug.
+
+### 30.2 D02 Quick-Test Results
+
+Run on Lambda3 (GH200 480GB, Python 3.12.3, torch 2.7.0+cu128). Total runtime: ~9 min.
+
+#### 30.2.1 Clip-Range Sweep (beta_frac [0.1, 0.55], theta_E=1.5")
+
+| clip_range | mag 18-19 (p>0.3) | mag 20-21 (p>0.3) | mag 21-22 (p>0.3) | Interpretation |
+|------------|--------------------|--------------------|--------------------|----|
+| 10 (D01 baseline) | 17.0% | 27.5% | 35.5% | Original: bright arcs clipped |
+| **20** | **30.5%** | **37.0%** | **40.5%** | Best: less clipping, still in-distribution |
+| 50 | 0.5% | 0.0% | 1.0% | Collapsed: far from training distribution |
+| 100 | 21.0% | 3.0% | 1.5% | Mostly collapsed, partial bright-end recovery |
+
+**Key finding:** clip_range=20 raises mag 18-19 detection from 17%→30.5% (+13.5pp),
+confirming that clipping at ±10 destroys bright-arc morphology. However, clip_range=50
+and 100 collapse all detection because the model was trained with clip_range=10 and cannot
+generalize to a drastically different input dynamic range. This is NOT evidence that
+clip_range=50 is wrong — it means the model must be retrained if we want to change
+clip_range.
+
+#### 30.2.2 Poisson Noise Test (clip_range=10 default)
+
+| Condition | mag 18-19 (p>0.3) | mag 20-21 (p>0.3) | mag 21-22 (p>0.3) |
+|-----------|--------------------|--------------------|---------------------|
+| No Poisson (D01) | 17.0% | 27.5% | 35.5% |
+| **With Poisson** | **17.5%** | **45.0%** | **43.0%** |
+| Poisson + clip_range=50 | 0.5% | 2.0% | 11.0% |
+
+**Key finding:** Adding Poisson noise to injected arcs raises detection at mag 20-21
+from 27.5% to 45.0% (+17.5pp). This is the single largest improvement from any
+intervention. At mag 18-19, Poisson doesn't help because clipping still dominates.
+The Poisson+clip50 combination collapses (distribution shift dominates).
+
+#### 30.2.3 Tier-A-Only Real Lens Scoring
+
+| Threshold | Tier-A Recall | n_detected/n | 95% Wilson CI |
+|-----------|--------------|--------------|----------------|
+| p>0.3 | **89.3%** | 100/112 | [82.6%, 94.0%] |
+| p>0.5 | 83.9% | 94/112 | [76.3%, 89.8%] |
+| p>0.806 | 79.5% | 89/112 | [71.3%, 86.1%] |
+| p>0.995 | 48.2% | 54/112 | [39.1%, 57.4%] |
+
+Comparison with all-tier (Tier-A + Tier-B):
+
+| Threshold | Tier-A Only | All-Tier | Tier-B Only |
+|-----------|-------------|----------|-------------|
+| p>0.3 | 89.3% | 73.3% | 72.0% |
+| p>0.5 | 83.9% | 68.7% | 67.4% |
+
+**Key finding:** The previously reported "73% recall" was dominated by Tier-B
+candidates. Tier-A (confirmed lenses) recall is **89.3%**, nearly 17pp higher.
+This is the correct headline number for the paper.
+
+#### 30.2.4 Unrestricted Beta-Frac Baseline [0.1, 1.0]
+
+| mag bin | Restricted [0.1,0.55] (D01) | Unrestricted [0.1,1.0] | Delta |
+|---------|------------------------------|------------------------|-------|
+| 18-19 | 17.0% | 17.0% | 0.0pp |
+| 20-21 | 27.5% | 28.0% | +0.5pp |
+| 21-22 | 35.5% | 20.0% | −15.5pp |
+| 22-23 | 31.0% | 17.5% | −13.5pp |
+
+**Key finding:** Restricting beta_frac from [0.1,1.0] to [0.1,0.55] does help
+at mag 21-22 (+15.5pp), confirming that high-beta_frac (close to caustic) injections
+are harder to detect. This is physically expected. The improvement IS statistically
+significant at the 21-22 bin level (CIs don't overlap).
+
+#### 30.2.5 HEALPix Investigation
+
+- All 4,788 positives have valid ra/dec (NaN=0). The healpix_128 NaN is a manifest
+  generation bug — `spark_crossmatch_positives_v2.py` did not compute healpix_128.
+- Recomputed healpix_128 from ra/dec shows:
+  - **Tier-A: ZERO spatial overlap** between train (274 pixels) and val (112 pixels)
+  - Tier-B: 118 overlapping pixels (141 train, 133 val positives in shared pixels)
+  - Negatives: fully spatially split (0 mixed pixels in 176,391 total)
+- **Conclusion:** Tier-A recall estimates are NOT affected by spatial leakage.
+  Tier-B has minor leakage (118/4399 = 2.7% of Tier-B in overlapping pixels).
+
+#### 30.2.6 UMAP Visualization
+
+Generated 2D UMAP projections from 1280-D penultimate embeddings:
+- `umap_feature_space.png`: 4-class scatter (Real Tier-A, low-bf injection, high-bf injection, negative)
+- `umap_score_colored.png`: same projection colored by CNN score
+- Saved as PDF for paper figure.
+
+### 30.3 Updated Key Numbers for Paper
+
+| Metric | Value | 95% CI | Note |
+|--------|-------|--------|------|
+| Tier-A recall (p>0.3) | 89.3% | [82.6%, 94.0%] | Headline number |
+| Tier-A recall (p>0.5) | 83.9% | [76.3%, 89.8%] | |
+| Tier-B recall (p>0.3) | 72.0% | [69.5%, 74.3%] | Visual candidates |
+| AUC (gen4) | 0.9921 | | All positives |
+| Linear probe AUC (real vs inj) | 0.991 ± 0.010 | | Sim-to-real gap |
+| Best injection detection (with Poisson noise) | 45.0% | | mag 20-21, p>0.3, bf [0.1,0.55] |
+| Marginal injection completeness | ~3.5% | | Over full parameter space |
+| Tier-A spatial leakage | 0 pixels | | Zero overlap train/val |
+
+---
+
+## 31. Prompt 7 LLM Review and Post-Review Actions (2026-02-14)
+
+### 31.1 Prompt 7 LLM Consensus
+
+Both independent reviewers (LLM1 = GPT new session, LLM2 = Claude same session)
+provided responses to Prompt 7 ("Should We Retrain? -- You Decide").
+
+**Key agreement:**
+1. Linear probe AUC = 0.991 is the most important finding
+2. Injection realism is the binding constraint, not the model
+3. Poisson noise should be added to the selection function (essential)
+4. Paper should reframe around the sim-to-real gap as the central contribution
+5. Tier-A recall (89.3%) is the correct headline number
+6. 3.5% completeness should be presented as a conservative lower bound, not unbiased
+
+**Key disagreement:**
+- LLM1: Retrain gen5b (required for referee defensibility)
+- LLM2: Do NOT retrain (annulus is cosmetic, can defend with data)
+
+### 31.2 Vetting of LLM Responses
+
+Thorough vetting of both responses revealed:
+
+1. **LLM2 more statistically rigorous:** The 3.6pp recall drop is 1.3 sigma (SE=2.84pp
+   at N=500), NOT statistically significant. LLM1 said "not noise" without computing the
+   standard error.
+
+2. **LLM2 batch norm claim technically wrong:** LLM2 claimed batch normalization absorbs
+   the 0.15-unit input offset. At inference time, running stats are FROZEN, so the offset
+   is NOT fully absorbed. However, the offset is only 1.5% of the [-10,+10] range, making
+   the practical impact negligible.
+
+3. **SNR band confirmed correct:** LLM1 from Prompt 5 (prior session) incorrectly claimed
+   g-band. Verified: `injection_only_chw[1]` = r-band. LLM1's new session did not repeat
+   this error.
+
+4. **Mismatched scoring tier mix confirmed:** 500 positives are ~39 Tier-A + 461 Tier-B.
+   The 3.6pp recall is dominated by Tier-B behavior.
+
+5. **LLM2's beta_frac correction validated:** Matched comparison shows +15.5pp at mag
+   21-22, which IS significant at 3.2 sigma (n=200).
+
+### 31.3 Decision: Do NOT Retrain for Annulus
+
+Based on vetting, adopted LLM2's recommendation:
+- The 3.6pp drop is 1.3 sigma, not significant
+- MAD unchanged (noise structure preserved)
+- No PSF/depth correlation (no condition-dependent effect)
+- Can defend with four documented diagnostic experiments (Appendix)
+- gen5c remains optional if GPU budget allows
+
+### 31.4 Actions Taken
+
+**Phase 1: GPU computations (D03, running on Lambda3)**
+- Added `--add-poisson-noise` flag to `selection_function_grid.py`
+- Running full selection function grid with Poisson noise (~4 GPU-hours)
+- Running combined Poisson + clip_range=20 bright-arc diagnostic
+
+**Phase 2: Paper preparation (completed)**
+- Created paper framing document (`docs/PAPER_FRAMING_SIM_TO_REAL_GAP.md`)
+  - Draft abstract, paper outline, key numbers, referee preemption strategy
+  - Working title: "The injection realism gap in CNN strong lens selection functions:
+    quantifying parametric source limitations with DESI Legacy Survey DR10"
+- Created annulus characterization appendix (`docs/APPENDIX_ANNULUS_CHARACTERIZATION.md`)
+  - Four diagnostic experiments, data-backed conclusion that effect is cosmetic
+- Created comparison table (`docs/COMPARISON_TABLE_PUBLISHED_RESULTS.md`)
+  - Herle et al. (2024), HOLISMOKES XI, Euclid Prep. XXXIII
+- Generated publication-quality UMAP figures (`results/paper_figures/`)
+  - Two-panel (category + score), individual panels as PDF
+- Prepared Prompt 8 template for final LLM review
+
+### 31.5 D03 Results (Complete)
+
+D03 completed on Lambda3 (GH200 480GB). Grid: 22 min, Combined test: 1 min.
+
+#### 31.5.1 Selection Function Grid with Poisson Noise
+
+- 385 cells, 343 empty (no matching hosts), 42 with data
+- 110,000 successful injections, 0 failures
+- FPR-derived thresholds: FPR=0.001 -> p=0.806, FPR=0.0001 -> p=0.995
+
+Mean completeness at p>0.3: **2.6%** (previously ~3.5% without Poisson).
+
+**Surprise finding:** Marginal completeness DECREASED with Poisson noise. The bright-end
+improvement (+17.5pp at mag 20-21) is offset by faint-end degradation (mag 22-23: 31%->23.5%).
+When integrated over the full parameter space (dominated by faint sources), the net effect
+is roughly neutral or slightly negative.
+
+Completeness by theta_E (p>0.3): peaks at theta_E=2.0" and 2.5" (C=0.056), consistent
+with larger Einstein radii producing more detectable arcs.
+
+#### 31.5.2 Combined Poisson + clip_range=20
+
+| mag bin | Baseline | Poisson | clip20 | **Combined** | Note |
+|---------|----------|---------|--------|-------------|------|
+| 18-19   | 17.0%    | 17.5%   | 30.5%  | **42.5%**   | Super-additive |
+| 19-20   | 24.5%    | 31.0%   | 32.0%  | **47.5%**   | Peak: best result |
+| 20-21   | 27.5%    | 45.0%   | 37.0%  | **45.0%**   | Roughly additive |
+| 21-22   | 35.5%    | 43.0%   | 40.5%  | **30.5%**   | Destructive |
+| 22-23   | 31.0%    | 23.5%   | 35.0%  | **17.5%**   | Destructive |
+| 23-24   | 24.0%    | 5.5%    | 14.5%  | **3.5%**    | Destructive |
+
+Peak combined: **47.5% at mag 19-20** -- closes more than half the 86pp gap between
+injection completeness (3.5%) and real-lens recall (89.3%).
+
+Bright arcs: super-additive (clip preserves morphology + Poisson adds texture).
+Faint arcs: destructive (clip pushes further from training distribution).
+
+**Paper implication:** Simple realism fixes can substantially improve bright-arc detection,
+but fundamentally different approaches are needed for faint arcs (real stamps, correlated
+noise). This supports the paper's central thesis about injection realism limitations.
+
+## Section 32: Post-D03 Reinvestigation and D04 Matched Comparison (2026-02-14)
+
+### 32.1 Reinvestigation Summary
+
+After receiving LLM responses to Prompt 8, a deep reinvestigation of the D03 results
+uncovered three critical issues:
+
+#### 32.1.1 Poisson Noise Clamp Bug (SEVERE)
+
+**Location:** `dhs/injection_engine.py`, line 558
+
+**Bug:** The Gaussian approximation for Poisson noise used `clamp(min=1.0)`:
+```python
+noise_electrons = torch.randn_like(arc_electrons) * torch.sqrt(arc_electrons.clamp(min=1.0))
+```
+
+**Impact:** ~95% of pixels in a 101x101 stamp have zero arc flux. With `clamp(min=1.0)`,
+every zero-flux pixel received ~1 electron of noise (std = sqrt(1) = 1 electron = ~0.007 nmgy).
+This noise was then picked up by the annulus normalization (`normalize_outer_annulus`),
+inflating the annulus MAD from ~0.002 nmgy to ~0.005 nmgy, which compressed the
+normalized arc signal by ~2.5x. This severely degraded faint-arc detection and
+likely invalidated the "Poisson hurts faint arcs" conclusion from D03.
+
+**Fix:** Replaced with `torch.poisson()` which returns 0 for lambda=0 (zero-flux pixels
+get zero noise).
+
+#### 32.1.2 Summary Reporting Bug (MODERATE)
+
+**Location:** `scripts/selection_function_grid.py`, lines 875-884
+
+**Bug:** The mean completeness calculation averaged across ALL `source_mag_bin` values
+(including 'all', '23-24', 'lensed_18-20', etc.), giving an inflated number.
+
+**Impact:** Reported marginal completeness was 2.6%, but true value for source_mag_bin='all'
+was **0.74%** (818/110,000). The 2.6% was an average of 0.74% and various lensed-magnitude
+sub-bin completeness values, some of which are substantially higher.
+
+**Fix:** Filter to `source_mag_bin == 'all'` for marginal completeness; use
+injection-weighted totals (n_detected/n_injected) instead of simple mean.
+
+#### 32.1.3 Grid Parameter Mismatch (CRITICAL for comparisons)
+
+**Old grid (E04-IM1):** depth bins = [24.0, 24.5, 25.0, 25.5], 200 inj/cell
+**D03 grid:** depth bins = [22.5, 23.0, 23.5, 24.0, 24.5], 500 inj/cell
+
+The old grid used deeper images (5sig depth 24-25.5 mag), while D03 used shallower
+images (22.5-24.5 mag). This made all "old vs new" comparisons invalid — the
+completeness difference was driven by depth range, not Poisson noise.
+
+### 32.2 D04 Matched Comparison Design
+
+To produce valid apples-to-apples Poisson comparisons, D04 uses **identical parameters**
+for both baseline and Poisson grids:
+
+- Depth: 22.5, 23.0, 23.5, 24.0, 24.5 (5 bins, default)
+- PSF: 0.9 to 1.8 step 0.15 (7 bins)
+- theta_E: 0.5 to 2.5 step 0.2 (11 bins)
+- Injections/cell: 500
+- Thresholds: 0.3, 0.5, 0.7
+- FPR targets: 0.001, 0.0001
+- Host split: val, max 20,000
+
+Three sub-experiments:
+1. **grid_no_poisson:** Matched baseline (no Poisson noise)
+2. **grid_poisson_fixed:** Fixed Poisson (torch.poisson, zero noise on zero-flux pixels)
+3. **poisson_fixed_clip20_combined:** Fixed Poisson + clip_range=20 bright-arc diagnostic
+
+### 32.3 D04 Results
+
+*[To be filled after D04 completes]*
+
 *This document was updated 2026-02-14. Sections 12 added per LLM
 Prompt 2 analysis. Sections 13-18 added per LLM Prompt 3 analysis.
 Sections 19-28 added per LLM Prompt 4 analysis. Section 29 added
-with D01 pre-retrain diagnostic results from Lambda3.*
+with D01 pre-retrain diagnostic results from Lambda3. Section 30
+added with Prompt 5 LLM review synthesis and D02 quick-test results.
+Section 31 added with Prompt 7 LLM review synthesis, vetting, and
+post-review actions including D03 launch and paper preparation.
+Section 32 added with post-D03 reinvestigation findings and D04
+matched comparison launch.*

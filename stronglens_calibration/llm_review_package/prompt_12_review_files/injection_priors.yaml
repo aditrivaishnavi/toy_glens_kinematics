@@ -1,0 +1,79 @@
+# =============================================================================
+# Injection Prior Registry — Single Source of Truth
+# =============================================================================
+#
+# This file defines the EXACT parameter values used by the injection engine
+# (dhs/injection_engine.py::sample_source_params and sample_lens_params).
+#
+# PURPOSE: Prevent code-to-paper drift. The validation test
+# (tests/test_injection_priors.py) asserts that the code defaults match
+# these values. If either the code or this file is changed without updating
+# the other, the test fails.
+#
+# PAPER: When writing the MNRAS paper, cite these values — they are what
+# the code actually uses. Do NOT invent different numbers.
+#
+# CREATED: 2026-02-13 (after LLM review finding #2 identified mismatch
+#          between code defaults and paper description)
+# =============================================================================
+
+source_params:
+  # Source r-band magnitude range (AB)
+  r_mag_range: [23.0, 26.0]
+
+  # Source position: beta_frac = beta / theta_E
+  # Area-weighted sampling: beta_frac = sqrt(U(lo^2, hi^2))
+  beta_frac_range: [0.1, 1.0]
+
+  # Source effective radius (arcsec)
+  # Extended from [0.05, 0.25] to [0.05, 0.50] (Prompt 3 LLM recommendation).
+  # Covers z~1-2 late-type disks per Collett (2015) and Herle et al. (2024).
+  re_arcsec_range: [0.05, 0.50]
+
+  # Sersic index
+  # Extended from [0.7, 2.5] to [0.5, 4.0] (Prompt 3 LLM recommendation).
+  # Herle et al. (2024) show CNNs preferentially select n >= 2.55 at 8-sigma.
+  n_range: [0.5, 4.0]
+
+  # Source axis ratio (b/a)
+  q_range: [0.3, 1.0]
+
+  # Source color: g-r drawn from N(mu, sigma)
+  g_minus_r_mu_sigma: [0.2, 0.25]
+
+  # Source color: r-z drawn from N(mu, sigma)
+  r_minus_z_mu_sigma: [0.1, 0.25]
+
+  # Probability of adding clumps to the source
+  clumps_prob: 0.6
+
+  # When clumps are added: n_clumps ~ integers(1, 4), frac ~ U(0.15, 0.45)
+  clumps_n_range: [1, 4]
+  clumps_frac_range: [0.15, 0.45]
+
+lens_params:
+  # External shear sigma (|gamma| ~ half-normal with this sigma)
+  shear_sigma: 0.05
+
+  # Lens center jitter sigma (arcsec)
+  center_sigma_arcsec: 0.05
+
+  # Lens axis ratio range (uniform)
+  q_lens_range: [0.5, 1.0]
+
+model2_conditioning:
+  # Model 2: q_lens = clip(q_host + N(0, q_scatter), q_floor, 1.0)
+  q_scatter: 0.05
+  q_floor: 0.5
+  # NOTE: This is Gaussian ADDITIVE scatter, NOT multiplicative uniform.
+  # The prompt/paper incorrectly described it as q_host * U[0.8, 1.2]
+  # clipped to [0.3, 1.0]. The code has always used the values above.
+
+preprocessing:
+  # Normalization annulus (current defaults, locked to trained models)
+  annulus_r_in: 20
+  annulus_r_out: 32
+  clip_range: 10.0
+  # KNOWN ISSUE: (20, 32) is suboptimal for 101x101 stamps.
+  # Corrected values from default_annulus_radii(101, 101): (32.5, 45.0)
+  # Activation requires retraining.

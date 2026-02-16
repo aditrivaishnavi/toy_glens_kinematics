@@ -1,0 +1,148 @@
+# Evaluation Protocol Configuration
+# ================================
+# LOCKED BEFORE TRAINING - DO NOT MODIFY AFTER PHASE 0
+# 
+# This file defines ALL metrics, thresholds, and interpretations
+# before any training begins. No post-hoc metric shopping allowed.
+
+version: "1.0"
+locked_date: null  # Fill in when locked
+locked_by: null    # Fill in when locked
+
+# =============================================================================
+# PRIMARY METRICS
+# =============================================================================
+# These are reported for all experiments
+
+primary_metrics:
+  - name: auroc_synthetic_test
+    description: "Area under ROC curve on synthetic test set"
+    threshold: null  # Report only, no pass/fail
+    interpretation: |
+      Measures ability to distinguish injected lenses from controls.
+      Expected range: 0.85-0.96 for a well-trained model.
+      Higher is better, but synthetic AUROC can be misleading if shortcuts exist.
+  
+  - name: anchor_recall_at_k
+    description: "Fraction of real anchor lenses in top k candidates"
+    k_values: [50, 100, 200]
+    threshold: null  # Report for all k values
+    interpretation: |
+      Primary measure of sim-to-real transfer.
+      Higher is better. Improvement from baseline is the key signal.
+  
+  - name: tpr_at_fpr_001
+    description: "True positive rate at 1% false positive rate"
+    threshold: null
+    interpretation: |
+      Operating point metric. High TPR at low FPR indicates practical utility.
+
+# =============================================================================
+# GATE METRICS
+# =============================================================================
+# These have explicit pass/fail thresholds
+
+gate_metrics:
+  - name: core_lr_auc
+    description: "LR classifier AUC using only central 10x10 pixels"
+    threshold: 0.65
+    direction: below  # Must be BELOW threshold to pass
+    interpretation: |
+      Measures shortcut leakage via core brightness.
+      If AUC > 0.65, model may be exploiting core shortcut.
+      After mitigation, expect AUC ~ 0.55-0.62.
+  
+  - name: core_masked_drop
+    description: "AUROC drop when central r<5 pixels are masked"
+    threshold: 0.10
+    direction: below  # Drop must be BELOW threshold to pass
+    interpretation: |
+      If drop > 10%, model relies too heavily on core.
+      Healthy model should use arc morphology, not just center.
+  
+  - name: hardneg_auroc
+    description: "AUROC on azimuthal-shuffle hard negatives"
+    threshold: 0.70
+    direction: above  # Must be ABOVE threshold to pass
+    interpretation: |
+      If hard negatives are too easy (AUROC > 0.90), shuffling is broken.
+      If too hard (AUROC < 0.65), model may not be learning arc morphology.
+      Sweet spot: 0.70-0.85.
+
+# =============================================================================
+# SECONDARY METRICS
+# =============================================================================
+# Reported for analysis, no pass/fail
+
+secondary_metrics:
+  - name: contaminant_fpr
+    description: "False positive rate on known contaminants (rings, spirals, mergers)"
+    thresholds_to_report: [0.5, 0.7, 0.9]
+    interpretation: |
+      Lower is better. Stratify by contaminant category.
+  
+  - name: precision_at_recall_90
+    description: "Precision when recall is fixed at 90%"
+    interpretation: |
+      Measures false positive burden at high completeness.
+  
+  - name: calibration_ece
+    description: "Expected calibration error"
+    interpretation: |
+      Lower is better. Measures if predicted probabilities match observed frequencies.
+
+# =============================================================================
+# STRATIFICATION
+# =============================================================================
+# All primary and gate metrics should be computed stratified by:
+
+stratification:
+  - name: theta_e_arcsec
+    bins: [[0.5, 1.0], [1.0, 1.5], [1.5, 2.0], [2.0, 3.0]]
+    interpretation: "Performance by Einstein radius"
+  
+  - name: psf_fwhm_arcsec
+    bins: [[0.8, 1.2], [1.2, 1.5], [1.5, 2.0]]
+    interpretation: "Performance by seeing conditions"
+  
+  - name: arc_snr
+    bins: [[3, 10], [10, 20], [20, 50], [50, 1000]]
+    interpretation: "Performance by arc signal-to-noise"
+
+# =============================================================================
+# ABLATION COMPARISON
+# =============================================================================
+
+ablation_comparison:
+  baseline: "gen5_prime_full"
+  variants:
+    - "ablate_no_hardneg"
+    - "ablate_no_coredrop"
+    - "ablate_minimal"
+    - "gen7_hybrid"
+    - "gen8_domain_rand"
+  
+  required_analyses:
+    - name: "delta_anchor_recall"
+      description: "Change in anchor recall vs baseline with 95% CI"
+    
+    - name: "delta_contaminant_fpr"
+      description: "Change in contaminant FPR vs baseline"
+    
+    - name: "gate_status"
+      description: "Pass/fail for each gate metric"
+
+# =============================================================================
+# STATISTICAL REQUIREMENTS
+# =============================================================================
+
+statistics:
+  bootstrap_n: 1000
+  confidence_level: 0.95
+  min_seeds: 3  # Run at least 3 seeds for final results
+  
+  significance:
+    description: |
+      Improvements are considered significant if:
+      1. 95% CI does not include zero
+      2. Effect size is meaningful (>2% for recall, >5% for FPR)

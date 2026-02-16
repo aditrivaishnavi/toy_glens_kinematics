@@ -551,11 +551,19 @@ def inject_sis_shear(
     # Without this, bright injections are anomalously smooth — a statistical
     # signature detectable by a high-AUC CNN.
     if add_poisson_noise and gain_e_per_nmgy > 0:
-        # Convert arc flux to photo-electrons, draw Poisson, convert back
+        # Convert arc flux to photo-electrons, draw exact Poisson, convert back.
+        # torch.poisson handles all lambda correctly:
+        #   lambda=0 -> returns 0 (no noise on zero-flux pixels)
+        #   lambda>0 -> exact Poisson draw
+        # BUGFIX (D03 post-review): Previous implementation used a Gaussian
+        # approximation with clamp(min=1.0), which injected noise of std
+        # ~1 electron into ALL zero-flux pixels (~95% of the stamp). This
+        # noise (~0.007 nmgy) corrupted the annulus normalization, inflating
+        # the MAD by ~2.5x and compressing the normalized arc signal by the
+        # same factor. The effect was catastrophic for faint-arc detection.
         arc_electrons = (injection.clamp(min=0.0) * gain_e_per_nmgy)
-        # Use normal approximation for Poisson: N(lambda, sqrt(lambda))
-        # (valid for lambda > ~20, which holds for detectable arcs)
-        noise_electrons = torch.randn_like(arc_electrons) * torch.sqrt(arc_electrons.clamp(min=1.0))
+        noisy_electrons = torch.poisson(arc_electrons)
+        noise_electrons = noisy_electrons - arc_electrons
         injection = injection + noise_electrons / gain_e_per_nmgy
 
     host_chw = host_nmgy_hwc.permute(2, 0, 1)

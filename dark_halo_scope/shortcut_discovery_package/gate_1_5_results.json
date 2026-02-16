@@ -1,0 +1,97 @@
+{
+  "gate": "1.5",
+  "name": "Normalization-Stat Leakage Gate",
+  "description": "Checks if normalization stats differ between classes",
+  "n_controls": 5000,
+  "n_positives": 4993,
+  "comparisons": [
+    {
+      "stat": "outer_median_r",
+      "ctrl_mean": 0.000666,
+      "pos_mean": 0.000769,
+      "diff": 0.000103,
+      "cohens_d": 0.092,
+      "ks_stat": 0.0712,
+      "passed": true
+    },
+    {
+      "stat": "outer_mad_r",
+      "ctrl_mean": 0.002769,
+      "pos_mean": 0.002784,
+      "diff": 1.5e-05,
+      "cohens_d": 0.011,
+      "ks_stat": 0.0188,
+      "passed": true
+    },
+    {
+      "stat": "clip_frac_r",
+      "ctrl_mean": 0.015773,
+      "pos_mean": 0.025272,
+      "diff": 0.009499,
+      "cohens_d": 0.343,
+      "ks_stat": 0.1717,
+      "passed": false
+    },
+    {
+      "stat": "outer_median_g",
+      "ctrl_mean": 0.000338,
+      "pos_mean": 0.000449,
+      "diff": 0.000111,
+      "cohens_d": 0.158,
+      "ks_stat": 0.1544,
+      "passed": false
+    },
+    {
+      "stat": "outer_mad_g",
+      "ctrl_mean": 0.00157,
+      "pos_mean": 0.001631,
+      "diff": 6e-05,
+      "cohens_d": 0.08,
+      "ks_stat": 0.0562,
+      "passed": true
+    },
+    {
+      "stat": "clip_frac_g",
+      "ctrl_mean": 0.008786,
+      "pos_mean": 0.030475,
+      "diff": 0.021688,
+      "cohens_d": 0.658,
+      "ks_stat": 0.3741,
+      "passed": false
+    },
+    {
+      "stat": "outer_median_z",
+      "ctrl_mean": 0.001694,
+      "pos_mean": 0.0018,
+      "diff": 0.000106,
+      "cohens_d": 0.045,
+      "ks_stat": 0.0343,
+      "passed": true
+    },
+    {
+      "stat": "outer_mad_z",
+      "ctrl_mean": 0.007226,
+      "pos_mean": 0.007272,
+      "diff": 4.6e-05,
+      "cohens_d": 0.016,
+      "ks_stat": 0.0163,
+      "passed": true
+    },
+    {
+      "stat": "clip_frac_z",
+      "ctrl_mean": 0.013915,
+      "pos_mean": 0.015621,
+      "diff": 0.001705,
+      "cohens_d": 0.079,
+      "ks_stat": 0.0683,
+      "passed": true
+    }
+  ],
+  "failed_stats": [
+    "clip_frac_r",
+    "outer_median_g",
+    "clip_frac_g"
+  ],
+  "overall_passed": false,
+  "interpretation": "Positives have significantly higher clipping fractions, especially in g-band (d=0.658). This is a potential leakage source - the model could detect lenses by noticing more clipped pixels."
+}

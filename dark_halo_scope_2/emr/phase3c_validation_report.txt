@@ -1,0 +1,186 @@
+================================================================================
+PHASE 3C COMPREHENSIVE VALIDATION REPORT
+================================================================================
+Generated: 2026-01-18T22:29:18.129661Z
+Input: s3://darkhaloscope/phase3_pipeline/phase3c/v3_color_relaxed/parent_union_parquet
+Variant: v3_color_relaxed
+
+--------------------------------------------------------------------------------
+EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+  ✅ Schema complete (all expected columns present)
+  ❌ Core columns have issues: nulls={}, nans={'gmag': 80141}
+  ❌ LRG flag mismatches: ['v1_pure_massive', 'v2_baseline_dr10', 'v3_color_relaxed', 'v4_mag_relaxed', 'v5_very_relaxed']
+  ✅ LRG variant hierarchy is consistent (v1⊂v2⊂v3⊂v4⊂v5)
+  ✅ No duplicate rows detected
+  ✅ No PSF (star) objects in catalog
+  ✅ All bricknames have valid format
+
+⚠️  OVERALL STATUS: SOME CHECKS FAILED - Review details below
+
+--------------------------------------------------------------------------------
+DATA OVERVIEW
+--------------------------------------------------------------------------------
+  Total LRG Objects:  19,687,747
+  Unique Regions:     811
+  Unique Bricks:      256,208
+
+  Parquet Files:      188,421
+  Total Size:         2.323 GB
+
+  By Split:
+    test : 259 regions | 208,046 bricks | 16,025,058 objects (81.4%)
+    train: 348 regions | 28,949 bricks | 2,208,075 objects (11.22%)
+    val  : 204 regions | 19,213 bricks | 1,454,614 objects (7.39%)
+
+--------------------------------------------------------------------------------
+SCHEMA VALIDATION
+--------------------------------------------------------------------------------
+  ✅ All columns present with expected types
+
+--------------------------------------------------------------------------------
+DATA QUALITY
+--------------------------------------------------------------------------------
+  Magnitude Statistics:
+  ----------------------------------------------------------------------------
+  Band          Min      P05      P50      P95      Max     Mean      Std
+  ----------------------------------------------------------------------------
+  gmag      10.6054  21.1445  22.6631  23.9651      nan      nan      nan
+  rmag        12.42  20.0328  21.1661   22.018  35.2173  21.1104   0.6054
+  zmag       9.0289  18.9495  19.9904  20.3674     20.4  19.8672   0.4631
+  w1mag      3.1318  17.8227  18.7647   19.364  19.5999  18.7007   0.4885
+
+  Color Statistics:
+  ------------------------------------------------------------
+  Color         Min      P10      P50      P90      Max
+  ------------------------------------------------------------
+  rz            0.4     0.88   1.1908   1.6942   14.831
+  zw1           0.8   0.8546   1.1081   1.5477  17.2179
+  rz_mw      0.2336    0.839   1.1492   1.6534  14.8118
+  zw1_mw     0.5685   0.8107   1.0644   1.5037  17.1713
+
+  Coordinate Ranges:
+    ra: 0.0 to 360.0 ✅
+    dec: -88.8744 to 35.374 ✅
+
+  Color Consistency (r-z = rmag - zmag):
+    rz_vs_rmag_zmag: ✅
+    zw1_vs_zmag_w1mag: ✅
+
+--------------------------------------------------------------------------------
+LRG FLAG VALIDATION
+--------------------------------------------------------------------------------
+  Recomputed vs Stored Flags:
+  ----------------------------------------------------------------------------
+  Variant                Expected     Actual     Match%       FP       FN   Status
+  ----------------------------------------------------------------------------
+  v1_pure_massive         448,339    448,339     100.0%        2        2        ❌
+  v2_baseline_dr10      1,518,400  1,518,393     100.0%        0        7        ❌
+  v3_color_relaxed     19,687,735 19,687,747   99.9999%       12        0        ❌
+  v4_mag_relaxed       19,687,735 19,687,747   99.9999%       12        0        ❌
+  v5_very_relaxed      19,687,735 19,687,747   99.9999%       12        0        ❌
+
+  Variant Hierarchy (v1 ⊂ v2 ⊂ v3 ⊂ v4 ⊂ v5):
+    v1_pure_massive ⊂ v2_baseline_dr10: ✅
+    v2_baseline_dr10 ⊂ v3_color_relaxed: ✅
+    v3_color_relaxed ⊂ v4_mag_relaxed: ✅
+    v4_mag_relaxed ⊂ v5_very_relaxed: ✅
+
+--------------------------------------------------------------------------------
+DATA INTEGRITY
+--------------------------------------------------------------------------------
+  Exact duplicate rows: 0
+  Duplicate (brickname, objid): 0
+  Invalid brickname format: 0
+
+  Split Distribution:
+    test: 16,025,058
+    train: 2,208,075
+    val: 1,454,614
+
+  TYPE Distribution:
+    DEV: 6,995,131
+    REX: 5,163,379
+    SER: 4,391,423
+    EXP: 3,137,814
+
+--------------------------------------------------------------------------------
+CROSS-STAGE CONSISTENCY
+--------------------------------------------------------------------------------
+  Phase 3a Bricks Comparison:
+    Expected bricks: 261,304
+    Actual bricks:   256,208
+    Coverage:        98.05%
+    ⚠️  Missing 5096 bricks from 3a
+
+  Phase 3b Regions Comparison:
+    Selected regions (3b): 811
+    Actual regions (3c):   811
+    Coverage:              100.0%
+
+--------------------------------------------------------------------------------
+STATISTICAL ANALYSIS
+--------------------------------------------------------------------------------
+  Magnitude/Color Means by Split:
+  ------------------------------------------------------------
+  Split       zmag_mean     zmag_std      rz_mean     zw1_mean
+  ------------------------------------------------------------
+  train         19.8632       0.4674       1.2484       1.1727
+  val           19.8659        0.464       1.2349       1.1671
+  test          19.8679       0.4624       1.2432       1.1656
+
+  ✅ Split distributions are consistent
+
+--------------------------------------------------------------------------------
+TOP 20 REGIONS BY OBJECT COUNT
+--------------------------------------------------------------------------------
+  Split      Region     Bricks      Objects
+  ----------------------------------------
+  test         1961    115,008    8,865,548
+  test            0     91,017    7,005,035
+  train        2659     23,884    1,823,532
+  val          2467     18,305    1,384,136
+  train        3060        630       40,875
+  test         2357        344       27,117
+  train        2660        386       25,634
+  train        2280        175       14,909
+  train        2230        136       10,527
+  train        3475        137       10,277
+  train        1102        131       10,071
+  val          3470        133        9,653
+  train        3467        122        8,876
+  train          41        105        7,620
+  train          31        103        7,585
+  train          35        102        7,481
+  test           39         97        7,217
+  train        3471         98        6,302
+  train        1876         61        5,394
+  train        3277         67        5,256
+
+--------------------------------------------------------------------------------
+SAMPLE DATA
+--------------------------------------------------------------------------------
+  Brightest Objects (lowest zmag):
+    1932m270 objid=6976: zmag=9.03, r-z=3.59, z-w1=2.42
+    1470p132 objid=1258: zmag=11.56, r-z=3.98, z-w1=6.47
+    1965m405 objid=6891: zmag=11.68, r-z=0.74, z-w1=0.92
+    1569m255 objid=1210: zmag=11.89, r-z=1.86, z-w1=1.86
+    1767m280 objid=2321: zmag=12.17, r-z=0.78, z-w1=1.06
+
+  Faintest Objects (highest zmag):
+    1963p227 objid=1815: zmag=20.40, r-z=1.56, z-w1=0.80
+    3586m360 objid=2380: zmag=20.40, r-z=1.91, z-w1=1.83
+    3160m397 objid=3790: zmag=20.40, r-z=1.05, z-w1=0.85
+    3485m447 objid=8567: zmag=20.40, r-z=1.69, z-w1=1.33
+    3518m557 objid=970: zmag=20.40, r-z=1.09, z-w1=0.91
+
+  Objects Near v3 Cut Boundaries:
+    1093p295 objid=807: zmag=20.33, r-z=1.44, z-w1=1.82, is_v3=True
+    1075p300 objid=1664: zmag=20.38, r-z=2.68, z-w1=1.70, is_v3=True
+    1097p237 objid=2203: zmag=19.50, r-z=1.01, z-w1=0.83, is_v3=True
+    2239p095 objid=2524: zmag=20.34, r-z=1.85, z-w1=1.44, is_v3=True
+    2213p067 objid=3071: zmag=20.36, r-z=1.59, z-w1=1.67, is_v3=True
+
+================================================================================
+END OF REPORT
+================================================================================

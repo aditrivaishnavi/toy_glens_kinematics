@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Verify train/val/test split disjointness by galaxy_id and cutout_path."""
+"""Verify train/val/test split disjointness by galaxy_id and cutout_path.
+
+NOTE: This script checks *sample-level* disjointness (no shared galaxy_id or
+cutout_path between splits).  For *spatial* (HEALPix) disjointness verification,
+see ``scripts/investigate_healpix_nan.py``, which recomputes HEALPix pixel
+assignments from RA/Dec and checks for overlapping pixels between splits.
+"""
 from __future__ import annotations
 
 import argparse
