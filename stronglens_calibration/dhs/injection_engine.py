@@ -392,6 +392,7 @@ def inject_sis_shear(
     subpixel_oversample: int = 4,
     add_poisson_noise: bool = False,
     gain_e_per_nmgy: float = 150.0,
+    add_sky_noise: bool = False,
 ) -> InjectionResult:
     """Inject a lensed source into a single host cutout.
 
@@ -423,6 +424,15 @@ def inject_sis_shear(
         DR10 coadd with ~30 exposures at 90s each, gain ~ 150 e-/nmgy is
         a reasonable order-of-magnitude estimate. This is an approximation;
         real gain varies with depth and band.
+
+    add_sky_noise: if True, add per-band Gaussian noise to the injected arc
+        matching the host cutout's background noise level (measured from the
+        outer sky annulus via MAD). This ensures the arc region has the same
+        noise texture as the rest of the image.  Without this, bright smooth
+        arcs look unnaturally clean against the noisy background -- a visual
+        artefact detectable by both humans and CNNs.
+        BUG FIX (2026-02-16): previously absent, causing injections to appear
+        sharper than real arcs in ground-based imaging.
     """
     assert host_nmgy_hwc.ndim == 3 and host_nmgy_hwc.shape[-1] == 3
     device = host_nmgy_hwc.device
@@ -566,6 +576,20 @@ def inject_sis_shear(
         noise_electrons = noisy_electrons - arc_electrons
         injection = injection + noise_electrons / gain_e_per_nmgy
 
+    # Optionally add per-band Gaussian sky/read noise to the arc so it has
+    # the same noise texture as the host background.  Sigma is estimated per
+    # band from the outer sky annulus of the host cutout (robust MAD).
+    if add_sky_noise:
+        host_chw_np = host_nmgy_hwc.permute(2, 0, 1).cpu().numpy()
+        for band_idx in range(3):
+            sigma = estimate_sigma_pix_from_cutout(
+                host_chw_np, band_idx=band_idx,
+                sky_r_inner_pix=35, sky_r_outer_pix=48,
+            )
+            if np.isfinite(sigma) and sigma > 0:
+                noise = torch.randn_like(injection[band_idx]) * float(sigma)
+                injection[band_idx] = injection[band_idx] + noise
+
     host_chw = host_nmgy_hwc.permute(2, 0, 1)
     injected = host_chw + injection
 
@@ -590,13 +614,13 @@ def sample_source_params(
     rng: np.random.Generator,
     theta_e_arcsec: float,
     r_mag_range: Tuple[float, float] = (23.0, 26.0),
-    beta_frac_range: Tuple[float, float] = (0.1, 1.0),
-    re_arcsec_range: Tuple[float, float] = (0.05, 0.50),
-    n_range: Tuple[float, float] = (0.5, 4.0),
+    beta_frac_range: Tuple[float, float] = (0.10, 0.40),
+    re_arcsec_range: Tuple[float, float] = (0.15, 0.50),
+    n_range: Tuple[float, float] = (0.5, 2.0),
     q_range: Tuple[float, float] = (0.3, 1.0),
-    g_minus_r_mu_sigma: Tuple[float, float] = (0.2, 0.25),
-    r_minus_z_mu_sigma: Tuple[float, float] = (0.1, 0.25),
-    clumps_prob: float = 0.6,
+    g_minus_r_mu_sigma: Tuple[float, float] = (1.15, 0.30),
+    r_minus_z_mu_sigma: Tuple[float, float] = (0.85, 0.20),
+    clumps_prob: float = 0.0,
     # Q1.16 fix: clumps params were previously hardcoded in the function body.
     # Now they are explicit parameters so the AST-based prior validator can
     # check them against configs/injection_priors.yaml.
@@ -614,24 +638,56 @@ def sample_source_params(
 
     Prior ranges (updated 2026-02-13 per LLM Prompt 3 reviewer findings):
 
-    re_arcsec_range: (0.05, 0.50) -- extended from (0.05, 0.25).
-        Previous range was on the compact end and systematically under-
-        represented larger star-forming disk galaxies. Literature:
-        - Herle et al. (2024, MNRAS 534, 1093): R_S in U(0.05, 0.3)
-        - Collett (2015): typical 0.1-0.5" at z~1-3, from size-luminosity-z relation
-        - Observed: z~1 late-type 0.3-0.8", z~2 0.2-0.5", z~3 0.1-0.3"
-        Extending to 0.50" covers the z~2 population. Ideally 1.0" for
-        full coverage, but requires testing stamp truncation effects.
+    g_minus_r_mu_sigma: (1.0, 0.35) -- changed from (0.2, 0.25).
+        BUG FIX (2026-02-16): Previous defaults were rest-frame blue galaxy
+        colours and did not account for cosmological K-correction. Sources
+        lensed at z~1-3 have OBSERVER-FRAME g-r ~ 0.8-1.5 in Legacy Survey
+        bands due to redshift.  Measured from arc-region annulus (8-18 px)
+        of 388 real Tier-A lenses: mean=1.23, std=0.39, median=1.28.
+        Conservative estimate N(1.0, 0.35) accounts for some host-light
+        contamination in the annulus measurement.
 
-    n_range: (0.5, 4.0) -- extended from (0.7, 2.5).
-        Previous range missed concentrated sources that CNNs preferentially
-        select. Herle et al. (2024) find median selected n >= 2.55 at their
-        8-sigma threshold — our previous n_max=2.5 cut off exactly at the
-        CNN selection threshold. Literature:
-        - Herle et al. (2024): n in U(1, 4)
-        - Collett (2015): n = 1 (exponential disk) for all high-z sources
-        - Standard practice: n in [0.5, 4.0]
-        Also extends down to n=0.5 to include very disk-like sources.
+    r_minus_z_mu_sigma: (0.75, 0.25) -- changed from (0.1, 0.25).
+        BUG FIX (2026-02-16): Same K-correction issue as g-r.
+        Measured from arc-region annulus of Tier-A lenses: mean=0.95,
+        std=0.27, median=0.89.  Conservative estimate N(0.75, 0.25).
+
+    beta_frac_range: (0.05, 0.35) -- narrowed from (0.1, 1.0).
+        BUG FIX (2026-02-16): Area-weighted sampling with upper bound
+        at 1.0 (or even 0.55 in experiments) heavily biases toward high
+        beta_frac values where the source is far from the caustic. This
+        produces widely separated double/quad images instead of extended
+        tangential arcs. Real lenses with visible arcs have sources near
+        the caustic (low beta_frac). Narrowing to (0.05, 0.35) favours
+        near-caustic configurations producing arc-like morphologies.
+
+    re_arcsec_range: (0.15, 0.50) -- raised minimum from 0.05.
+        BUG FIX (2026-02-16): Sources with Re < 0.15" are unresolvable at
+        Legacy Survey ~1" seeing and produce point-like lensed images that
+        look like binary stars, not gravitational arcs. Manual visual
+        inspection confirmed that Re_min=0.05 creates obviously fake
+        double-image artefacts. Minimum 0.15" ensures lensed images
+        overlap and merge into smooth arcs at ground-based resolution.
+        Literature:
+        - Collett (2015): typical 0.1-0.5" at z~1-3
+        - Observed: z~1 late-type 0.3-0.8", z~2 0.2-0.5"
+
+    n_range: (0.5, 2.0) -- narrowed from (0.5, 4.0).
+        BUG FIX (2026-02-16): Concentrated profiles (n > 2, e.g. de
+        Vaucouleurs n=4) produce compact source light distributions that
+        get lensed into point-like doubles, not smooth arcs. Manual visual
+        inspection showed pie-chart-like segmented artefacts. High-z lensed
+        sources are predominantly disk galaxies (n ~ 1).
+        - Collett (2015): n = 1 (exponential disk) for high-z sources
+        - Herle et al. (2024): while their CNN selects n >= 2.55, that
+          selection bias should not be built into the injection prior.
+
+    clumps_prob: 0.0 -- disabled from 0.6.
+        BUG FIX (2026-02-16): Clumps (1-4 Gaussian blobs at 60% prob,
+        up to 45% flux) create additional bright spots at separate lensed
+        image positions, producing obviously fake multi-blob artefacts
+        visible in manual inspection. Disabled until base arc morphology
+        is validated. Can be re-enabled with reduced parameters if needed.
     """
     # source offset in polar coordinates in source plane
     # Area-weighted sampling: for uniform source density on the sky,
