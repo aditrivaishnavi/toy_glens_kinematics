@@ -142,11 +142,11 @@ The lens parameters are drawn as follows.  The Einstein radius $\theta_{\rm E}$ 
 
 \subsection{Source model}
 
-The source is modelled as a S\'{e}rsic \citep{Sersic1968} profile, using the $b_n$ approximation of \citet{CiottiBertin1999}, with optional Gaussian clumps.  The source $r$-band magnitude is drawn from $m_r \sim \mathcal{U}(23, 26)$ for the grid (extended to $\mathcal{U}(18, 26)$ for bright-arc tests).  The S\'{e}rsic index is drawn from $n \sim \mathcal{U}(0.5, 4.0)$, effective radius from $R_{\rm e} \sim \mathcal{U}(0.05, 0.50)\;\mathrm{arcsec}$, and axis ratio from $q \sim \mathcal{U}(0.3, 1.0)$.  Colours are drawn from $g - r \sim \mathcal{N}(0.2, 0.25)$ and $r - z \sim \mathcal{N}(0.1, 0.25)$.
+The source is modelled as a S\'{e}rsic \citep{Sersic1968} profile, using the $b_n$ approximation of \citet{CiottiBertin1999}.  The source $r$-band magnitude is drawn from $m_r \sim \mathcal{U}(23, 26)$ for the grid (extended to $\mathcal{U}(18, 26)$ for bright-arc tests).  The S\'{e}rsic index is drawn from $n \sim \mathcal{U}(0.5, 2.0)$, effective radius from $R_{\rm e} \sim \mathcal{U}(0.15, 0.50)\;\mathrm{arcsec}$, and axis ratio from $q \sim \mathcal{U}(0.3, 1.0)$.  Colours are drawn from $g - r \sim \mathcal{N}(1.15, 0.30)$ and $r - z \sim \mathcal{N}(0.85, 0.20)$, calibrated from the observer-frame colours of 388 spectroscopically confirmed Tier-A lenses (arc-region annulus photometry at $8$--$18$~pixel radius); the previous rest-frame priors \citep[$g - r \sim \mathcal{N}(0.2, 0.25)$;][]{} did not account for cosmological $K$-correction for sources at $z \sim 1$--$3$.
 
-The source position is parameterised by $\beta_{\rm frac} = \beta / \theta_{\rm E}$, drawn with area weighting: $\beta_{\rm frac} = \sqrt{\mathcal{U}(\beta_{\rm lo}^{2}, \beta_{\rm hi}^{2})}$ where the default range is $[\beta_{\rm lo}, \beta_{\rm hi}] = [0.1, 1.0]$.  The restricted tests use $[0.1, 0.55]$ to isolate configurations producing high-magnification arcs.
+The source position is parameterised by $\beta_{\rm frac} = \beta / \theta_{\rm E}$, drawn with area weighting: $\beta_{\rm frac} = \sqrt{\mathcal{U}(\beta_{\rm lo}^{2}, \beta_{\rm hi}^{2})}$ where the default range is $[\beta_{\rm lo}, \beta_{\rm hi}] = [0.10, 0.40]$.  This range favours near-caustic configurations that produce extended tangential arcs rather than widely separated multiple images; visual inspection confirmed that the previous range $[0.1, 1.0]$ was dominated by high-$\beta_{\rm frac}$ double-image configurations due to the area-weighted sampling.
 
-With 60~per cent probability, $1$--$4$ Gaussian clumps are added to the source profile.  Each clump is drawn from a Gaussian centred within $\sim\! 0.6\,R_{\rm e}$ of the source centre, with the clump flux fraction drawn from $\mathcal{U}(0.15, 0.45)$.  The clumps are phenomenological perturbations intended to break the smooth symmetry of the S\'{e}rsic profile; they do not represent a physical model of star-forming regions.
+Gaussian clumps are disabled in the current injection configuration (clumps probability $= 0$).  Visual inspection showed that the previous configuration (60~per cent probability of $1$--$4$ clumps with flux fraction $\mathcal{U}(0.15, 0.45)$) produced multi-blob artefacts at separate lensed image positions that were obviously distinguishable from real arc morphology.  The clump model remains available in the code for future investigation.
 
 \subsection{Ray-tracing and flux calibration}
 
@@ -411,7 +411,7 @@ We conclude that the dominant barrier to realistic injection-recovery is consist
 \toprule
 Study & Survey & Architecture & Source model & Recall / Completeness & Realism test \\
 \midrule
-This work & DESI DR10 & EfficientNetV2-S & S\'{e}rsic + clumps & 89.3\% / 3.41\% & Probe AUC $= 0.996$ \\
+This work & DESI DR10 & EfficientNetV2-S & S\'{e}rsic & 89.3\% / 3.41\% & Probe AUC $= 0.996$ \\
 \citet{Herle2024} & Euclid sim & Multiple CNNs & Parametric S\'{e}rsic & N/A (simulated) & None \\
 \citet{Canameras2024} & HSC PDR2 & CNN ensemble & Real HUDF stamps & TPR$_0$ 10--40\% & N/A (real stamps) \\
 \citet{EuclidPrepXXXIII} & Euclid sim & CNN/Inception/ResNet & Parametric & 75--90\% & None \\

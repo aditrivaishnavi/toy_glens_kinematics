@@ -224,10 +224,18 @@ def recover_bright_arc(
     out_dir: str,
     device: torch.device,
 ) -> pd.DataFrame:
-    """Replay bright-arc test (seed=42, theta_E=1.5, beta_frac 0.1-0.55, 200 hosts x 8 bins)."""
+    """Replay bright-arc test (seed=42, theta_E=1.5, beta_frac 0.1-0.55, 200 hosts x 8 bins).
+
+    NOTE (2026-02-16): This function replays the ORIGINAL experiment's exact
+    RNG sequence with beta_frac_range=(0.1, 0.55) — the value used when the
+    experiment was first run. Changing this would break deterministic replay
+    of old results. For NEW experiments with corrected priors, use
+    bright_arc_injection_test.py which now defaults to (0.10, 0.40).
+    """
     seed = 42
     theta_e = 1.5
     n_hosts = 200
+    # Original experiment value — do NOT change for replay determinism
     beta_frac_range = (0.1, 0.55)
 
     print("=== Recovering bright_arc injections ===")

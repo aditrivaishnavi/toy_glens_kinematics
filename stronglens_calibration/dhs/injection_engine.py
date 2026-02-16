@@ -638,19 +638,20 @@ def sample_source_params(
 
     Prior ranges (updated 2026-02-13 per LLM Prompt 3 reviewer findings):
 
-    g_minus_r_mu_sigma: (1.0, 0.35) -- changed from (0.2, 0.25).
+    g_minus_r_mu_sigma: (1.15, 0.30) -- changed from (0.2, 0.25).
         BUG FIX (2026-02-16): Previous defaults were rest-frame blue galaxy
         colours and did not account for cosmological K-correction. Sources
         lensed at z~1-3 have OBSERVER-FRAME g-r ~ 0.8-1.5 in Legacy Survey
         bands due to redshift.  Measured from arc-region annulus (8-18 px)
         of 388 real Tier-A lenses: mean=1.23, std=0.39, median=1.28.
-        Conservative estimate N(1.0, 0.35) accounts for some host-light
-        contamination in the annulus measurement.
+        Initial conservative estimate N(1.0, 0.35); refined to N(1.15, 0.30)
+        after visual inspection showed slight residual colour offset.
 
-    r_minus_z_mu_sigma: (0.75, 0.25) -- changed from (0.1, 0.25).
+    r_minus_z_mu_sigma: (0.85, 0.20) -- changed from (0.1, 0.25).
         BUG FIX (2026-02-16): Same K-correction issue as g-r.
         Measured from arc-region annulus of Tier-A lenses: mean=0.95,
-        std=0.27, median=0.89.  Conservative estimate N(0.75, 0.25).
+        std=0.27, median=0.89.  Initial conservative estimate N(0.75, 0.25);
+        refined to N(0.85, 0.20) after visual inspection.
 
     beta_frac_range: (0.05, 0.35) -- narrowed from (0.1, 1.0).
         BUG FIX (2026-02-16): Area-weighted sampling with upper bound

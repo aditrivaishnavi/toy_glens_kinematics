@@ -167,7 +167,7 @@ def main():
     fig.suptitle(
         f"Injection Visual Test (seed={args.seed}, theta_e={theta_e}, "
         f"target_mag={args.target_mag})\n"
-        f"Colour priors: g-r=N(1.0,0.35), r-z=N(0.75,0.25)"
+        f"Colour priors: g-r=N(1.15,0.30), r-z=N(0.85,0.20)"
         + (f", clumps_prob={args.clumps_prob}" if args.clumps_prob is not None else ""),
         fontsize=11, y=1.005,
     )
