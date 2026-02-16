@@ -50,7 +50,6 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import hashlib
 import json
 import math
 import os
@@ -64,7 +63,6 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
-from dhs.model import build_model
 from dhs.preprocess import preprocess_stack
 from dhs.scoring_utils import load_model_and_spec
 from dhs.injection_engine import (
@@ -347,7 +345,7 @@ def phase1_generate(
                 "psf_fwhm_r": host_psf,
                 "psfdepth_r": host_psfdepth,
                 "target_mag": target_mag,
-                "source_r_mag": float(source.flux_nmgy_r),
+                "source_r_mag": target_mag,
                 "lensed_r_mag": lensed_r_mag,
                 "beta_frac": compute_beta_frac(source, theta_e),
                 "source_re": source.re_arcsec,

@@ -60,7 +60,7 @@ def main():
     ap.add_argument("--target-mag", type=float, default=20.0,
                     help="Target r-band source magnitude for injections")
     ap.add_argument("--clumps-prob", type=float, default=None,
-                    help="Override clumps probability (default: use engine default 0.6)")
+                    help="Override clumps probability (default: use engine default 0.0)")
     ap.add_argument("--crop", type=int, default=51)
     args = ap.parse_args()
 

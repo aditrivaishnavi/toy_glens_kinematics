@@ -653,13 +653,13 @@ def sample_source_params(
         std=0.27, median=0.89.  Initial conservative estimate N(0.75, 0.25);
         refined to N(0.85, 0.20) after visual inspection.
 
-    beta_frac_range: (0.05, 0.35) -- narrowed from (0.1, 1.0).
+    beta_frac_range: (0.10, 0.40) -- narrowed from (0.1, 1.0).
         BUG FIX (2026-02-16): Area-weighted sampling with upper bound
         at 1.0 (or even 0.55 in experiments) heavily biases toward high
         beta_frac values where the source is far from the caustic. This
         produces widely separated double/quad images instead of extended
         tangential arcs. Real lenses with visible arcs have sources near
-        the caustic (low beta_frac). Narrowing to (0.05, 0.35) favours
+        the caustic (low beta_frac). Narrowing to (0.10, 0.40) favours
         near-caustic configurations producing arc-like morphologies.
 
     re_arcsec_range: (0.15, 0.50) -- raised minimum from 0.05.
