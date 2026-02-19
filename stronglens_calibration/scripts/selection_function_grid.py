@@ -303,6 +303,12 @@ def run_selection_function(
     # Injection realism options
     add_poisson_noise: bool = False,
     gain_e_per_nmgy: float = 150.0,
+    # FIX (2026-02-16): add_sky_noise was previously missing, causing injected
+    # arcs to appear unnaturally clean against the noisy host background.
+    add_sky_noise: bool = False,
+    # Save all injection cutouts as .npz files for reproducibility
+    save_cutouts: bool = False,
+    save_cutouts_dir: Optional[str] = None,
     # Sensitivity analysis overrides (all default to no-op)
     injection_overrides: Optional[Dict[str, Any]] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
@@ -406,6 +412,17 @@ def run_selection_function(
     # Determine input size from preprocessing config
     input_size = CUTOUT_SIZE if not crop else STAMP_SIZE
 
+    # Cutout saving setup
+    _cutout_dir: Optional[str] = None
+    _cutout_meta: List[Dict[str, Any]] = []
+    if save_cutouts:
+        _cutout_dir = save_cutouts_dir or os.path.join(
+            os.path.dirname(checkpoint_path) if checkpoint_path else ".",
+            "grid_cutouts"
+        )
+        os.makedirs(_cutout_dir, exist_ok=True)
+        print(f"  Saving cutouts to: {_cutout_dir}")
+
     # Run grid
     MAX_RETRIES = 5  # max retries per injection on failure before giving up
     print(f"\nRunning injection-recovery grid...")
@@ -498,6 +515,7 @@ def run_selection_function(
                         # Inject (PSF may be scaled for sensitivity analysis)
                         eff_psf = host_psf * psf_scale_factor
                         inj_seed = seed + cell_idx * (n_target + n_target * MAX_RETRIES) + attempt
+                        # FIX (2026-02-16): add_sky_noise now passed through
                         result = inject_sis_shear(
                             host_nmgy_hwc=host_hwc_torch,
                             lens=lens,
@@ -507,6 +525,7 @@ def run_selection_function(
                             seed=inj_seed,
                             add_poisson_noise=add_poisson_noise,
                             gain_e_per_nmgy=gain_e_per_nmgy,
+                            add_sky_noise=add_sky_noise,
                         )
 
                         # Compute arc annulus SNR diagnostic
@@ -525,7 +544,7 @@ def run_selection_function(
 
                         # Preprocess injected image for scoring
                         # Uses pp_kwargs from checkpoint for train-score consistency
-                        injected_chw_np = result.injected[0].numpy()  # (3, H, W)
+                        injected_chw_np = result.injected[0].detach().cpu().numpy()  # (3, H, W)
                         _pp_inj = dict(pp_kwargs or {})
                         _pp_inj.setdefault("mode", preprocessing)
                         _pp_inj.setdefault("crop", crop)
@@ -537,6 +556,27 @@ def run_selection_function(
                         arc_snr_list.append(snr_val)
                         src_mag_list.append(src_r_mag)
                         lensed_mag_list.append(lensed_r_mag)
+
+                        # Save cutout if requested
+                        if save_cutouts and _cutout_dir is not None:
+                            inj_id = f"cell{cell_idx:05d}_inj{len(batch_list)-1:05d}"
+                            np.savez_compressed(
+                                os.path.join(_cutout_dir, f"{inj_id}.npz"),
+                                injected=injected_chw_np.astype(np.float32),
+                                injection_only=injection_chw.detach().cpu().numpy().astype(np.float32),
+                            )
+                            _cutout_meta.append({
+                                "inj_id": inj_id,
+                                "cell_idx": cell_idx,
+                                "theta_e": theta_e,
+                                "psf_bin": pb,
+                                "depth_bin": db,
+                                "src_r_mag": src_r_mag,
+                                "lensed_r_mag": lensed_r_mag,
+                                "arc_snr": snr_val,
+                                "inj_seed": inj_seed,
+                                "cutout_path": str(host_row.get(CUTOUT_PATH_COL, "?")),
+                            })
 
                     except Exception as exc:
                         cell_n_failed += 1
@@ -746,8 +786,11 @@ def run_selection_function(
         "fpr_derived_thresholds": {str(k): v for k, v in fpr_threshold_map.items()},
         "add_poisson_noise": add_poisson_noise,
         "gain_e_per_nmgy": gain_e_per_nmgy if add_poisson_noise else None,
+        "add_sky_noise": add_sky_noise,
+        "save_cutouts": save_cutouts,
+        "save_cutouts_dir": _cutout_dir,
         "injection_engine": "SIE+shear (dhs.injection_engine)",
-        "source_model": "Sersic + optional clumps",
+        "source_model": "Sersic (clumps disabled, clumps_prob=0.0)",
         "injection_overrides": injection_overrides if injection_overrides else {},
         "notes": [
             "Injection uses SIS+shear ray-shooting with Sersic source model.",
@@ -762,6 +805,13 @@ def run_selection_function(
             "n_failed column tracks failures per cell for transparency.",
         ],
     }
+
+    # Save cutout metadata parquet alongside the npz files
+    if save_cutouts and _cutout_meta:
+        cutout_meta_df = pd.DataFrame(_cutout_meta)
+        cutout_meta_path = os.path.join(_cutout_dir, "cutout_metadata.parquet")
+        cutout_meta_df.to_parquet(cutout_meta_path, index=False)
+        print(f"  Saved {len(_cutout_meta)} cutout metadata rows to {cutout_meta_path}")
 
     return results_df, metadata
 
@@ -842,6 +892,15 @@ def main():
                          "Uses gain_e_per_nmgy=150 (approx DR10 coadd).")
     ap.add_argument("--gain-e-per-nmgy", type=float, default=150.0,
                     help="Gain in e-/nmgy for Poisson noise (default: 150)")
+    ap.add_argument("--add-sky-noise", action="store_true", default=False,
+                    help="Add realistic sky noise texture to injected arcs, "
+                         "matching the host background noise level. "
+                         "Without this, arcs appear unnaturally clean.")
+    ap.add_argument("--save-cutouts", action="store_true", default=False,
+                    help="Save all injection cutouts as .npz files for "
+                         "reproducibility and downstream analysis.")
+    ap.add_argument("--save-cutouts-dir", default=None,
+                    help="Directory for saved cutouts (default: <checkpoint_dir>/grid_cutouts)")
     args = ap.parse_args()
 
     results_df, metadata = run_selection_function(
@@ -869,6 +928,9 @@ def main():
         data_root=args.data_root,
         add_poisson_noise=args.add_poisson_noise,
         gain_e_per_nmgy=args.gain_e_per_nmgy,
+        add_sky_noise=args.add_sky_noise,
+        save_cutouts=args.save_cutouts,
+        save_cutouts_dir=args.save_cutouts_dir,
     )
 
     # Save results

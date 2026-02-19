@@ -311,8 +311,8 @@ def phase1_generate(
                 add_sky_noise=add_sky_noise,
             )
 
-            inj_chw = result.injected[0].numpy()
-            inj_only_chw = result.injection_only[0].numpy()
+            inj_chw = result.injected[0].detach().cpu().numpy()
+            inj_only_chw = result.injection_only[0].detach().cpu().numpy()
 
             # Compute diagnostics
             sigma_pix_r = estimate_sigma_pix_from_psfdepth(

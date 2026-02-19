@@ -234,6 +234,10 @@ def extract_embeddings_from_injections(
     beta_frac_range: Tuple[float, float] = (0.1, 1.0),
     seed_offset: int = 0,
     collect_layers: bool = False,
+    # FIX (2026-02-16): add realism flags that were previously missing
+    add_sky_noise: bool = False,
+    add_poisson_noise: bool = False,
+    gain_e_per_nmgy: float = 150.0,
 ) -> Tuple[np.ndarray, np.ndarray, Optional[Dict[str, np.ndarray]]]:
     """Generate injections and extract embeddings.
 
@@ -275,6 +279,7 @@ def extract_embeddings_from_injections(
         fields["flux_nmgy_z"] = source.flux_nmgy_z * scale
         source = SourceParams(**fields)
 
+        # FIX (2026-02-16): pass add_sky_noise and add_poisson_noise
         result = inject_sis_shear(
             host_nmgy_hwc=host_t,
             lens=lens,
@@ -282,9 +287,12 @@ def extract_embeddings_from_injections(
             pixel_scale=PIXEL_SCALE,
             psf_fwhm_r_arcsec=host_psf,
             seed=42 + seed_offset + i,
+            add_sky_noise=add_sky_noise,
+            add_poisson_noise=add_poisson_noise,
+            gain_e_per_nmgy=gain_e_per_nmgy,
         )
 
-        inj_chw = result.injected[0].numpy()
+        inj_chw = result.injected[0].detach().cpu().numpy()
         proc = preprocess_stack(inj_chw, **pp_kwargs)
         x = torch.from_numpy(proc[None]).float().to(device)
         emb, scores = extractor.extract(x)
@@ -328,6 +336,13 @@ def main() -> int:
                     help="Target magnitude for bright injections (default: 19.0)")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--seed", type=int, default=42)
+    # Injection realism flags (FIX 2026-02-16: were previously missing)
+    ap.add_argument("--add-sky-noise", action="store_true", default=False,
+                    help="Add realistic sky noise texture to injected arcs.")
+    ap.add_argument("--add-poisson-noise", action="store_true", default=False,
+                    help="Add Poisson (shot) noise to injected arcs.")
+    ap.add_argument("--gain-e-per-nmgy", type=float, default=150.0,
+                    help="Gain in e-/nmgy for Poisson noise (default: 150)")
     args = ap.parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
@@ -382,6 +397,9 @@ def main() -> int:
         n_samples=args.n_samples, theta_e=args.theta_e,
         target_mag=args.target_mag, beta_frac_range=(0.1, 0.3), seed_offset=0,
         collect_layers=True,
+        add_sky_noise=args.add_sky_noise,
+        add_poisson_noise=args.add_poisson_noise,
+        gain_e_per_nmgy=args.gain_e_per_nmgy,
     )
     print(f"  Done: {emb_b.shape[0]} embeddings, median score={np.median(scores_b):.4f}")
 
@@ -392,6 +410,9 @@ def main() -> int:
         n_samples=args.n_samples, theta_e=args.theta_e,
         target_mag=args.target_mag, beta_frac_range=(0.7, 1.0), seed_offset=10000,
         collect_layers=True,
+        add_sky_noise=args.add_sky_noise,
+        add_poisson_noise=args.add_poisson_noise,
+        gain_e_per_nmgy=args.gain_e_per_nmgy,
     )
     print(f"  Done: {emb_c.shape[0]} embeddings, median score={np.median(scores_c):.4f}")
 
@@ -497,6 +518,9 @@ def main() -> int:
         "n_negatives": int(emb_d.shape[0]),
         "target_mag": args.target_mag,
         "theta_e": args.theta_e,
+        "add_sky_noise": args.add_sky_noise,
+        "add_poisson_noise": args.add_poisson_noise,
+        "gain_e_per_nmgy": args.gain_e_per_nmgy if args.add_poisson_noise else None,
         "linear_probe": {
             "task": "real_tier_a vs inj_low_bf",
             "cv_auc_mean": probe_auc_mean,

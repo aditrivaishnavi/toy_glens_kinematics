@@ -425,12 +425,17 @@ def inject_sis_shear(
         a reasonable order-of-magnitude estimate. This is an approximation;
         real gain varies with depth and band.
 
-    add_sky_noise: if True, add per-band Gaussian noise to the injected arc
-        matching the host cutout's background noise level (measured from the
-        outer sky annulus via MAD). This ensures the arc region has the same
-        noise texture as the rest of the image.  Without this, bright smooth
-        arcs look unnaturally clean against the noisy background -- a visual
-        artefact detectable by both humans and CNNs.
+    add_sky_noise: if True, add per-band Gaussian background-texture noise
+        to the injected arc stamp, with sigma matched to the host cutout's
+        background noise level (measured from the outer sky annulus via MAD).
+        NOTE: This is NOT modelling additional sky photons — the host cutout
+        already contains real sky/read noise. The purpose is empirical
+        texture matching: without it, bright injected arcs appear anomalously
+        smooth against the noisy host background, a visual artefact
+        detectable by both humans and CNNs.  The physically correct arc-flux
+        noise is the Poisson shot noise (add_poisson_noise); this Gaussian
+        layer is an additional texture-matching step.  The paper should
+        describe this as "background-texture matching noise".
         BUG FIX (2026-02-16): previously absent, causing injections to appear
         sharper than real arcs in ground-based imaging.
     """
@@ -560,6 +565,13 @@ def inject_sis_shear(
     # Real arcs contribute shot noise proportional to sqrt(flux * gain).
     # Without this, bright injections are anomalously smooth — a statistical
     # signature detectable by a high-AUC CNN.
+    #
+    # RNG FIX (D06, LLM1 Prompt-18 review Q4.1):  Poisson and background-
+    # texture noise now use the per-injection `rng` generator (seeded from
+    # `seed` above).  Previously these used the GLOBAL torch RNG, which:
+    #   (a) made results non-reproducible across re-runs, and
+    #   (b) broke the "paired comparison" claim because two conditions sharing
+    #       the same seed would draw different noise realisations.
     if add_poisson_noise and gain_e_per_nmgy > 0:
         # Convert arc flux to photo-electrons, draw exact Poisson, convert back.
         # torch.poisson handles all lambda correctly:
@@ -572,13 +584,23 @@ def inject_sis_shear(
         # the MAD by ~2.5x and compressing the normalized arc signal by the
         # same factor. The effect was catastrophic for faint-arc detection.
         arc_electrons = (injection.clamp(min=0.0) * gain_e_per_nmgy)
-        noisy_electrons = torch.poisson(arc_electrons)
+        noisy_electrons = torch.poisson(arc_electrons, generator=rng)
         noise_electrons = noisy_electrons - arc_electrons
         injection = injection + noise_electrons / gain_e_per_nmgy
 
-    # Optionally add per-band Gaussian sky/read noise to the arc so it has
-    # the same noise texture as the host background.  Sigma is estimated per
-    # band from the outer sky annulus of the host cutout (robust MAD).
+    # Optionally add per-band Gaussian background-texture noise to the arc
+    # stamp so the injection region has the same noise texture as the host.
+    # Sigma is estimated per band from the outer sky annulus of the host
+    # cutout (robust MAD estimator).
+    #
+    # IMPORTANT: This is NOT physically modelling additional sky photons.
+    # The host cutout already contains all real sky/read noise.  The purpose
+    # is to prevent the CNN from detecting injections via anomalously smooth
+    # arc regions -- a visual artefact seen during manual inspection
+    # (2026-02-16).  Physically, the correct arc-flux noise is the Poisson
+    # term above; this Gaussian layer is an empirical texture-matching step.
+    # The paper should describe it as "background-texture matching noise",
+    # not literal sky noise addition.
     if add_sky_noise:
         host_chw_np = host_nmgy_hwc.permute(2, 0, 1).cpu().numpy()
         for band_idx in range(3):
@@ -587,7 +609,10 @@ def inject_sis_shear(
                 sky_r_inner_pix=35, sky_r_outer_pix=48,
             )
             if np.isfinite(sigma) and sigma > 0:
-                noise = torch.randn_like(injection[band_idx]) * float(sigma)
+                noise = torch.randn(
+                    injection[band_idx].shape,
+                    generator=rng, device=device, dtype=dtype,
+                ) * float(sigma)
                 injection[band_idx] = injection[band_idx] + noise
 
     host_chw = host_nmgy_hwc.permute(2, 0, 1)
