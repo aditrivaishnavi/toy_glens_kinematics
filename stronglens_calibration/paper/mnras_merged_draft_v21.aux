@@ -1,0 +1,127 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\citation{Treu2010,Collett2015}
+\citation{Collett2015,Sonnenfeld2022}
+\citation{Gavazzi2014,Jacobs2019,CollettCunnington2022}
+\newlabel{firstpage}{{}{1}{}{Doc-Start}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{1}{section.1}\protected@file@percent }
+\citation{Petrillo2017,Lanusse2018,Jacobs2019,Metcalf2019,Huang2020,Canameras2021,Savary2022,Stein2022,Rojas2022,Storfer2024}
+\citation{CollettCunnington2022,Herle2024}
+\citation{Herle2024}
+\citation{Canameras2021,Canameras2024}
+\citation{Canameras2024}
+\citation{Dey2019}
+\@writefile{toc}{\contentsline {section}{\numberline {2}Data and model}{2}{section.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}DESI Legacy Imaging Survey DR10}{2}{subsection.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}Training data}{2}{subsection.2.2}\protected@file@percent }
+\citation{TanLe2021}
+\citation{Kormann1994}
+\citation{Keeton2001}
+\citation{Sersic1968}
+\citation{CiottiBertin1999}
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Training set composition. All counts are unique base cutouts. Geometric augmentation (horizontal flip, vertical flip, random $90\hbox {$^\circ $}$ rotation) is applied stochastically during training and does not change the manifest size.}}{3}{table.1}\protected@file@percent }
+\newlabel{tab:dataset}{{1}{3}{Training set composition. All counts are unique base cutouts. Geometric augmentation (horizontal flip, vertical flip, random $90\degr $ rotation) is applied stochastically during training and does not change the manifest size}{table.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.3}Spatial integrity}{3}{subsection.2.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.4}Architecture and training}{3}{subsection.2.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.5}Preprocessing}{3}{subsection.2.5}\protected@file@percent }
+\newlabel{sec:preprocessing}{{2.5}{3}{}{subsection.2.5}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {3}Injection pipeline}{3}{section.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Lens model}{3}{subsection.3.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Source model}{3}{subsection.3.2}\protected@file@percent }
+\citation{GrahamDriver2005}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Ray-tracing and flux calibration}{4}{subsection.3.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}Poisson noise}{4}{subsection.3.4}\protected@file@percent }
+\newlabel{eq:poisson}{{2}{4}{}{equation.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.5}Host galaxies and injection procedure}{4}{subsection.3.5}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Recall on 112 spectroscopically confirmed (Tier-A) lenses in the validation split. Wilson 95~per cent confidence intervals account for the binomial sampling distribution. FPR-derived thresholds are calibrated on 50\,000 validation negatives in the grid experiments; the empirical FPR on the 3000 negatives scored here is shown in parentheses.}}{4}{table.2}\protected@file@percent }
+\newlabel{tab:tierA}{{2}{4}{Recall on 112 spectroscopically confirmed (Tier-A) lenses in the validation split. Wilson 95~per cent confidence intervals account for the binomial sampling distribution. FPR-derived thresholds are calibrated on 50\,000 validation negatives in the grid experiments; the empirical FPR on the 3000 negatives scored here is shown in parentheses}{table.2}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {4}The injection realism gap}{4}{section.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Real lens performance}{4}{subsection.4.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Injection completeness is unexpectedly low}{4}{subsection.4.2}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Injection-recovery completeness over the full grid ($110\,000$ injections across 220 non-empty cells) at multiple detection thresholds. The Poisson column adds shot noise at gain $= 150\tmspace  +\thickmuskip {.2777em}\mathrm  {e^{-}\tmspace  +\thickmuskip {.2777em}nmgy^{-1}}$.}}{5}{table.3}\protected@file@percent }
+\newlabel{tab:thresholds}{{3}{5}{Injection-recovery completeness over the full grid ($110\,000$ injections across 220 non-empty cells) at multiple detection thresholds. The Poisson column adds shot noise at gain $= 150\;\mathrm {e^{-}\;nmgy^{-1}}$}{table.3}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Injection-recovery completeness by Einstein radius (no Poisson, $p > 0.3$). Each $\theta _{\rm  E}$ bin contains 10\,000 injections across all PSF and depth cells.}}{5}{table.4}\protected@file@percent }
+\newlabel{tab:thetaE}{{4}{5}{Injection-recovery completeness by Einstein radius (no Poisson, $p > 0.3$). Each $\theta _{\rm E}$ bin contains 10\,000 injections across all PSF and depth cells}{table.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}The CNN distinguishes real lenses from injections}{5}{subsection.4.3}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Injection-recovery completeness at $p > 0.3$. \textbf  {Left:} Completeness versus Einstein radius (no Poisson baseline), showing peak completeness at $\theta _{\rm  E} \approx 2.5\tmspace  +\thickmuskip {.2777em}\mathrm  {arcsec}$ with decline at both small (unresolved) and large (spread) radii. Error bars show 95~per cent Wilson confidence intervals. \textbf  {Right:} Completeness versus lensed apparent magnitude in four bins ($18$--$20$, $20$--$22$, $22$--$24$, $24$--$27$), with both no-Poisson (blue) and Poisson (orange) conditions. Data from the corrected-prior re-evaluation (D06) described in Data Availability.}}{6}{figure.1}\protected@file@percent }
+\newlabel{fig:completeness}{{1}{6}{Injection-recovery completeness at $p > 0.3$. \textbf {Left:} Completeness versus Einstein radius (no Poisson baseline), showing peak completeness at $\theta _{\rm E} \approx 2.5\;\mathrm {arcsec}$ with decline at both small (unresolved) and large (spread) radii. Error bars show 95~per cent Wilson confidence intervals. \textbf {Right:} Completeness versus lensed apparent magnitude in four bins ($18$--$20$, $20$--$22$, $22$--$24$, $24$--$27$), with both no-Poisson (blue) and Poisson (orange) conditions. Data from the corrected-prior re-evaluation (D06) described in Data Availability}{figure.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Testing the noise texture hypothesis}{6}{subsection.4.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.4.1}Prediction from first principles}{6}{subsubsection.4.4.1}\protected@file@percent }
+\newlabel{sec:prediction}{{4.4.1}{6}{}{subsubsection.4.4.1}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Two-panel UMAP projection of CNN penultimate-layer (1280-dimensional) embeddings. \textbf  {Left:} Points coloured by category --- real Tier-A (gold), low-$\beta _{\rm  frac}$ injections (blue), high-$\beta _{\rm  frac}$ injections (cyan), negatives (grey). \textbf  {Right:} Same projection coloured by CNN score ($p$, continuous colourbar from 0 to 1). UMAP computed with \texttt  {n\_neighbors=30}, \texttt  {min\_dist=0.3}, \texttt  {metric=cosine}, \texttt  {random\_state=42}. Colourbar: \texttt  {viridis} (right panel).}}{7}{figure.2}\protected@file@percent }
+\newlabel{fig:umap}{{2}{7}{Two-panel UMAP projection of CNN penultimate-layer (1280-dimensional) embeddings. \textbf {Left:} Points coloured by category --- real Tier-A (gold), low-$\beta _{\rm frac}$ injections (blue), high-$\beta _{\rm frac}$ injections (cyan), negatives (grey). \textbf {Right:} Same projection coloured by CNN score ($p$, continuous colourbar from 0 to 1). UMAP computed with \texttt {n\_neighbors=30}, \texttt {min\_dist=0.3}, \texttt {metric=cosine}, \texttt {random\_state=42}. Colourbar: \texttt {viridis} (right panel)}{figure.2}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces Linear probe and feature diagnostics. Uncertainties ($\pm $) denote the standard deviation across cross-validation folds. Blocks 0--3 have $n = 112 > \mathrm  {dim}$ (reliable); deeper layers ($\geq $~block~4, dim~$\geq 128$) are numerically unstable ($n < \mathrm  {dim}$) and omitted.}}{7}{table.5}\protected@file@percent }
+\newlabel{tab:probe}{{5}{7}{Linear probe and feature diagnostics. Uncertainties ($\pm $) denote the standard deviation across cross-validation folds. Blocks 0--3 have $n = 112 > \mathrm {dim}$ (reliable); deeper layers ($\geq $~block~4, dim~$\geq 128$) are numerically unstable ($n < \mathrm {dim}$) and omitted}{table.5}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.4.2}Bright-arc controlled experiment}{7}{subsubsection.4.4.2}\protected@file@percent }
+\newlabel{sec:brightarc}{{4.4.2}{7}{}{subsubsection.4.4.2}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces CNN score distributions. Histograms (50 bins, log-scaled $y$-axis) for: real Tier-A lenses (gold, $n = 112$, median $= 0.995$), low-$\beta _{\rm  frac}$ bright injections (blue, $n = 500$, median $= 0.191$), and validation negatives (grey, $n = 500$, median $= 1.5 \times 10^{-5}$). Vertical lines at $p = 0.3$, 0.806, and 0.995 mark the detection thresholds.}}{8}{figure.3}\protected@file@percent }
+\newlabel{fig:scores}{{3}{8}{CNN score distributions. Histograms (50 bins, log-scaled $y$-axis) for: real Tier-A lenses (gold, $n = 112$, median $= 0.995$), low-$\beta _{\rm frac}$ bright injections (blue, $n = 500$, median $= 0.191$), and validation negatives (grey, $n = 500$, median $= 1.5 \times 10^{-5}$). Vertical lines at $p = 0.3$, 0.806, and 0.995 mark the detection thresholds}{figure.3}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {6}{\ignorespaces Paired per-injection Poisson analysis. Each injection pair shares identical host, geometry, and RNG seed; only Poisson noise differs. $N = 200$ per bin. ``Gained'' and ``Lost'' count injections crossing the $p = 0.3$ threshold upward or downward, respectively. Sign-test $p$-value from a two-sided binomial test on gained vs lost. Boldface: $p < 0.01$.}}{8}{table.6}\protected@file@percent }
+\newlabel{tab:paired_delta}{{6}{8}{Paired per-injection Poisson analysis. Each injection pair shares identical host, geometry, and RNG seed; only Poisson noise differs. $N = 200$ per bin. ``Gained'' and ``Lost'' count injections crossing the $p = 0.3$ threshold upward or downward, respectively. Sign-test $p$-value from a two-sided binomial test on gained vs lost. Boldface: $p < 0.01$}{table.6}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.4.3}Gain sweep validation}{8}{subsubsection.4.4.3}\protected@file@percent }
+\newlabel{sec:gainsweep}{{4.4.3}{8}{}{subsubsection.4.4.3}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.4.4}Grid-level confirmation and $\theta _{\rm  E}$ dependence}{8}{subsubsection.4.4.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.4.5}The Poisson--clipping interaction}{8}{subsubsection.4.4.5}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces Manually selected illustrative examples of real strong lenses and parametric injections, drawn from separate datasets with no pairing or brightness matching. \textbf  {(a)}~Eight Tier-A validation lenses spanning the full magnitude range ($r = 16.3$--$21.1$), sorted by $r$-band magnitude. Four are high-confidence detections ($p > 0.9$), two are moderate ($p \approx 0.47$--$0.49$), and two are missed by the CNN ($p < 0.3$), illustrating that the model is not infallible on real lenses. \textbf  {(b)}~Eight S\'{e}rsic injections from the D06 grid (no Poisson), spanning three Einstein-radius regimes: $\theta _{\rm  E} = 0.75\tmspace  +\thickmuskip {.2777em}\mathrm  {arcsec}$ (compact, 3 examples), $1.50$ (medium, 3), and $2.50$ (extended, 2). Seven of eight are rejected ($p < 0.05$); one extended injection at $\theta _{\rm  E} = 2.50$ is detected ($p = 0.69$), consistent with the peak completeness at large $\theta _{\rm  E}$ (Table~\ref {tab:thetaE}). Even this detected injection scores substantially below the Tier-A median ($0.995$). Each thumbnail shows the CNN detection probability~$p$ and total $r$-band magnitude; the selected IDs and metadata are provided in the supplementary audit file. Cutouts are $101 \times 101$~pixels in $grz$.}}{9}{figure.4}\protected@file@percent }
+\newlabel{fig:comparison}{{4}{9}{Manually selected illustrative examples of real strong lenses and parametric injections, drawn from separate datasets with no pairing or brightness matching. \textbf {(a)}~Eight Tier-A validation lenses spanning the full magnitude range ($r = 16.3$--$21.1$), sorted by $r$-band magnitude. Four are high-confidence detections ($p > 0.9$), two are moderate ($p \approx 0.47$--$0.49$), and two are missed by the CNN ($p < 0.3$), illustrating that the model is not infallible on real lenses. \textbf {(b)}~Eight S\'{e}rsic injections from the D06 grid (no Poisson), spanning three Einstein-radius regimes: $\theta _{\rm E} = 0.75\;\mathrm {arcsec}$ (compact, 3 examples), $1.50$ (medium, 3), and $2.50$ (extended, 2). Seven of eight are rejected ($p < 0.05$); one extended injection at $\theta _{\rm E} = 2.50$ is detected ($p = 0.69$), consistent with the peak completeness at large $\theta _{\rm E}$ (Table~\ref {tab:thetaE}). Even this detected injection scores substantially below the Tier-A median ($0.995$). Each thumbnail shows the CNN detection probability~$p$ and total $r$-band magnitude; the selected IDs and metadata are provided in the supplementary audit file. Cutouts are $101 \times 101$~pixels in $grz$}{figure.4}{}}
+\citation{Herle2024}
+\citation{Canameras2024}
+\citation{EuclidPrepXXXIII}
+\citation{Huang2020}
+\citation{Jacobs2019}
+\@writefile{lot}{\contentsline {table}{\numberline {7}{\ignorespaces Bright-arc detection rates at $p>0.3$. All: $\theta _{\rm  E}=1.5\tmspace  +\thickmuskip {.2777em}\mathrm  {arcsec}$, $N=200$ per mag bin, seed$\,=42$, $\beta _{\rm  frac}\in [0.10,0.40]$ unless noted. The gain~$= 10^{12}$ column matches the baseline at every bin (within 0.5~pp $= 1/N$), confirming the Poisson implementation is correct. Boldface: Poisson detection exceeds baseline.}}{10}{table.7}\protected@file@percent }
+\newlabel{tab:brightarc}{{7}{10}{Bright-arc detection rates at $p>0.3$. All: $\theta _{\rm E}=1.5\;\mathrm {arcsec}$, $N=200$ per mag bin, seed$\,=42$, $\beta _{\rm frac}\in [0.10,0.40]$ unless noted. The gain~$= 10^{12}$ column matches the baseline at every bin (within 0.5~pp $= 1/N$), confirming the Poisson implementation is correct. Boldface: Poisson detection exceeds baseline}{table.7}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces Detection rate ($p > 0.3$) versus source apparent magnitude for all experimental conditions. Magnitude bins correspond to the unlensed source magnitude; after gravitational magnification the observed arc is typically $1$--$2.5$~mag brighter. \textbf  {Lines:} baseline (blue solid), Poisson gain$\,=\,$150 (orange dashed), clip$\,=\,$20 (green dotted), Poisson + clip\,20 (red dash-dot), unrestricted $\beta _{\rm  frac}$ (purple thin solid), gain$\,=\,10^{12}$ control (blue circles, overlaid on baseline). The gain$\,=\,10^{12}$ line overlays the baseline within $0.5$~pp ($= 1/N$), confirming the Poisson implementation is correct. Error bars: 95~per cent Wilson CIs ($n = 200$). A horizontal dashed line at $89.3$~per cent marks the Tier-A real-lens recall. Data from the verified re-evaluation described in Data Availability.}}{10}{figure.5}\protected@file@percent }
+\newlabel{fig:brightarc}{{5}{10}{Detection rate ($p > 0.3$) versus source apparent magnitude for all experimental conditions. Magnitude bins correspond to the unlensed source magnitude; after gravitational magnification the observed arc is typically $1$--$2.5$~mag brighter. \textbf {Lines:} baseline (blue solid), Poisson gain$\,=\,$150 (orange dashed), clip$\,=\,$20 (green dotted), Poisson + clip\,20 (red dash-dot), unrestricted $\beta _{\rm frac}$ (purple thin solid), gain$\,=\,10^{12}$ control (blue circles, overlaid on baseline). The gain$\,=\,10^{12}$ line overlays the baseline within $0.5$~pp ($= 1/N$), confirming the Poisson implementation is correct. Error bars: 95~per cent Wilson CIs ($n = 200$). A horizontal dashed line at $89.3$~per cent marks the Tier-A real-lens recall. Data from the verified re-evaluation described in Data Availability}{figure.5}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {8}{\ignorespaces $\theta _{\rm  E}$-stratified Poisson effect on grid completeness ($p > 0.3$, threshold type: fixed, source mag: all). $N = 10\,000$ injections per $\theta _{\rm  E}$ bin per condition. Boldface rows: Poisson increases completeness (texture mechanism dominates). The crossover between the positive (texture) and negative (degradation) regimes occurs between $\theta _{\rm  E} = 1.25$ and $1.50\tmspace  +\thickmuskip {.2777em}\mathrm  {arcsec}$.}}{10}{table.8}\protected@file@percent }
+\newlabel{tab:theta_e_poisson}{{8}{10}{$\theta _{\rm E}$-stratified Poisson effect on grid completeness ($p > 0.3$, threshold type: fixed, source mag: all). $N = 10\,000$ injections per $\theta _{\rm E}$ bin per condition. Boldface rows: Poisson increases completeness (texture mechanism dominates). The crossover between the positive (texture) and negative (degradation) regimes occurs between $\theta _{\rm E} = 1.25$ and $1.50\;\mathrm {arcsec}$}{table.8}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.4.6}Interpretation: the barrier is morphological}{10}{subsubsection.4.4.6}\protected@file@percent }
+\citation{Herle2024}
+\citation{Canameras2024}
+\citation{EuclidPrepXXXIII}
+\citation{Herle2024}
+\@writefile{toc}{\contentsline {section}{\numberline {5}Discussion}{11}{section.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Comparison with published results}{11}{subsection.5.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}The linear probe as a realism gate}{11}{subsection.5.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Implications for lens population studies}{11}{subsection.5.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Limitations}{11}{subsection.5.4}\protected@file@percent }
+\citation{Canameras2024}
+\@writefile{lot}{\contentsline {table}{\numberline {9}{\ignorespaces Comparison with published CNN strong lens finder results.}}{12}{table.9}\protected@file@percent }
+\newlabel{tab:published}{{9}{12}{Comparison with published CNN strong lens finder results}{table.9}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.5}Future directions}{12}{subsection.5.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6}Conclusions}{12}{section.6}\protected@file@percent }
+\bibcite{Canameras2021}{{1}{2021}{{Ca\~{n}ameras et al.}}{{}}}
+\bibcite{Canameras2024}{{2}{2024}{{Ca\~{n}ameras et al.}}{{}}}
+\bibcite{CiottiBertin1999}{{3}{1999}{{Ciotti \& Bertin}}{{}}}
+\bibcite{Collett2015}{{4}{2015}{{Collett}}{{}}}
+\bibcite{CollettCunnington2022}{{5}{2022}{{Collett \& Cunnington}}{{}}}
+\bibcite{Dey2019}{{6}{2019}{{Dey et al.}}{{}}}
+\bibcite{EuclidPrepXXXIII}{{7}{2024}{{Euclid Collaboration}}{{}}}
+\bibcite{Gavazzi2014}{{8}{2014}{{Gavazzi et al.}}{{}}}
+\bibcite{GrahamDriver2005}{{9}{2005}{{Graham \& Driver}}{{}}}
+\bibcite{Herle2024}{{10}{2024}{{Herle et al.}}{{}}}
+\bibcite{Huang2020}{{11}{2020}{{Huang et al.}}{{}}}
+\bibcite{Jacobs2019}{{12}{2019}{{Jacobs et al.}}{{}}}
+\bibcite{Keeton2001}{{13}{2001}{{Keeton}}{{}}}
+\bibcite{Kormann1994}{{14}{1994}{{Kormann, Schneider \& Bartelmann}}{{}}}
+\bibcite{Lanusse2018}{{15}{2018}{{Lanusse et al.}}{{}}}
+\bibcite{Metcalf2019}{{16}{2019}{{Metcalf et al.}}{{}}}
+\bibcite{Petrillo2017}{{17}{2017}{{Petrillo et al.}}{{}}}
+\bibcite{Rojas2022}{{18}{2022}{{Rojas et al.}}{{}}}
+\bibcite{Savary2022}{{19}{2022}{{Savary et al.}}{{}}}
+\bibcite{Sersic1968}{{20}{1968}{{S\'{e}rsic}}{{}}}
+\bibcite{Sonnenfeld2022}{{21}{2022}{{Sonnenfeld}}{{}}}
+\bibcite{Stein2022}{{22}{2022}{{Stein et al.}}{{}}}
+\bibcite{Storfer2024}{{23}{2024}{{Storfer et al.}}{{}}}
+\bibcite{TanLe2021}{{24}{2021}{{Tan \& Le}}{{}}}
+\bibcite{Treu2010}{{25}{2010}{{Treu}}{{}}}
+\@writefile{toc}{\contentsline {section}{\numberline {A}Annulus normalisation characterisation}{13}{section.A1}\protected@file@percent }
+\newlabel{app:annulus}{{A}{13}{}{section.A1}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {B}Missed Tier-A lenses}{13}{section.A2}\protected@file@percent }
+\newlabel{app:missed}{{B}{13}{}{section.A2}{}}
+\newlabel{lastpage}{{B}{13}{}{table.A2.1}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {B1}{\ignorespaces The 12 Tier-A lenses missed by the CNN at the $p > 0.3$ detection threshold. Sorted by ascending CNN score. $z_{\rm  lens}$ from the DESI Strong Lensing catalogue cross-matched by position ($< 12\tmspace  +\thickmuskip {.2777em}\mathrm  {arcmin}$ from the brick centre; the large radius reflects the offset between the Legacy Survey brick centre and the lens position within the $\sim \!0.25\tmspace  +\thickmuskip {.2777em}\mathrm  {deg}$ brick, not a positional uncertainty; each association is unique, with at most one catalogue entry per brick). All missed lenses have deflector $r$-band magnitudes $\leq 20$.}}{14}{table.A2.1}\protected@file@percent }
+\newlabel{tab:missed}{{B1}{14}{The 12 Tier-A lenses missed by the CNN at the $p > 0.3$ detection threshold. Sorted by ascending CNN score. $z_{\rm lens}$ from the DESI Strong Lensing catalogue cross-matched by position ($< 12\;\mathrm {arcmin}$ from the brick centre; the large radius reflects the offset between the Legacy Survey brick centre and the lens position within the $\sim \!0.25\;\mathrm {deg}$ brick, not a positional uncertainty; each association is unique, with at most one catalogue entry per brick). All missed lenses have deflector $r$-band magnitudes $\leq 20$}{table.A2.1}{}}
+\gdef \@abspage@last{14}

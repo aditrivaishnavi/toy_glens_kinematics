@@ -1,0 +1,136 @@
+\contentsline {part}{I\hspace {1em}Background You Need}{6}{part.1}%
+\contentsline {section}{\numberline {1}Chapter 1: Gravitational Lensing from Scratch}{6}{section.1}%
+\contentsline {subsection}{\numberline {1.1}What Gravity Does to Light}{6}{subsection.1.1}%
+\contentsline {subsection}{\numberline {1.2}Strong, Weak, and Micro Lensing}{6}{subsection.1.2}%
+\contentsline {subsection}{\numberline {1.3}The Einstein Radius}{6}{subsection.1.3}%
+\contentsline {subsection}{\numberline {1.4}What Real Strong Lenses Look Like}{7}{subsection.1.4}%
+\contentsline {subsection}{\numberline {1.5}Why Massive Elliptical Galaxies Are the Best Lenses}{7}{subsection.1.5}%
+\contentsline {subsection}{\numberline {1.6}Source Plane and Image Plane}{7}{subsection.1.6}%
+\contentsline {section}{\numberline {2}Chapter 2: Why Astronomers Care About Finding Lenses}{7}{section.2}%
+\contentsline {subsection}{\numberline {2.1}Population Statistics}{8}{subsection.2.1}%
+\contentsline {subsection}{\numberline {2.2}Connection to Dark Matter, Cosmology, and Galaxy Evolution}{8}{subsection.2.2}%
+\contentsline {subsection}{\numberline {2.3}The Selection Function Concept}{8}{subsection.2.3}%
+\contentsline {subsection}{\numberline {2.4}The Injection-Recovery Paradigm}{8}{subsection.2.4}%
+\contentsline {subsection}{\numberline {2.5}The Critical Assumption}{8}{subsection.2.5}%
+\contentsline {section}{\numberline {3}Chapter 3: How CNNs See Images}{8}{section.3}%
+\contentsline {subsection}{\numberline {3.1}Neural Networks}{9}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}Convolutional Neural Networks}{9}{subsection.3.2}%
+\contentsline {subsection}{\numberline {3.3}Hierarchy of Features}{9}{subsection.3.3}%
+\contentsline {subsection}{\numberline {3.4}EfficientNetV2-S}{9}{subsection.3.4}%
+\contentsline {subsection}{\numberline {3.5}Transfer Learning}{9}{subsection.3.5}%
+\contentsline {subsection}{\numberline {3.6}Embeddings and Feature Space}{9}{subsection.3.6}%
+\contentsline {subsection}{\numberline {3.7}Binary Classification}{9}{subsection.3.7}%
+\contentsline {section}{\numberline {4}Chapter 4: Statistics Toolkit}{10}{section.4}%
+\contentsline {subsection}{\numberline {4.1}The ROC Curve and AUC}{10}{subsection.4.1}%
+\contentsline {subsubsection}{\numberline {4.1.1}What Is a Classifier Threshold?}{10}{subsubsection.4.1.1}%
+\contentsline {subsubsection}{\numberline {4.1.2}True Positive Rate and False Positive Rate}{10}{subsubsection.4.1.2}%
+\contentsline {subsubsection}{\numberline {4.1.3}The ROC Curve}{11}{subsubsection.4.1.3}%
+\contentsline {subsubsection}{\numberline {4.1.4}AUC: Area Under the Curve}{11}{subsubsection.4.1.4}%
+\contentsline {subsubsection}{\numberline {4.1.5}Intuitive Interpretation of AUC}{11}{subsubsection.4.1.5}%
+\contentsline {subsection}{\numberline {4.2}Logistic Regression as a ``Linear Probe''}{12}{subsection.4.2}%
+\contentsline {subsubsection}{\numberline {4.2.1}What Is Logistic Regression?}{12}{subsubsection.4.2.1}%
+\contentsline {subsubsection}{\numberline {4.2.2}Why ``Linear''?}{12}{subsubsection.4.2.2}%
+\contentsline {subsubsection}{\numberline {4.2.3}Using It as a Probe}{12}{subsubsection.4.2.3}%
+\contentsline {subsection}{\numberline {4.3}Cross-Validation (k-Fold)}{12}{subsection.4.3}%
+\contentsline {subsubsection}{\numberline {4.3.1}Why Not Test on Training Data?}{12}{subsubsection.4.3.1}%
+\contentsline {subsubsection}{\numberline {4.3.2}The k-Fold Procedure}{12}{subsubsection.4.3.2}%
+\contentsline {subsubsection}{\numberline {4.3.3}In Our Paper}{13}{subsubsection.4.3.3}%
+\contentsline {subsection}{\numberline {4.4}Confidence Intervals}{13}{subsection.4.4}%
+\contentsline {subsubsection}{\numberline {4.4.1}Wilson Score Interval for Proportions}{13}{subsubsection.4.4.1}%
+\contentsline {subsubsection}{\numberline {4.4.2}Bootstrap Confidence Intervals for AUC}{13}{subsubsection.4.4.2}%
+\contentsline {subsection}{\numberline {4.5}Permutation Tests}{14}{subsection.4.5}%
+\contentsline {subsubsection}{\numberline {4.5.1}The Logic}{14}{subsubsection.4.5.1}%
+\contentsline {subsubsection}{\numberline {4.5.2}The Procedure}{14}{subsubsection.4.5.2}%
+\contentsline {subsubsection}{\numberline {4.5.3}Why Permutation Tests Are Powerful}{14}{subsubsection.4.5.3}%
+\contentsline {subsection}{\numberline {4.6}Fr\'echet Distance}{14}{subsection.4.6}%
+\contentsline {subsection}{\numberline {4.7}Understanding p-Values}{15}{subsection.4.7}%
+\contentsline {subsection}{\numberline {4.8}Comparing Two Proportions: The Two-Proportion z-Test}{15}{subsection.4.8}%
+\contentsline {subsection}{\numberline {4.9}The Sign Test}{15}{subsection.4.9}%
+\contentsline {section}{\numberline {5}Chapter 5: The DESI Legacy Imaging Survey}{16}{section.5}%
+\contentsline {subsection}{\numberline {5.1}What Is DESI?}{16}{subsection.5.1}%
+\contentsline {subsection}{\numberline {5.2}Data Release 10 (DR10)}{16}{subsection.5.2}%
+\contentsline {subsection}{\numberline {5.3}The Three Optical Bands}{16}{subsection.5.3}%
+\contentsline {subsection}{\numberline {5.4}Pixel Scale: What Does 0.262 Arcsec Mean?}{16}{subsection.5.4}%
+\contentsline {subsection}{\numberline {5.5}Depth: How Faint Can We See?}{17}{subsection.5.5}%
+\contentsline {subsection}{\numberline {5.6}Seeing: Atmospheric Blurring}{17}{subsection.5.6}%
+\contentsline {subsection}{\numberline {5.7}Nanomaggies: The Flux Unit}{17}{subsection.5.7}%
+\contentsline {subsection}{\numberline {5.8}Cutouts: Our 101$\times $101 Pixel Images}{17}{subsection.5.8}%
+\contentsline {subsection}{\numberline {5.9}Survey Coverage}{17}{subsection.5.9}%
+\contentsline {section}{\numberline {6}Chapter 6: Prior Work This Paper Builds On}{19}{section.6}%
+\contentsline {subsection}{\numberline {6.1}Herle et al.\ (2024): Biases in CNN Detection}{19}{subsection.6.1}%
+\contentsline {subsection}{\numberline {6.2}Canameras et al.\ (2024, HOLISMOKES XI): Real-Galaxy Sources}{19}{subsection.6.2}%
+\contentsline {subsection}{\numberline {6.3}Collett \& Cunnington (2022): The Injection-Recovery Framework}{19}{subsection.6.3}%
+\contentsline {subsection}{\numberline {6.4}Huang et al.\ (2020): The DECaLS Lens Catalog}{20}{subsection.6.4}%
+\contentsline {subsection}{\numberline {6.5}The Gap Our Paper Fills}{20}{subsection.6.5}%
+\contentsline {part}{II\hspace {1em}What We Did}{20}{part.2}%
+\contentsline {section}{\numberline {7}Chapter 7: Our Data and Model}{21}{section.7}%
+\contentsline {subsection}{\numberline {7.1}The Training Set: 451,681 Cutouts}{21}{subsection.7.1}%
+\contentsline {subsection}{\numberline {7.2}Positive Examples: Tier-A and Tier-B Lenses}{21}{subsection.7.2}%
+\contentsline {subsubsection}{\numberline {7.2.1}Tier-A Positives: Spectroscopically Confirmed}{21}{subsubsection.7.2.1}%
+\contentsline {subsubsection}{\numberline {7.2.2}Tier-B Positives: Visual Candidates}{21}{subsubsection.7.2.2}%
+\contentsline {subsection}{\numberline {7.3}Negative Examples: Non-Lens Galaxies}{22}{subsection.7.3}%
+\contentsline {subsection}{\numberline {7.4}Class Imbalance: One Lens per 93 Non-Lenses}{22}{subsection.7.4}%
+\contentsline {subsection}{\numberline {7.5}Spatial Integrity: Why HEALPix Matters}{22}{subsection.7.5}%
+\contentsline {subsection}{\numberline {7.6}Two-Phase Training}{22}{subsection.7.6}%
+\contentsline {subsection}{\numberline {7.7}Augmentation: Flip and Rotate}{22}{subsection.7.7}%
+\contentsline {subsection}{\numberline {7.8}Preprocessing: \texttt {raw\_robust} Mode}{23}{subsection.7.8}%
+\contentsline {section}{\numberline {8}Chapter 8: The Injection Pipeline}{24}{section.8}%
+\contentsline {subsection}{\numberline {8.1}The Goal}{24}{subsection.8.1}%
+\contentsline {subsection}{\numberline {8.2}The Lens Model: Singular Isothermal Ellipsoid (SIE)}{24}{subsection.8.2}%
+\contentsline {subsection}{\numberline {8.3}The Source Model: S\'ersic Profile}{24}{subsection.8.3}%
+\contentsline {subsubsection}{\numberline {8.3.1}Why S\'ersic Is ``Too Smooth''}{25}{subsubsection.8.3.1}%
+\contentsline {subsection}{\numberline {8.4}Source Position: $\beta _{\mathrm {frac}}$}{25}{subsection.8.4}%
+\contentsline {subsection}{\numberline {8.5}Ray-Tracing: From Source to Image}{25}{subsection.8.5}%
+\contentsline {subsection}{\numberline {8.6}PSF Convolution}{25}{subsection.8.6}%
+\contentsline {subsection}{\numberline {8.7}Flux Calibration}{26}{subsection.8.7}%
+\contentsline {subsection}{\numberline {8.8}Host Galaxies}{26}{subsection.8.8}%
+\contentsline {subsection}{\numberline {8.9}The Pipeline in One Picture}{26}{subsection.8.9}%
+\contentsline {subsection}{\numberline {8.10}Summary}{26}{subsection.8.10}%
+\contentsline {section}{\numberline {9}Chapter 9: Results---The Gap}{27}{section.9}%
+\contentsline {subsection}{\numberline {9.1}Real Lens Performance}{27}{subsection.9.1}%
+\contentsline {subsection}{\numberline {9.2}Injection Completeness}{27}{subsection.9.2}%
+\contentsline {subsection}{\numberline {9.3}The Brightness-Matched Comparison}{27}{subsection.9.3}%
+\contentsline {subsection}{\numberline {9.4}The Linear Probe: The Paper's Key Diagnostic}{27}{subsection.9.4}%
+\contentsline {subsection}{\numberline {9.5}The Tier-A vs.\ Tier-B Control Probe}{28}{subsection.9.5}%
+\contentsline {subsection}{\numberline {9.6}The Bounding Argument}{28}{subsection.9.6}%
+\contentsline {subsection}{\numberline {9.7}Fr\'echet Distances Layer by Layer}{28}{subsection.9.7}%
+\contentsline {subsection}{\numberline {9.8}Visual Summaries}{29}{subsection.9.8}%
+\contentsline {subsection}{\numberline {9.9}What the Gap Means}{29}{subsection.9.9}%
+\contentsline {section}{\numberline {10}Chapter 10: The Poisson Noise Experiment}{29}{section.10}%
+\contentsline {subsection}{\numberline {10.1}The Hypothesis}{30}{subsection.10.1}%
+\contentsline {subsection}{\numberline {10.2}Shot Noise: What It Is and Why It Matters}{30}{subsection.10.2}%
+\contentsline {subsection}{\numberline {10.3}The Photoelectron Budget: A Worked Example}{30}{subsection.10.3}%
+\contentsline {subsubsection}{\numberline {10.3.1}Lensed Magnitude 21}{30}{subsubsection.10.3.1}%
+\contentsline {subsubsection}{\numberline {10.3.2}Lensed Magnitude 22}{30}{subsubsection.10.3.2}%
+\contentsline {subsubsection}{\numberline {10.3.3}Lensed Magnitude 23}{31}{subsubsection.10.3.3}%
+\contentsline {subsection}{\numberline {10.4}The Paired Experimental Design}{31}{subsection.10.4}%
+\contentsline {subsection}{\numberline {10.5}The Surprise: Regime-Dependent Results}{31}{subsection.10.5}%
+\contentsline {subsection}{\numberline {10.6}The Dual Mechanism Interpretation}{31}{subsection.10.6}%
+\contentsline {subsection}{\numberline {10.7}The $\theta _E$ Dependence}{32}{subsection.10.7}%
+\contentsline {subsection}{\numberline {10.8}Gain Sweep Control}{32}{subsection.10.8}%
+\contentsline {subsection}{\numberline {10.9}The Poisson-Clipping Interaction}{32}{subsection.10.9}%
+\contentsline {subsection}{\numberline {10.10}Conclusion}{32}{subsection.10.10}%
+\contentsline {section}{\numberline {11}Chapter 11: The Permutation Test and Bootstrap}{34}{section.11}%
+\contentsline {subsection}{\numberline {11.1}Why We Did This}{34}{subsection.11.1}%
+\contentsline {subsection}{\numberline {11.2}The Permutation Test}{34}{subsection.11.2}%
+\contentsline {subsection}{\numberline {11.3}Results}{34}{subsection.11.3}%
+\contentsline {subsection}{\numberline {11.4}The Bootstrap Confidence Interval}{35}{subsection.11.4}%
+\contentsline {subsection}{\numberline {11.5}What This Proves}{35}{subsection.11.5}%
+\contentsline {part}{III\hspace {1em}What It Means}{36}{part.3}%
+\contentsline {section}{\numberline {12}Chapter 12: Discussion and Significance}{36}{section.12}%
+\contentsline {subsection}{\numberline {12.1}How Our Work Relates to Prior Papers}{36}{subsection.12.1}%
+\contentsline {subsubsection}{\numberline {12.1.1}Herle et al.\ (2024)}{36}{subsubsection.12.1.1}%
+\contentsline {subsubsection}{\numberline {12.1.2}Canameras et al.\ (2024, HOLISMOKES XI)}{36}{subsubsection.12.1.2}%
+\contentsline {subsubsection}{\numberline {12.1.3}The ``Realism Gate'' Proposal}{36}{subsubsection.12.1.3}%
+\contentsline {subsection}{\numberline {12.2}Implications for Lens Population Studies}{36}{subsection.12.2}%
+\contentsline {subsection}{\numberline {12.3}All Eight Limitations Explained}{37}{subsection.12.3}%
+\contentsline {subsection}{\numberline {12.4}Future Directions}{38}{subsection.12.4}%
+\contentsline {section}{\numberline {13}Chapter 13: How to Defend This Research}{39}{section.13}%
+\contentsline {subsection}{\numberline {13.1}The Four Contributions (Stated Plainly)}{39}{subsection.13.1}%
+\contentsline {subsection}{\numberline {13.2}Anticipated Tough Questions and Answers}{39}{subsection.13.2}%
+\contentsline {subsubsection}{\numberline {13.2.1}``Isn't the AUC just measuring host galaxy differences, not arc morphology?''}{39}{subsubsection.13.2.1}%
+\contentsline {subsubsection}{\numberline {13.2.2}``We already knew S\'ersic was too simple. What's new?''}{39}{subsubsection.13.2.2}%
+\contentsline {subsubsection}{\numberline {13.2.3}``Why didn't you just use real galaxy stamps?''}{39}{subsubsection.13.2.3}%
+\contentsline {subsubsection}{\numberline {13.2.4}``112 lenses isn't enough.''}{39}{subsubsection.13.2.4}%
+\contentsline {subsubsection}{\numberline {13.2.5}``Your Poisson experiment just shows distribution shift, not a real texture effect.''}{40}{subsubsection.13.2.5}%
+\contentsline {subsection}{\numberline {13.3}What We Did NOT Claim (The Importance of Honest Hedging)}{40}{subsection.13.3}%

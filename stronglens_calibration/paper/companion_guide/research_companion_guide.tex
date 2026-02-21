@@ -1,0 +1,272 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{parskip}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\definecolor{gold}{rgb}{0.85,0.65,0.13}
+
+\hypersetup{colorlinks=true, linkcolor=blue!60!black, urlcolor=blue!60!black}
+
+\title{\textbf{Research Companion Guide}\\[6pt]
+\large A Comprehensive Explanation of\\[3pt]
+\emph{A Morphological Barrier: Quantifying the Injection Realism Gap\\for CNN Strong Lens Finders in DESI Legacy Survey DR10}}
+\author{Companion to the research paper (v16)}
+\date{February 2026}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+
+\vspace{1cm}
+\noindent\textbf{What this document is.}
+This is a self-contained guide that explains every aspect of the research paper in accessible language.
+It covers the astrophysics background, the statistical methods, the experimental design, the results,
+and how to defend the work in conversation.
+Every technical term is defined when first used.
+Numbers are cited exactly as they appear in the paper.
+Analogies are used but clearly marked.
+Limitations are stated honestly.
+
+\noindent\textbf{How to use it.}
+Part~I provides background you need before reading the paper.
+Part~II walks through what we did, section by section.
+Part~III explains what it means and how to defend it.
+Each chapter begins with a brief summary of what you will learn.
+
+\newpage
+\tableofcontents
+\newpage
+
+% ====================================================================
+% PART I
+% ====================================================================
+\part{Background You Need}
+
+\section{Chapter 1: Gravitational Lensing from Scratch}
+
+\textit{In this chapter you will learn what gravitational lensing is, why massive galaxies bend light, what the Einstein radius means, and what real strong lenses look like on the sky.}
+
+\subsection{What Gravity Does to Light}
+
+Einstein's theory of general relativity predicts that massive objects curve spacetime. Light rays follow these curved paths, so a massive object between you and a distant source can bend the light and change how and where you see it. In other words, gravity bends light.
+
+This idea was first confirmed during the 1919 solar eclipse. Arthur Eddington measured the apparent positions of stars near the Sun's limb and found their positions shifted by about the amount Einstein predicted. Light from those stars was bent as it passed the Sun on its way to Earth. Gravity really does curve light.
+
+You can picture this like a bowling ball on a trampoline. Rolling a marble past the ball makes its path curve toward the center. Light behaves similarly: its path curves as it passes near massive objects such as stars and galaxies.
+
+\subsection{Strong, Weak, and Micro Lensing}
+
+Not all lensing looks the same. Three regimes matter:
+
+\textbf{Strong lensing} is the regime where the bending is large enough to produce multiple, well-separated images or arcs. Imagine looking at a distant streetlight through the stem of a wine glass: the light can split into several distinct images. Strong lensing works the same way: one background galaxy can appear as two, three, or four separate images, or as arcs and rings.
+
+\textbf{Weak lensing} produces only small distortions---typically a few percent---so you usually cannot see multiple images. Instead, shapes are slightly stretched or sheared. Think of looking through slightly warped glass: things look nearly normal but subtly distorted. Weak lensing is used to measure mass distributions in galaxy clusters and for cosmology.
+
+\textbf{Micro lensing} occurs when the lens is so small (e.g., a star or planet) that you do not resolve separate images. You only see a temporary brightening as the lens moves across the line of sight. It is like a magnifying glass briefly passing in front of a light: you notice the change in brightness rather than multiple images.
+
+This guide focuses on \emph{strong} lensing, where the lens is typically a massive galaxy.
+
+\subsection{The Einstein Radius}
+
+The \textbf{Einstein radius} is a key concept. Imagine a distant galaxy exactly behind a foreground galaxy, along your line of sight. In that perfectly aligned case, the background galaxy would appear as a ring around the lens. The angular radius of that ring (measured on the sky in arcseconds) is the Einstein radius, usually denoted $\theta_E$.
+
+Physically, the Einstein radius marks the scale over which gravity is strong enough to produce multiple images or arcs. If the source sits inside this radius (in angular terms), you tend to get arcs or rings; if it sits outside, you get multiple images.
+
+For galaxy-scale lenses, typical Einstein radii are in the range 0.5--3~arcseconds. One arcsecond is about $1/3600$ of a degree. That is tiny on the sky, but modern telescopes and cameras can resolve it.
+
+\subsection{What Real Strong Lenses Look Like}
+
+Real strong lenses do not always show perfect rings. What you see depends on alignment:
+
+\textbf{Einstein rings} occur when the source is almost perfectly aligned with the lens. You see a smooth or nearly complete ring of light around the lens galaxy.
+
+\textbf{Arcs} (partial rings) appear when the source is slightly offset. Part of the ring is brighter or more extended than the rest, so you see arc-shaped structures.
+
+\textbf{Multiple images} appear when the source is farther from perfect alignment. Instead of a ring or arcs, you see two, three, or four distinct images of the same background galaxy around the lens.
+
+The lens galaxy itself usually appears as a bright blob in the center. The lensed images and arcs sit around it, often reddish or bluish depending on the colors of the lens and source galaxies.
+
+\subsection{Why Massive Elliptical Galaxies Are the Best Lenses}
+
+Strong lensing is dominated by \textbf{elliptical galaxies}---roundish, reddish systems without spiral arms. The main reason is mass. The lensing ``strength'' scales with mass. The more mass between you and the source, the more bending and the larger the Einstein radius. Elliptical galaxies are typically the most massive galaxies in the universe, so they bend light the most.
+
+\subsection{Source Plane and Image Plane}
+
+Two planes help organize the geometry:
+
+The \textbf{source plane} is the plane in 3D space where the background galaxy actually lies. Think of it as the ``true'' location of the source.
+
+The \textbf{image plane} is the plane of the sky where we observe the light---the 2D view from Earth. The lens bends light from the source plane to create the pattern we see in the image plane.
+
+\begin{center}
+\begin{tikzpicture}[scale=0.85, every node/.style={font=\small}]
+  \coordinate (observer) at (7, 0);
+  \coordinate (lens) at (3.5, 0);
+  \coordinate (source) at (0, 0.3);
+  \draw[fill=blue!20] (observer) circle (0.3);
+  \node[above] at (observer) {Observer};
+  \draw[fill=orange!60] (lens) ellipse (0.4 and 0.6);
+  \node[above=4pt] at (lens) {Lens galaxy};
+  \draw[dashed, thick] (lens) circle (1.2);
+  \node[right] at (4.7, 0.9) {$\theta_E$};
+  \draw[fill=blue!40] (source) ellipse (0.3 and 0.25);
+  \node[above] at (source) {Source galaxy};
+  \draw[->, thick, red] (source) .. controls (1.5, 1.5) and (2.5, 1.2) .. (3.1, 0.6);
+  \draw[->, thick, red] (3.9, 0.6) .. controls (4.5, 1.0) and (5.5, 0.7) .. (observer);
+  \draw[->, thick, red] (source) .. controls (1.5, -1.2) and (2.5, -1.0) .. (3.1, -0.3);
+  \draw[->, thick, red] (3.9, -0.3) .. controls (4.5, -0.8) and (5.5, -0.4) .. (observer);
+\end{tikzpicture}
+\end{center}
+
+The diagram shows the basic setup: observer on the right, lens in the middle, source on the left. The dashed circle marks the Einstein radius $\theta_E$. Red curves show light rays bending around the lens on their way to the observer.
+
+
+\section{Chapter 2: Why Astronomers Care About Finding Lenses}
+
+\textit{In this chapter you will learn why strong lenses matter for cosmology and dark matter, what a selection function is, how injection-recovery works, and why the central question of our paper---whether fake lenses look realistic---matters for all of this.}
+
+\subsection{Population Statistics}
+
+Finding strong lenses is useful not only individually, but also as a population. If you know how many lenses exist with certain properties (Einstein radius, redshift, mass, etc.), you can test models of galaxy formation, dark matter, and cosmology. Comparing observed lens counts to theoretical predictions constrains the mass function of galaxies and the geometry of the universe.
+
+\subsection{Connection to Dark Matter, Cosmology, and Galaxy Evolution}
+
+Strong lensing depends on total mass---stars, gas, and dark matter. That makes it a direct probe of dark matter distribution.
+
+\textbf{Time delays} add another dimension. Light traveling along different paths can take different times to reach us. Measuring these delays and modeling the lens gives a physical distance, which can be combined with redshift to estimate the Hubble constant $H_0$---the expansion rate of the universe.
+
+Lensed systems also magnify distant galaxies, revealing fainter objects and earlier stages of galaxy evolution.
+
+\subsection{The Selection Function Concept}
+
+If you find 100 lenses, how many did you miss? That question is critical for population statistics.
+
+The \textbf{selection function} is the probability that a lens with given properties is detected by your survey and pipeline. It depends on flux, size, morphology, image quality, and the algorithm used. Without it, you cannot correct for incompleteness or turn ``lenses found'' into ``lenses present.''
+
+\subsection{The Injection-Recovery Paradigm}
+
+A standard way to estimate the selection function is \textbf{injection-recovery}:
+\begin{enumerate}
+  \item Create synthetic (simulated) lenses with known properties.
+  \item Insert them into real survey images at random positions.
+  \item Run your detection pipeline (e.g., a CNN) on these images.
+  \item Measure what fraction you recover, as a function of those properties.
+\end{enumerate}
+That recovery fraction is your empirical selection function.
+
+\subsection{The Critical Assumption}
+
+Injection-recovery works \emph{only} if the synthetic lenses are representative of real ones. If synthetic and real lenses differ in ways that affect detectability, the measured selection function will be wrong, and so will any population inferences.
+
+\textbf{This is the central question of our paper}: Do synthetic lenses used in injection-recovery look sufficiently like real lenses to the CNN? If not, the selection function and the population statistics built on it may be biased.
+
+
+\section{Chapter 3: How CNNs See Images}
+
+\textit{In this chapter you will learn what a convolutional neural network is, how it processes images through layers of filters, what embeddings and feature space mean, and how the CNN outputs a detection score.}
+
+\subsection{Neural Networks}
+
+\textbf{Neural networks} are algorithms inspired by networks of neurons in the brain. They consist of layers of simple mathematical operations: each ``neuron'' takes inputs, applies weights and a nonlinear function, and passes the result to the next layer. With enough layers and proper training, such networks can learn to approximate complex input--output relationships.
+
+\subsection{Convolutional Neural Networks}
+
+\textbf{Convolutional neural networks} (CNNs) are built for images. They use small \textbf{filters} (or \textbf{kernels})---arrays of numbers, e.g., $3 \times 3$ or $5 \times 5$---that slide across the image. Each filter responds to certain local patterns (edges, corners, textures). Many filters in many layers allow the network to build up increasingly complex descriptions of the image.
+
+\subsection{Hierarchy of Features}
+
+CNNs typically learn a hierarchy:
+\begin{itemize}
+  \item \textbf{Early layers}: edges, gradients, simple shapes.
+  \item \textbf{Middle layers}: textures, combinations of edges, more complex shapes.
+  \item \textbf{Deep layers}: high-level concepts such as ``galaxy,'' ``arc,'' or ``ring.''
+\end{itemize}
+
+\subsection{EfficientNetV2-S}
+
+\textbf{EfficientNetV2-S} is our CNN architecture with about 20.2 million parameters. It was \textbf{pre-trained} on \textbf{ImageNet}---a large dataset of everyday photos---then \textbf{fine-tuned} on astronomical images.
+
+\subsection{Transfer Learning}
+
+\textbf{Transfer learning} means starting from a model trained on one domain and adapting it to another. Low-level visual features---edges, textures, contrast---are shared across domains. A network trained on natural images already has useful edge and texture detectors; fine-tuning adjusts them for astronomical data.
+
+\subsection{Embeddings and Feature Space}
+
+Before the final classification, the CNN produces an \textbf{embedding}---a vector of 1280 numbers that summarizes what the network ``sees'' in the image. This is the \textbf{feature space}: each image is a point in 1280-dimensional space. Images that look similar to the CNN have similar embeddings.
+
+\subsection{Binary Classification}
+
+The final layer maps the 1280-d embedding to a single number $p$ between 0 and 1: the probability the image is a lens. $p \approx 1$ means ``likely a lens''; $p \approx 0$ means ``likely not.''
+
+\begin{center}
+\begin{tikzpicture}[scale=0.85, every node/.style={font=\small}]
+  \draw[fill=gray!30] (0, 0) rectangle (1.2, 1.2);
+  \node[below] at (0.6, -0.1) {Input image};
+  \draw[->] (1.3, 0.6) -- (1.7, 0.6);
+  \draw[fill=blue!20] (1.7, 0.1) rectangle (2.5, 1.1);
+  \node at (2.1, 0.6) {\tiny Conv};
+  \draw[->] (2.6, 0.6) -- (3.0, 0.6);
+  \draw[fill=blue!30] (3.0, 0.15) rectangle (3.6, 1.05);
+  \node at (3.3, 0.6) {\tiny Conv};
+  \draw[->] (3.7, 0.6) -- (4.1, 0.6);
+  \draw[fill=blue!40] (4.1, 0.2) rectangle (4.5, 1.0);
+  \node at (4.3, 0.6) {\tiny Conv};
+  \draw[->] (4.6, 0.6) -- (5.0, 0.6);
+  \draw[fill=green!30] (5.0, 0.0) rectangle (5.4, 1.2);
+  \node[above] at (5.2, 1.25) {1280-d};
+  \draw[->] (5.5, 0.6) -- (5.9, 0.6);
+  \draw[fill=orange!50] (5.9, 0.3) rectangle (6.4, 0.9);
+  \node at (6.15, 0.6) {$p$};
+\end{tikzpicture}
+\end{center}
+
+\begin{center}
+\begin{tikzpicture}[scale=1, every node/.style={font=\small}]
+  \draw[->] (0, 0) -- (5.2, 0) node[right] {Feature 1};
+  \draw[->] (0, 0) -- (0, 4.2) node[above] {Feature 2};
+  \foreach \x/\y in {1.2/1.5, 1.4/1.3, 1.3/1.7, 1.5/1.4, 1.1/1.6, 1.35/1.45, 1.25/1.35}
+    {\draw[fill=gold, draw=orange] (\x, \y) circle (0.08);}
+  \node[right] at (1.6, 1.7) {\color{orange} Real lenses};
+  \foreach \x/\y in {3.2/2.8, 3.4/2.6, 3.3/2.9, 3.5/2.7, 3.1/2.85, 3.45/2.75, 3.25/2.65}
+    {\draw[fill=blue!60, draw=blue] (\x, \y) circle (0.08);}
+  \node[right] at (3.6, 2.95) {\color{blue} Injections};
+  \draw[dashed, thick] (0.5, 0.2) -- (4.8, 3.8);
+  \node[right] at (4.2, 3.5) {Linear probe};
+\end{tikzpicture}
+\end{center}
+
+The feature-space diagram shows a 2D analogy. Gold dots are real lenses; blue dots are injections. They cluster in different regions. The dashed line is the \textbf{linear probe}---a simple boundary that separates them. If a simple straight line can do this, the CNN has learned features that make real and synthetic lenses fundamentally different.
+
+
+% ====================================================================
+% CHAPTERS 4-6 (statistics, DESI, prior work)
+% ====================================================================
+\input{../companion_part1_chapters4-6}
+
+% ====================================================================
+% PART II
+% ====================================================================
+\input{../companion_part2_chapters7-9}
+
+% ====================================================================
+% CHAPTERS 10-13 (Poisson, permutation, discussion, defense)
+% ====================================================================
+\input{../companion_part3_chapters10-13}
+
+% ====================================================================
+% BACK MATTER
+% ====================================================================
+\newpage
+\section*{Acknowledgements}
+
+This companion guide was written to make the research paper accessible to a broad audience. The research itself was conducted using data from the DESI Legacy Imaging Survey DR10 and computational resources on AWS.
+
+\end{document}
